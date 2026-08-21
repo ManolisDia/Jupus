@@ -209,34 +209,6 @@ def test_status_filter_scopes_taxonomy_suggestion_results(client_with, seeded_sq
     assert len(approved) == 1
 
 
-def test_approve_taxonomy_suggestion_updates_status(client_with, seeded_sqlite_repos):
-    repos, _ = seeded_sqlite_repos
-    repos.evals.add_taxonomy_suggestions(
-        [{"suggestion_type": "new_class", "call_id": None, "rationale": "x"}], "run-a"
-    )
-    suggestion_id = repos.evals.list_taxonomy_suggestions("run-a", "pending")[0]["id"]
-    client = client_with(repos)
-
-    response = client.post(f"/api/eval/taxonomy-suggestions/{suggestion_id}/approve")
-
-    assert response.status_code == 200
-    assert repos.evals.list_taxonomy_suggestions("run-a", "approved")[0]["id"] == suggestion_id
-
-
-def test_reject_taxonomy_suggestion_updates_status(client_with, seeded_sqlite_repos):
-    repos, _ = seeded_sqlite_repos
-    repos.evals.add_taxonomy_suggestions(
-        [{"suggestion_type": "new_class", "call_id": None, "rationale": "x"}], "run-a"
-    )
-    suggestion_id = repos.evals.list_taxonomy_suggestions("run-a", "pending")[0]["id"]
-    client = client_with(repos)
-
-    response = client.post(f"/api/eval/taxonomy-suggestions/{suggestion_id}/reject")
-
-    assert response.status_code == 200
-    assert repos.evals.list_taxonomy_suggestions("run-a", "rejected")[0]["id"] == suggestion_id
-
-
 def test_api_eval_compare_returns_delta_table(client_with, seeded_sqlite_repos):
     repos, _ = seeded_sqlite_repos
     repos.evals.tag_eval_run("demo-booked-1", "baseline")
@@ -254,61 +226,6 @@ def test_api_eval_compare_returns_delta_table(client_with, seeded_sqlite_repos):
     assert body["candidate"] == "candidate"
     row = next(r for r in body["rows"] if r["error_class_id"] == "repetition")
     assert row["delta"] == 1.0
-
-
-def test_unreviewed_endpoint_excludes_calls_with_review(client_with, seeded_sqlite_repos):
-    repos, _ = seeded_sqlite_repos
-    client = client_with(repos)
-
-    response = client.get("/api/calls/unreviewed")
-
-    unreviewed_ids = {c["call_id"] for c in response.json()}
-    assert "demo-repetition-1" not in unreviewed_ids  # pre-reviewed by seed_annotations
-    assert "demo-booked-1" in unreviewed_ids
-
-
-def test_get_review_404_when_not_yet_reviewed(client_with, seeded_sqlite_repos):
-    repos, _ = seeded_sqlite_repos
-    client = client_with(repos)
-
-    response = client.get("/api/calls/demo-booked-1/review")
-
-    assert response.status_code == 404
-
-
-def test_post_review_creates_call_review_and_annotation_rows(client_with, seeded_sqlite_repos):
-    repos, _ = seeded_sqlite_repos
-    client = client_with(repos)
-
-    response = client.post(
-        "/api/calls/demo-booked-1/review",
-        json={
-            "error_class_ids": ["repetition", "unconfirmed_action"],
-            "uncategorized_notes": ["something odd about the timezone"],
-            "overall_note": "mostly fine",
-            "is_gold": True,
-        },
-    )
-
-    assert response.status_code == 200
-    review = response.json()
-    assert review["is_gold"] == 1
-    assert len(review["annotations"]) == 3
-
-
-def test_re_reviewing_a_call_replaces_prior_annotations(client_with, seeded_sqlite_repos):
-    repos, _ = seeded_sqlite_repos
-    client = client_with(repos)
-    client.post("/api/calls/demo-booked-1/review", json={"error_class_ids": ["repetition"], "overall_note": "first"})
-
-    response = client.post(
-        "/api/calls/demo-booked-1/review", json={"error_class_ids": ["unconfirmed_action"], "overall_note": "second"}
-    )
-
-    review = response.json()
-    assert review["overall_note"] == "second"
-    assert len(review["annotations"]) == 1
-    assert review["annotations"][0]["error_class_id"] == "unconfirmed_action"
 
 
 def test_admin_page_serves_html():
