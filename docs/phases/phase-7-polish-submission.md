@@ -68,6 +68,35 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Scope guard**: attempt only after every required Phase 7 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
 
+## Optional stretch — Caller-facing visual polish
+
+**Goal**: `client/index.html` is spec'd in Phase 1 as deliberately minimal (Start/End buttons, a status line, an empty transcript div) — appropriate for building the pipeline, but it's also the screen the evaluator watches live for the longest single stretch of the video. This stretch gives it a real visual treatment without touching the call logic underneath.
+
+**Scope — purely presentational, zero new call-path risk.** No changes to `client/app.js`'s WebRTC/data-channel/`/bridge` logic; this only changes what's rendered from state that already exists.
+
+- **Reactive voice visualizer**: a Web Audio API `AnalyserNode` tapped off the local mic stream and the remote (agent) audio track, driving a live amplitude/waveform animation — canvas or CSS, no new dependency. Distinct visual state per speaker (caller talking vs. agent talking vs. silence) makes turn-taking visible, not just audible.
+- **Animated status states**: idle / connecting / connected / listening / speaking as distinct, smoothly-transitioning visual states rather than a plain text line.
+- **Live transcript with confidence highlighting**: as fields are captured (name, email, phone, matter type), render them with a visual treatment tied to `*_confidence` — e.g. a field that triggered the re-prompt/confirm path in user story 3 is visibly flagged, so the low-confidence path (the thing the brief specifically asks to see) is legible on screen the instant it happens, not just narrated afterward.
+- **Single dark, centered call-screen layout** — consistent visual language with the graph-viz panel above, so the two feel like one product rather than a prototype bolted onto a debug tool.
+
+**Placement**: this is `client/index.html` + its CSS/JS only — no backend changes, no new endpoints.
+
+**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 7 DoD is met, and cut first if time runs short.
+
+## Optional stretch — Real statute citation (tenancy)
+
+**Goal**: give the tenancy path a small, real, curated knowledge base of actual eviction-law text, so when a caller describes their situation the agent can retrieve and cite the specific provision that applies — a concrete, checkable answer instead of a generic "that sounds like it could be tenancy law." For a test project only, not for real callers to rely on; always spoken with a "general information, not legal advice" disclaimer, and scoped to one practice area rather than all three.
+
+**Corpus**: 10–20 real, verbatim statute/regulation excerpts on eviction (e.g. required notice periods, valid grounds for eviction, tenant response rights) for a single, clearly-stated jurisdiction. Stored as plain data — `backend/supervisor/knowledge/tenancy_statutes.json` (or similar), each entry `{id, citation, jurisdiction, text}` — sourced and reviewed by hand, not scraped or generated at runtime.
+
+**Retrieval — local and free, no new paid dependency.** Given the corpus is only 10–20 short entries, keyword/BM25 match over the entries is enough; a local sentence-transformer embedding + cosine search is a fine upgrade if keyword match proves too brittle, but skip a vector DB — total overkill at this corpus size.
+
+**Wiring — fits the existing tool-scoping rule, doesn't widen it.** A new tool, e.g. `cite_law_provision(query: str) -> {citation, text} | None`, added to `tools.py`, bound only to the tenancy node's tool subset (rule #5) — the employment/immigration nodes never see it, and Realtime still only ever sees `ask_supervisor` (rule #1). Deterministic retrieval, not an LLM call, so it goes through `traced_call` directly rather than `call_claude_tool` (rule #8) — no reason to route a keyword/embedding lookup through Claude.
+
+**Disclaimer is not optional.** Whenever this tool fires, the node's reply must include a spoken "this is general information, not legal advice — worth confirming with the attorney" line — bake this into the tenancy node's prompt template, not left to the model's discretion.
+
+**Jurisdiction caveat**: pick one real jurisdiction, state it explicitly in the corpus and in `docs/DECISIONS.md`, and don't imply the agent covers anywhere else.
+
 ## Optional stretch — Easter egg: joke confession
 **Fun, not required, and deliberately not part of the evaluator-facing demo** — a personal touch for when you're showing this to friends, not something to feature in the submitted video (it's off-brief and would read as unprofessional to an evaluator; keep it un-triggered/unmentioned in the Loom recording).
 
