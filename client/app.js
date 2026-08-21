@@ -66,6 +66,12 @@ Rules, always:
 6. Never invent details about the firm, its lawyers, its fees, or the
    law itself. If you don't have an answer from ask_supervisor yet, say
    you'll check rather than guessing.
+7. When calling ask_supervisor, transcribe last_caller_utterance EXACTLY
+   as the caller said it — never paraphrase, complete, or "clean up"
+   what they said. If they say an email or phone number that sounds
+   incomplete or malformed, pass it along exactly as spoken, incomplete
+   or malformed — do not fill in a plausible-looking domain, symbol, or
+   digit they didn't actually say.
 Keep every reply short and conversational, like a real phone
 receptionist — one or two short sentences at a time, never a long
 monologue.`;
@@ -80,7 +86,15 @@ const ASK_SUPERVISOR_TOOL = {
     type: "object",
     properties: {
       reason: { type: "string" },
-      last_caller_utterance: { type: "string" },
+      last_caller_utterance: {
+        type: "string",
+        description:
+          "The caller's most recent utterance, transcribed EXACTLY as spoken — word for " +
+          "word, verbatim. Never paraphrase, complete, normalize, or invent missing detail " +
+          "(e.g. never insert an '@' symbol or a domain like 'example.com' into an email " +
+          "the caller didn't actually say). If what they said is incomplete or malformed, " +
+          "reproduce it exactly as-is, incomplete or malformed.",
+      },
     },
     required: ["reason", "last_caller_utterance"],
   },
