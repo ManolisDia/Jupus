@@ -1,3 +1,5 @@
+from typing import Literal, Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,6 +11,8 @@ class Settings(BaseSettings):
     db_path: str = Field(
         default="backend/db/calendar.db", validation_alias="JUPUS_DB_PATH"
     )
+    db_backend: Literal["sqlite", "postgres"] = "sqlite"
+    database_url: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env")
 
