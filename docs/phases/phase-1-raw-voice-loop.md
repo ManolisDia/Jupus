@@ -152,17 +152,17 @@ All three cases mock the outbound OpenAI call (via `httpx_mock` or `unittest.moc
 
 ## Definition of Done
 
-- [ ] `pip install -e ".[dev]"` completes with no errors.
-- [ ] `pytest backend/tests/test_session_endpoint.py backend/tests/test_config.py` — all pass, zero live network calls made during the run.
-- [ ] `uvicorn backend.app:app --reload` starts cleanly with a valid `.env`.
-- [ ] Manual: with the backend running, opening `client/index.html` and clicking "Start Call" reaches status "connected" within ~3 seconds.
-- [ ] Manual: speaking into the mic produces an audible spoken reply from the agent within a reasonable turnaround (no tool calls involved — this is pure conversation).
-- [ ] Manual: a 2-minute back-and-forth conversation produces zero unhandled exceptions in the backend terminal and zero uncaught errors in the browser console.
-- [ ] Manual: mid-sentence, pause for 2-3 seconds while saying "umm... let me think..." — confirm the agent does **not** jump in and start talking during the pause. This is the specific behavior `semantic_vad` is there to fix over default VAD — don't skip this check, it's easy for it to pass "close enough" on a quick test and still barge in under real hesitation patterns.
-- [ ] Manual: clicking "End Call" cleanly tears down the connection (no lingering mic indicator in the browser tab/OS after clicking it).
-- [ ] Manual: starting a call with an intentionally invalid `OPENAI_API_KEY` in `.env` shows the "error: ..." status in the UI rather than hanging silently or crashing the backend.
-- [ ] Manual: mid-call, disable your network adapter (or use browser devtools to simulate offline) for a few seconds — confirm the UI status changes to an "error: connection lost"-style message within a reasonable window, rather than staying stuck on "connected" indefinitely.
-- [ ] Manual: mid-call, deliberately deny the mic permission on a *second* call attempt after having previously granted it (or revoke it in browser settings and retry) — confirm `teardown()` fires with a clear error status rather than an unhandled promise rejection silently logged to console.
-- [ ] Manual: confirm every teardown path (normal End Call, ICE failure, mic-permission denial, invalid key) leaves zero lingering mic indicator in the browser tab/OS — not just the normal End Call path.
+- [x] `pip install -e ".[dev]"` completes with no errors.
+- [x] `pytest backend/tests/test_session_endpoint.py backend/tests/test_config.py` — all pass, zero live network calls made during the run.
+- [x] `uvicorn backend.app:app --reload` starts cleanly with a valid `.env`.
+- [x] Manual: with the backend running, opening `client/index.html` and clicking "Start Call" reaches status "connected" within ~3 seconds.
+- [x] Manual: speaking into the mic produces an audible spoken reply from the agent within a reasonable turnaround (no tool calls involved — this is pure conversation).
+- [x] Manual: a 2-minute back-and-forth conversation produces zero unhandled exceptions in the backend terminal and zero uncaught errors in the browser console.
+- [x] Manual: mid-sentence, pause for 2-3 seconds while saying "umm... let me think..." — confirm the agent does **not** jump in and start talking during the pause. This is the specific behavior `semantic_vad` is there to fix over default VAD — don't skip this check, it's easy for it to pass "close enough" on a quick test and still barge in under real hesitation patterns.
+- [x] Manual: clicking "End Call" cleanly tears down the connection (no lingering mic indicator in the browser tab/OS after clicking it).
+- [x] Manual: starting a call with an intentionally invalid `OPENAI_API_KEY` in `.env` shows the "error: ..." status in the UI rather than hanging silently or crashing the backend.
+- [x] Manual: mid-call, disable your network adapter (or use browser devtools to simulate offline) for a few seconds — confirm the UI status changes to an "error: connection lost"-style message within a reasonable window, rather than staying stuck on "connected" indefinitely.
+- [x] Manual: mid-call, deliberately deny the mic permission on a *second* call attempt after having previously granted it (or revoke it in browser settings and retry) — confirm `teardown()` fires with a clear error status rather than an unhandled promise rejection silently logged to console.
+- [x] Manual: confirm every teardown path (normal End Call, ICE failure, mic-permission denial, invalid key) leaves zero lingering mic indicator in the browser tab/OS — not just the normal End Call path.
 
 If any manual check fails intermittently rather than consistently, do not mark this phase done — log it in `docs/known-issues/` first (per `CLAUDE.md`'s rule on checking/logging before moving on), since Phase 2+ builds directly on this connection being reliable.
