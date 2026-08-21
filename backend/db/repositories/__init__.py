@@ -1,8 +1,8 @@
-import sqlite3
 from dataclasses import dataclass
 
 from backend.config import Settings
 from backend.db.repositories.base import CallRepository, SlotRepository, TraceRepository
+from backend.db.repositories.connection import connect
 from backend.db.repositories.sqlite_calls import SQLiteCallRepository
 from backend.db.repositories.sqlite_slots import SQLiteSlotRepository
 from backend.db.repositories.sqlite_trace import SQLiteTraceRepository
@@ -17,7 +17,7 @@ class Repositories:
 
 def get_repositories(settings: Settings) -> Repositories:
     if settings.db_backend == "sqlite":
-        conn = sqlite3.connect(settings.db_path, check_same_thread=False)
+        conn = connect(settings.db_path)
         return Repositories(
             calls=SQLiteCallRepository(conn),
             slots=SQLiteSlotRepository(conn),
