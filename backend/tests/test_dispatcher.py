@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from backend.db.repositories import Repositories
@@ -30,7 +32,11 @@ async def test_reuses_existing_state_for_known_call_id(repos):
     await on_ask_supervisor(repos, "call-1", "tool-1", "wants info", "hi there")
     assert CALL_STATES["call-1"]["stage"] == "routing"
 
-    await on_ask_supervisor(repos, "call-1", "tool-2", "continuing", "employment law question")
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "employment", "confidence": 0.9},
+    ):
+        await on_ask_supervisor(repos, "call-1", "tool-2", "continuing", "employment law question")
     assert CALL_STATES["call-1"]["stage"] == "capture"
 
 

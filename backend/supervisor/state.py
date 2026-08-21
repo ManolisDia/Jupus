@@ -2,16 +2,22 @@ import operator
 from typing import Annotated, Literal, Optional, TypedDict
 
 
+class FieldCapture(TypedDict):
+    value: Optional[str]
+    confidence: float
+    status: Literal["missing", "pending_confirm", "confirmed"]
+    attempts: int
+    validated: bool
+
+
 class CallerProfile(TypedDict):
-    name: Optional[str]
-    name_confidence: float
-    email: Optional[str]
-    email_confidence: float
-    email_validated: bool
-    phone: Optional[str]
-    phone_confidence: float
-    phone_validated: bool
-    preferred_slot: Optional[str]
+    name: FieldCapture
+    email: FieldCapture
+    phone: FieldCapture
+    preferred_time: FieldCapture
+
+
+FIELD_PRIORITY: list[str] = ["name", "email", "phone", "preferred_time"]
 
 
 class CallState(TypedDict):
@@ -24,6 +30,11 @@ class CallState(TypedDict):
     escalation_reason: Optional[str]
     booking_confirmed: bool
     pending_reply: Optional[str]
+    consecutive_llm_failures: int
+
+
+def _new_field_capture() -> FieldCapture:
+    return FieldCapture(value=None, confidence=0.0, status="missing", attempts=0, validated=True)
 
 
 def new_call_state(call_id: str) -> CallState:
@@ -32,21 +43,17 @@ def new_call_state(call_id: str) -> CallState:
         stage="greeting",
         practice_area=None,
         caller_profile=CallerProfile(
-            name=None,
-            name_confidence=0.0,
-            email=None,
-            email_confidence=0.0,
-            email_validated=False,
-            phone=None,
-            phone_confidence=0.0,
-            phone_validated=False,
-            preferred_slot=None,
+            name=_new_field_capture(),
+            email=_new_field_capture(),
+            phone=_new_field_capture(),
+            preferred_time=_new_field_capture(),
         ),
         transcript=[],
         retry_counts={},
         escalation_reason=None,
         booking_confirmed=False,
         pending_reply=None,
+        consecutive_llm_failures=0,
     )
 
 
