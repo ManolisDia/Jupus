@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from backend.db.repositories.base import SlotAlreadyBookedError
@@ -94,3 +96,24 @@ def test_book_raises_on_already_booked_slot(conn, repo):
         repo.book(slot_id)
     row = conn.execute("SELECT is_booked FROM slots WHERE id = ?", (slot_id,)).fetchone()
     assert row[0] == 1
+
+
+async def test_book_under_concurrent_asyncio_calls_only_succeeds_once(conn, repo):
+    # mirrors the real deployment model: FastAPI/uvicorn run a single
+    # asyncio event loop, so two browser tabs' near-simultaneous booking
+    # attempts are two coroutines on one thread, never truly parallel at
+    # the bytecode level, since dispatcher.py calls repos.slots.book()
+    # synchronously (no `await`, no thread-pool offload) inside the async
+    # on_ask_supervisor coroutine — this is what makes the atomic
+    # UPDATE-with-guard in book() sufficient without extra locking.
+    slot_id = _insert_slot(conn, "tenancy", "2026-09-03T09:00:00")
+
+    async def try_book():
+        try:
+            repo.book(slot_id)
+            return "booked"
+        except SlotAlreadyBookedError:
+            return "conflict"
+
+    results = await asyncio.gather(try_book(), try_book())
+    assert sorted(results) == ["booked", "conflict"]
