@@ -53,7 +53,7 @@ function sendSessionUpdate() {
           input: {
             turn_detection: {
               type: "semantic_vad",
-              eagerness: "auto",
+              eagerness: "low",
               create_response: true,
               interrupt_response: true,
             },
