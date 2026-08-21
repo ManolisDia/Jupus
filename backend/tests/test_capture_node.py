@@ -173,6 +173,21 @@ def test_persistently_invalid_email_explains_and_escalates_instead_of_looping(re
     assert state["escalation_reason"] == "capture_failed"
 
 
+def test_zero_confidence_email_still_explains_and_reprompts(repos):
+    # regression: extract_field returning confidence 0 (nothing recognizable
+    # as an email said at all) must still get the explanatory reprompt, not
+    # silently fall through to a plain "what's your email?" repeat with no
+    # indication anything was wrong
+    state = _capture_state(
+        name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
+    )
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "", "confidence": 0}):
+        result = _invoke(state, repos)
+    assert result["caller_profile"]["email"]["status"] == "missing"
+    assert result["caller_profile"]["email"]["attempts"] == 1
+    assert "valid" in result["pending_reply"].lower()
+
+
 def test_all_fields_confirmed_transitions_to_booking(repos):
     confirmed = lambda v: {"value": v, "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
     state = _capture_state(

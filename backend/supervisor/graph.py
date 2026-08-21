@@ -226,13 +226,18 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
             extracted = call_claude_tool(
                 repos.trace, call_id, "capture", "extract_field", tools.extract_field, utterance, target_field
             )
-            if (
-                extracted["confidence"] > 0
-                and extracted["value"] is not None
-                and not _is_valid_format(target_field, extracted["value"])
-            ):
-                return _deny_and_reprompt(target_field, _invalid_format_reply(target_field))
-            new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
+            if target_field in ("email", "phone"):
+                # handled fully explicitly, not through apply_extraction's
+                # confidence thresholds: any outcome that isn't a genuinely
+                # valid value — including confidence 0 (nothing recognizable
+                # said at all) — must explain why and re-ask, not silently
+                # repeat the same question with no indication anything was wrong
+                candidate = extracted["value"] or None
+                if candidate is None or not _is_valid_format(target_field, candidate):
+                    return _deny_and_reprompt(target_field, _invalid_format_reply(target_field))
+                new_value, new_status = candidate, "pending_confirm"
+            else:
+                new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
     except LLMCallFailed:
         return _llm_failure_fallback(repos, state, "capture")
 
