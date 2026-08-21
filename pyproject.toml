@@ -24,6 +24,9 @@ dev = [
     "pre-commit>=3.8",
 ]
 
+[tool.setuptools.packages.find]
+include = ["backend*", "eval*"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
