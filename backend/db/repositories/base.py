@@ -46,3 +46,50 @@ class TraceRepository(ABC):
 
     @abstractmethod
     def get_trace(self, call_id: str) -> list[dict]: ...
+
+
+class EvalRepository(ABC):
+    @abstractmethod
+    def add_error_flags(self, call_id: str, flags: list[dict], eval_run_label: str) -> None: ...
+
+    @abstractmethod
+    def add_taxonomy_suggestions(self, suggestions: list[dict], eval_run_label: str) -> None: ...
+
+    @abstractmethod
+    def update_suggestion_status(self, suggestion_id: int, status: str) -> None: ...
+
+    @abstractmethod
+    def tag_eval_run(self, call_id: str, eval_run_label: str, scenario_id: Optional[str] = None) -> None: ...
+
+    @abstractmethod
+    def compute_error_rates(self, eval_run_label: str) -> dict[str, float]: ...
+
+    @abstractmethod
+    def list_taxonomy_suggestions(
+        self, eval_run_label: Optional[str], status: Optional[str]
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    def get_error_flags(self, call_id: str) -> list[dict]: ...
+
+    @abstractmethod
+    def call_ids_already_evaluated(self) -> set[str]: ...
+
+
+class AnnotationRepository(ABC):
+    @abstractmethod
+    def save_review(
+        self,
+        call_id: str,
+        annotator: str,
+        error_class_ids: list[str],
+        uncategorized_notes: list[str],
+        overall_note: str,
+        is_gold: bool,
+    ) -> None: ...
+
+    @abstractmethod
+    def get_review(self, call_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def list_unreviewed(self) -> list[dict]: ...

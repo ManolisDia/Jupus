@@ -2,7 +2,16 @@ import sqlite3
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schema.sql"
-SCHEMA_TABLES = ("trace_events", "eval_flags", "calls", "slots")
+SCHEMA_TABLES = (
+    "trace_events",
+    "human_annotations",
+    "call_reviews",
+    "taxonomy_suggestions",
+    "eval_runs",
+    "call_error_flags",
+    "calls",
+    "slots",
+)
 
 
 def connect(db_path: str) -> sqlite3.Connection:
