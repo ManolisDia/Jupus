@@ -37,12 +37,32 @@ class SQLiteSlotRepository(SlotRepository):
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
 
-    def check_availability(self, date: str, window: str, area: str) -> Optional[dict]:
-        cursor = self._conn.execute(
+    def check_availability(
+        self,
+        date: str,
+        window: str,
+        area: str,
+        exact_time: Optional[str] = None,
+        exclude_ids: Optional[list[int]] = None,
+    ) -> Optional[dict]:
+        query = (
             "SELECT id, area, start_time, is_booked FROM slots "
-            "WHERE area = ? AND start_time LIKE ? AND is_booked = 0 ORDER BY start_time LIMIT 1",
-            (area, f"{date}T{window}%"),
+            "WHERE area = ? AND date(start_time) = ? AND is_booked = 0"
         )
+        params: list = [area, date]
+        if exact_time:
+            query += " AND strftime('%H:%M', start_time) = ?"
+            params.append(exact_time)
+        elif window == "morning":
+            query += " AND CAST(strftime('%H', start_time) AS INTEGER) < 12"
+        elif window == "afternoon":
+            query += " AND CAST(strftime('%H', start_time) AS INTEGER) >= 12"
+        if exclude_ids:
+            placeholders = ",".join("?" for _ in exclude_ids)
+            query += f" AND id NOT IN ({placeholders})"
+            params.extend(exclude_ids)
+        query += " ORDER BY start_time LIMIT 1"
+        cursor = self._conn.execute(query, params)
         row = cursor.fetchone()
         if row is None:
             return None
@@ -50,23 +70,31 @@ class SQLiteSlotRepository(SlotRepository):
         return dict(zip(columns, row))
 
     def suggest_alternatives(self, date: str, area: str, exclude_ids: list[int]) -> list[dict]:
-        placeholders = ",".join("?" for _ in exclude_ids) if exclude_ids else "NULL"
-        cursor = self._conn.execute(
-            f"SELECT id, area, start_time, is_booked FROM slots "
-            f"WHERE area = ? AND start_time LIKE ? AND is_booked = 0 AND id NOT IN ({placeholders}) "
-            f"ORDER BY start_time",
-            (area, f"{date}%", *exclude_ids),
+        # "id NOT IN (NULL)" (the old fallback for an empty exclude_ids) is
+        # never true for any row in SQL's three-valued logic, which silently
+        # matched zero slots — omit the clause entirely instead.
+        query = (
+            "SELECT id, area, start_time, is_booked FROM slots "
+            "WHERE area = ? AND date(start_time) >= ? AND is_booked = 0"
         )
+        params: list = [area, date]
+        if exclude_ids:
+            placeholders = ",".join("?" for _ in exclude_ids)
+            query += f" AND id NOT IN ({placeholders})"
+            params.extend(exclude_ids)
+        query += " ORDER BY start_time LIMIT 3"
+        cursor = self._conn.execute(query, params)
         columns = [d[0] for d in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def book(self, slot_id: int) -> int:
-        cursor = self._conn.execute("SELECT is_booked FROM slots WHERE id = ?", (slot_id,))
-        row = cursor.fetchone()
-        if row is None or row[0] == 1:
-            raise SlotAlreadyBookedError(f"slot {slot_id} is not available")
-        self._conn.execute("UPDATE slots SET is_booked = 1 WHERE id = ?", (slot_id,))
+        # Atomic UPDATE-with-guard, not SELECT-then-UPDATE: makes the
+        # check-then-act race (two near-simultaneous callers booking the
+        # same slot) impossible rather than merely unlikely.
+        cursor = self._conn.execute("UPDATE slots SET is_booked = 1 WHERE id = ? AND is_booked = 0", (slot_id,))
         self._conn.commit()
+        if cursor.rowcount == 0:
+            raise SlotAlreadyBookedError(f"slot {slot_id} is not available")
         return slot_id
 
     def seed(self, areas: list[str], business_days: int) -> None:

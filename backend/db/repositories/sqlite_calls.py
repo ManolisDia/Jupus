@@ -26,6 +26,12 @@ class SQLiteCallRepository(CallRepository):
         ended_at = now_iso() if state["stage"] == "ended" else None
         caller_profile = state["caller_profile"]
 
+        def _confirmed_value(field_name: str):
+            field = caller_profile[field_name]
+            return field["value"] if field["status"] == "confirmed" else None
+
+        booking_slot_id = state.get("proposed_slot_id") if state.get("booking_confirmed") else None
+
         self._conn.execute(
             """
             INSERT INTO calls (
@@ -51,10 +57,10 @@ class SQLiteCallRepository(CallRepository):
                 state["practice_area"],
                 outcome,
                 state["escalation_reason"],
-                caller_profile["name"]["value"],
-                caller_profile["email"]["value"],
-                caller_profile["phone"]["value"],
-                None,
+                _confirmed_value("name"),
+                _confirmed_value("email"),
+                _confirmed_value("phone"),
+                booking_slot_id,
                 json.dumps(state["transcript"]),
             ),
         )

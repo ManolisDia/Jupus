@@ -14,10 +14,9 @@ class CallerProfile(TypedDict):
     name: FieldCapture
     email: FieldCapture
     phone: FieldCapture
-    preferred_time: FieldCapture
 
 
-FIELD_PRIORITY: list[str] = ["name", "email", "phone", "preferred_time"]
+FIELD_PRIORITY: list[str] = ["name", "email", "phone"]
 
 
 class CallState(TypedDict):
@@ -31,6 +30,10 @@ class CallState(TypedDict):
     booking_confirmed: bool
     pending_reply: Optional[str]
     consecutive_llm_failures: int
+    proposed_slot_id: Optional[int]
+    declined_slot_ids: Annotated[list[int], operator.add]
+    requested_date: Optional[str]
+    requested_window: Optional[str]
 
 
 def _new_field_capture() -> FieldCapture:
@@ -46,7 +49,6 @@ def new_call_state(call_id: str) -> CallState:
             name=_new_field_capture(),
             email=_new_field_capture(),
             phone=_new_field_capture(),
-            preferred_time=_new_field_capture(),
         ),
         transcript=[],
         retry_counts={},
@@ -54,6 +56,10 @@ def new_call_state(call_id: str) -> CallState:
         booking_confirmed=False,
         pending_reply=None,
         consecutive_llm_failures=0,
+        proposed_slot_id=None,
+        declined_slot_ids=[],
+        requested_date=None,
+        requested_window=None,
     )
 
 

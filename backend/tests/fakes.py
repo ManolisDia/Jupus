@@ -1,6 +1,6 @@
 from typing import Optional
 
-from backend.db.repositories.base import CallRepository, TraceRepository
+from backend.db.repositories.base import CallRepository, SlotRepository, TraceRepository
 from backend.supervisor.state import CallState
 
 
@@ -25,6 +25,37 @@ class FakeCallRepository(CallRepository):
         if with_outcome_only:
             rows = [r for r in rows if r["outcome"] is not None]
         return rows
+
+
+class FakeSlotRepository(SlotRepository):
+    def __init__(self):
+        self.availability_result: Optional[dict] = None
+        self.alternatives_result: list[dict] = []
+        self.book_calls: list[int] = []
+        self.book_side_effect: Optional[Exception] = None
+
+    def check_availability(
+        self,
+        date: str,
+        window: str,
+        area: str,
+        exact_time: Optional[str] = None,
+        exclude_ids: Optional[list[int]] = None,
+    ) -> Optional[dict]:
+        return self.availability_result
+
+    def suggest_alternatives(self, date: str, area: str, exclude_ids: list[int]) -> list[dict]:
+        return self.alternatives_result
+
+    def book(self, slot_id: int) -> int:
+        self.book_calls.append(slot_id)
+        if self.book_side_effect is not None:
+            effect, self.book_side_effect = self.book_side_effect, None
+            raise effect
+        return slot_id
+
+    def seed(self, areas: list[str], business_days: int) -> None:
+        raise NotImplementedError("FakeSlotRepository does not support seeding")
 
 
 class FakeTraceRepository(TraceRepository):

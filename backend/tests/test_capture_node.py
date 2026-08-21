@@ -125,6 +125,27 @@ def test_confirmation_yes_accepts_pending_field(repos):
     assert result["caller_profile"]["name"]["status"] == "confirmed"
 
 
+def test_confirmation_needs_clarification_repeats_question_without_counting_attempt(repos):
+    # regression: "what?" or similar must repeat the confirm-back question
+    # verbatim, not get treated as a decline (which burns the retry budget
+    # toward escalation) or a confirmation
+    state = _capture_state(
+        name={"value": "Alex", "confidence": 0.6, "status": "pending_confirm", "attempts": 0, "validated": True}
+    )
+    state["transcript"] = [
+        {"role": "agent", "text": "Just to confirm, your name is Alex — is that right?", "ts": "t0"},
+        {"role": "caller", "text": "What?", "ts": "t1"},
+    ]
+    with patch(
+        "backend.supervisor.tools.confirm_field_answer",
+        return_value={"confirmed": False, "corrected_value": None, "needs_clarification": True},
+    ):
+        result = _invoke(state, repos)
+    assert result["caller_profile"]["name"]["status"] == "pending_confirm"
+    assert result["caller_profile"]["name"]["attempts"] == 0
+    assert result["pending_reply"] == "Just to confirm, your name is Alex — is that right?"
+
+
 def test_confirmation_no_without_correction_reprompts(repos):
     state = _capture_state(
         name={"value": "Alex", "confidence": 0.6, "status": "pending_confirm", "attempts": 0, "validated": True}
@@ -195,7 +216,6 @@ def test_all_fields_confirmed_transitions_to_booking(repos):
         name=confirmed("Alex Smith"),
         email=confirmed("a@b.com"),
         phone=confirmed("5551234567"),
-        preferred_time=confirmed("Friday 2pm"),
     )
     result = _invoke(state, repos)
     assert result["stage"] == "booking"
