@@ -50,6 +50,21 @@ One section per question, each referencing actual file paths and specific behavi
 ## Optional stretch — Railway hosting
 **Only attempt this if every item above is already done and there's genuinely time left.** Per `docs/DECISIONS.md`: gate the deployed endpoint behind a shared-secret token (not committed to the repo), set a hard OpenAI spend cap/alert on the account first, and keep the local path as the primary, always-working submission — the hosted version is a convenience add-on mentioned in the README, never a dependency.
 
+## Optional stretch — Easter egg: joke confession
+**Fun, not required, and deliberately not part of the evaluator-facing demo** — a personal touch for when you're showing this to friends, not something to feature in the submitted video (it's off-brief and would read as unprofessional to an evaluator; keep it un-triggered/unmentioned in the Loom recording).
+
+**Behavior**: if the caller says something absurdly self-incriminating as an obvious joke (e.g. "I just murdered someone," "I robbed a bank"), the agent responds with a fixed line — *"Oh very funny, Manos told me you might try and play a trick on me — joke's on you, I'm calling the police"* — and the browser shows a brief flashing police-siren visual effect.
+
+**Detection — deterministic, not LLM-based, and deliberately narrow.** Add `is_joke_confession(utterance: str) -> bool` to `backend/supervisor/heuristics.py`, alongside `is_explicit_human_request`: a short, specific phrase list ("i murdered someone," "i just killed someone," "i robbed a bank," "i committed a crime," etc.), lowercase substring match. Not an LLM classifier — this is purely for fun, and an LLM call adds latency/cost/risk of misfiring for something this frivolous. Keep the phrase list narrow and literal enough that it will never plausibly match a genuine, serious disclosure of harm — if there's any ambiguity about whether a phrase could be real, leave it out rather than risk a joke response to something that isn't a joke.
+
+**Where it's checked**: in `dispatcher.process_supervisor_call`, checked early — same priority tier as `is_explicit_human_request` — before the utterance reaches the graph at all. On match: skip `GRAPH.invoke` entirely, return the fixed line as `pending_reply`, and separately send `{"type": "easter_egg", "effect": "police_siren"}` over `/bridge` for the client to render.
+
+**Must not pollute the eval/taxonomy system.** This is the one thing worth being careful about: do **not** route this through the normal `escalation_reason`/`outcome` machinery — Phase 6a-6c's deterministic stats and the LLM judge assume every call is a real business interaction, and a joke case showing up as an `escalation_reason` or getting classified against the error taxonomy would be actively misleading. Give it its own distinct `calls.outcome` value (e.g. `"easter_egg"`) and explicitly exclude that value from `booking_success_rate`'s and `escalation_reason_histogram`'s denominators.
+
+**Client**: `admin`/`client/app.js`'s `ws.onmessage` handles the new `"easter_egg"` message type — a few seconds of a flashing red/blue overlay (plain CSS, no new dependency), then clears automatically.
+
+**Tests** (light, matching the tone of the feature): `test_is_joke_confession_matches_known_phrases`, `test_is_joke_confession_does_not_match_genuine_distress` (a couple of serious, non-joke utterances that must **not** match — this is the important one), `test_joke_confession_short_circuits_before_graph_invoke`, `test_joke_confession_outcome_excluded_from_deterministic_stats`.
+
 ---
 
 ## Definition of Done
