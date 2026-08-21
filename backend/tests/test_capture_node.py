@@ -231,3 +231,16 @@ def test_llm_failure_returns_fallback_reply_without_crashing(repos):
     assert result["stage"] == "capture"
     assert result["consecutive_llm_failures"] == 1
     assert result["pending_reply"]
+
+
+def test_three_consecutive_llm_failures_escalates_with_system_error(repos):
+    state = _capture_state()
+    with patch(
+        "backend.supervisor.tools.extract_field",
+        side_effect=json.JSONDecodeError("truncated", "doc", 0),
+    ):
+        for _ in range(3):
+            state = _invoke(state, repos)
+
+    assert state["stage"] == "escalation"
+    assert state["escalation_reason"] == "system_error"
