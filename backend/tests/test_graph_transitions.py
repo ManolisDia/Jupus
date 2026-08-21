@@ -21,21 +21,6 @@ def test_greeting_transitions_to_routing(repos):
     assert result["stage"] == "routing"
 
 
-def test_routing_transitions_to_capture(repos):
-    state = new_call_state("call-1")
-    state["stage"] = "routing"
-    result = _invoke(state, repos)
-    assert result["stage"] == "capture"
-    assert result["practice_area"] == "employment"
-
-
-def test_capture_transitions_to_booking(repos):
-    state = new_call_state("call-1")
-    state["stage"] = "capture"
-    result = _invoke(state, repos)
-    assert result["stage"] == "booking"
-
-
 def test_booking_transitions_to_ended(repos):
     state = new_call_state("call-1")
     state["stage"] = "booking"
@@ -73,14 +58,18 @@ def test_transcript_accumulates_across_multiple_invocations(repos):
     first_result = _invoke(state, repos)
     assert len(first_result["transcript"]) == 1
 
-    # dispatcher.py appends the caller's next utterance before re-invoking
+    # dispatcher.py appends the caller's next utterance before re-invoking.
+    # Jump straight to "booking" (still a stub, no Claude call) rather than
+    # continuing to "routing" — routing is Claude-backed as of Phase 3 and
+    # is covered by the mocked tests in test_routing_node.py instead.
     second_input = dict(first_result)
+    second_input["stage"] = "booking"
     second_input["transcript"] = first_result["transcript"] + [
         {"role": "caller", "text": "in between", "ts": "t"}
     ]
     assert len(second_input["transcript"]) == 2
 
-    # routing node adds 1 more agent turn — total should be all 3 turns,
+    # booking node adds 1 more agent turn — total should be all 3 turns,
     # not just the 1 turn this second invocation itself added
     second_result = _invoke(second_input, repos)
     assert len(second_result["transcript"]) == 3
