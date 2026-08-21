@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (fast, fully mocked — no live API calls)
+        entry: pytest backend/tests eval/tests
+        language: system
+        pass_filenames: false
+        files: \.py$
+
+      - id: architecture-doctrine
+        name: architecture doctrine checks (CLAUDE.md rules 7 & 9)
+        entry: python scripts/check_architecture.py
+        language: system
+        pass_filenames: false
+        files: \.py$
+
+      - id: no-secrets
+        name: block obvious API key patterns in the staged diff
+        entry: python scripts/check_no_secrets.py
+        language: system
+        pass_filenames: false
+        always_run: true

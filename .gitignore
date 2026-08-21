@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/db/calendar.db
+backend.log
+*.egg-info/
+.venv/
+venv/
+docs/.obsidian/
+.claude/settings.local.json

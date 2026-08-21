@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"]
+    },
+    "sqlite": {
+      "command": "C:/Users/Manol/AppData/Roaming/Python/Python312/Scripts/uvx.exe",
+      "args": ["mcp-server-sqlite", "--db-path", "backend/db/calendar.db"]
+    }
+  }
+}
