@@ -48,3 +48,11 @@ def test_session_openai_error_returns_502():
 def test_session_missing_call_id_returns_422():
     response = client.post("/session", json={})
     assert response.status_code == 422
+
+
+def test_session_malformed_openai_response_returns_502():
+    mocked = _mock_response(200, {"unexpected": "shape"})
+    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mocked)):
+        response = client.post("/session", json={"call_id": "call-1"})
+
+    assert response.status_code == 502

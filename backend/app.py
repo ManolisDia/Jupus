@@ -56,9 +56,15 @@ async def create_session(request: SessionRequest):
             content={"error": "OpenAI Realtime session creation failed"},
         )
 
-    data = response.json()
-    return {
-        "client_secret": data["value"],
-        "session_id": data["session"]["id"],
-        "expires_at": str(data["expires_at"]),
-    }
+    try:
+        data = response.json()
+        return {
+            "client_secret": data["value"],
+            "session_id": data["session"]["id"],
+            "expires_at": str(data["expires_at"]),
+        }
+    except (ValueError, KeyError):
+        return JSONResponse(
+            status_code=502,
+            content={"error": "unexpected response shape from OpenAI Realtime API"},
+        )
