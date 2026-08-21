@@ -11,15 +11,17 @@ the change, run again (--label after-tweak), then
 
 See docs/phases/phase-6c-benevolent-dictator.md.
 
-STATUS: the scripted utterances below mirror docs/scenarios.md, but S2/S3
-need Phase 4's real booking node and S5/S6 need Phase 5's `multiple_areas`
-classification value / `is_explicit_human_request` heuristic — neither is
-merged into this branch yet (see backend/tests/test_scenarios.py's module
-docstring for the same caveat on the mocked-suite side). Running this script
-today will still create and tag all 6 calls — that's the point of a
-regression harness, it should keep working as the pipeline fills in over
-time — but S2/S3/S5/S6's calls simply won't reach the outcomes docs/
-scenarios.md describes until those phases land.
+Phase 4/5 are now merged (real booking node, real multiple_areas
+classification value, real is_explicit_human_request heuristic), so all 6
+scenarios run against the real pipeline end to end, live Claude/OpenAI
+calls and all. `dispatcher.process_supervisor_call` (the real dispatch
+entry point) is awaited directly turn by turn rather than going through
+`on_bridge_message`'s fire-and-forget `asyncio.create_task` wrapping, since
+there's no real caller audio/VAD stream here to keep servicing between
+turns — awaiting each turn directly keeps this script's utterances strictly
+ordered. `send_over_bridge` will log a harmless "no active /bridge
+connection" warning per turn, since there's no real WebSocket either; the
+call's resulting state/trace/eval rows are what this script cares about.
 """
 
 import argparse
@@ -31,8 +33,8 @@ from backend.config import settings
 from backend.db.repositories import Repositories, get_repositories
 
 # Each scenario: a fresh call_id, then a sequence of caller utterances fed
-# through dispatcher.on_ask_supervisor in order, exactly as a live caller
-# would trigger them one ask_supervisor turn at a time.
+# through dispatcher.process_supervisor_call in order, exactly as a live
+# caller would trigger them one ask_supervisor turn at a time.
 SCENARIOS: dict[str, list[str]] = {
     "S1": [
         "I got let go from my job last week and I'm not sure if that was legal.",
@@ -57,11 +59,17 @@ SCENARIOS: dict[str, list[str]] = {
         "Yes, that's right.",
         "5551234567",
         "Yes.",
-        "the pre-booked slot",
+        # backend/db/repositories/sqlite_slots.py pre-books 10am and 2pm on
+        # the first seeded business day for every area — this deterministically
+        # collides so the alternative-slot branch of node_booking fires for real
+        "tomorrow at 10am",
         "Yes, the alternative works.",
     ],
     "S4": [
-        "I need to talk to someone.",
+        # NB: avoid heuristics.EXPLICIT_REQUEST_PHRASES here (e.g. "talk to
+        # someone") — that would short-circuit straight to an S6-style
+        # explicit-request escalation instead of an ordinary routing turn.
+        "I think I need some legal advice.",
         "It's about my flat.",
         "uh, Alesh, maybe",
         "No, it's Alex Smith.",
@@ -70,6 +78,12 @@ SCENARIOS: dict[str, list[str]] = {
     ],
     "S5": [
         "I have an issue that's both about my job and my immigration status.",
+        # node_routing's "multiple_areas" branch only sets stage="escalation"
+        # within its own turn (the graph runs exactly one node per invoke) —
+        # node_escalation's own logic (summary, handoff note, final "ended"
+        # stage) needs one more turn to actually run; see
+        # backend/tests/test_scenarios.py's S5 test for the same two-turn shape.
+        "(silence)",
     ],
     "S6": [
         "Can you just put me through to a real person?",
@@ -80,7 +94,7 @@ SCENARIOS: dict[str, list[str]] = {
 async def _replay_one(repos: Repositories, scenario_id: str, utterances: list[str], label: str) -> str:
     call_id = f"replay-{scenario_id.lower()}-{uuid.uuid4().hex[:8]}"
     for i, utterance in enumerate(utterances):
-        await dispatcher.on_ask_supervisor(repos, call_id, f"tool-{i}", "replay", utterance)
+        await dispatcher.process_supervisor_call(repos, call_id, f"tool-{i}", utterance)
     repos.evals.tag_eval_run(call_id, label, scenario_id=scenario_id)
     return call_id
 

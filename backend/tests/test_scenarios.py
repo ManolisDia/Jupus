@@ -1,45 +1,44 @@
 """docs/scenarios.md — the 6 canonical scenarios (S1-S6), mocked-Claude and
-driven through backend.dispatcher.on_ask_supervisor (the real dispatch entry
-point on this branch; docs/scenarios.md calls it `process_supervisor_call`,
-a name from an earlier draft — see docs/architecture.md's note on reading
-phase-doc signatures as illustrative, not literal) so this exercises the real
-dispatcher -> graph -> state path, not just node functions in isolation.
+driven through backend.dispatcher.process_supervisor_call (the real dispatch
+entry point on this branch; docs/scenarios.md calls it `process_supervisor_call`
+too, but an earlier draft of this file used a since-removed `on_ask_supervisor`
+name — see docs/architecture.md's note on reading phase-doc signatures as
+illustrative, not literal) so this exercises the real dispatcher -> graph ->
+state path, not just node functions in isolation.
 
-STATUS (see phase-6a-observability.md / the task's final report for detail):
-only S1 and S4 are buildable on this branch today. S2/S3 need Phase 4's real
-booking node (node_booking here is still a stub with no check_availability/
-suggest_alternative_slots/book_consultation calls at all). S5 needs
-classify_practice_area's schema to support a 5th "multiple_areas" value,
-which docs/PLAN.md documents as a *Phase 5* addition, not yet present in
-tools.CLASSIFY_SCHEMA. S6 needs a deterministic `is_explicit_human_request`
-heuristic (heuristics.py), which is also Phase 5 scope and doesn't exist yet.
-Faking any of these against the current stub nodes would produce a green test
-proving nothing real — they are left as explicit skips instead, each with its
-own reason, per the task's instruction not to fake Phase 4/5-dependent pieces.
-
-Also note: no file outside Phase 4/5's booking/escalation nodes currently
-calls `repos.calls.upsert(...)` on every turn (docs/PLAN.md's call-sequence
-item 12) — only `mark_call_abandoned` does, for the disconnect path. So
-`calls.outcome` assertions from docs/scenarios.md aren't meaningful yet for
-S1 on this branch; S1 below asserts on CallState directly instead, which is
-the strictly stronger/more precise check available today.
+All 6 scenarios are now implemented for real, unblocked by Phase 4's real
+booking node (node_booking) and Phase 5's "multiple_areas" classification
+value + is_explicit_human_request heuristic. `send_over_bridge` is patched
+in each test so replies are captured without a real /bridge WebSocket.
 """
 
 from unittest.mock import patch
 
 import pytest
 
+from backend import dispatcher
 from backend.db.repositories import Repositories
-from backend.dispatcher import on_ask_supervisor
+from backend.dispatcher import process_supervisor_call
 from backend.supervisor.state import CALL_STATES
-from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
+from backend.tests.fakes import FakeCallRepository, FakeSlotRepository, FakeTraceRepository
+
+SLOT_A = {"id": 1, "area": "tenancy", "start_time": "2026-09-03T14:00:00", "is_booked": 0}
+SLOT_B = {"id": 2, "area": "tenancy", "start_time": "2026-09-03T15:00:00", "is_booked": 0}
 
 
 @pytest.fixture(autouse=True)
-def clear_call_states():
+def clear_dispatcher_state():
     CALL_STATES.clear()
+    dispatcher.LOCKS.clear()
+    dispatcher.SPEAKING.clear()
+    dispatcher.DEFERRED.clear()
+    dispatcher.CONNECTIONS.clear()
     yield
     CALL_STATES.clear()
+    dispatcher.LOCKS.clear()
+    dispatcher.SPEAKING.clear()
+    dispatcher.DEFERRED.clear()
+    dispatcher.CONNECTIONS.clear()
 
 
 @pytest.fixture
@@ -47,12 +46,22 @@ def repos():
     return Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
 
 
+@pytest.fixture
+def booking_repos():
+    return Repositories(calls=FakeCallRepository(), slots=FakeSlotRepository(), trace=FakeTraceRepository())
+
+
+async def _turn(repos, call_id, tool_call_id, utterance):
+    with patch("backend.dispatcher.send_over_bridge"):
+        await process_supervisor_call(repos, call_id, tool_call_id, utterance)
+
+
 async def test_scenario_s1_info_only(repos):
     call_id = "scenario-s1"
 
     # Turn 1: greeting -> routing (greeting node makes no Claude call itself)
-    await on_ask_supervisor(
-        repos, call_id, "tool-1", "wants info",
+    await _turn(
+        repos, call_id, "tool-1",
         "I got let go from my job last week and I'm not sure if that was legal.",
     )
     assert CALL_STATES[call_id]["stage"] == "routing"
@@ -62,7 +71,7 @@ async def test_scenario_s1_info_only(repos):
         "backend.supervisor.tools.classify_practice_area",
         return_value={"area": "employment", "confidence": 0.9},
     ):
-        await on_ask_supervisor(repos, call_id, "tool-2", "continuing", "Just info for now, thanks.")
+        await _turn(repos, call_id, "tool-2", "Just info for now, thanks.")
 
     final = CALL_STATES[call_id]
     assert final["practice_area"] == "employment"
@@ -72,27 +81,168 @@ async def test_scenario_s1_info_only(repos):
     assert final["stage"] not in ("booking", "escalation", "ended")
 
 
-@pytest.mark.skip(reason="blocked on Phase 4 — node_booking is still a stub, no real booking logic to drive S2 through")
-def test_scenario_s2_happy_path_booking():
-    ...
+async def test_scenario_s2_happy_path_booking(booking_repos):
+    repos = booking_repos
+    call_id = "scenario-s2"
+    repos.slots.availability_result = SLOT_A
 
-
-@pytest.mark.skip(reason="blocked on Phase 4 — node_booking is still a stub, no conflict/alternative-slot logic to drive S3 through")
-def test_scenario_s3_slot_conflict_booking():
-    ...
-
-
-async def test_scenario_s4_low_confidence_capture(repos):
-    call_id = "scenario-s4"
-
-    await on_ask_supervisor(repos, call_id, "tool-1", "wants booking", "I need to talk to someone.")
+    await _turn(repos, call_id, "tool-1", "I'd like to book a consultation.")
     assert CALL_STATES[call_id]["stage"] == "routing"
 
     with patch(
         "backend.supervisor.tools.classify_practice_area",
         return_value={"area": "tenancy", "confidence": 0.9},
     ):
-        await on_ask_supervisor(repos, call_id, "tool-2", "continuing", "It's about my flat.")
+        await _turn(repos, call_id, "tool-2", "It's about my flat.")
+    assert CALL_STATES[call_id]["stage"] == "capture"
+
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "John Smith", "confidence": 0.9}),
+    ):
+        await _turn(repos, call_id, "tool-3", "John Smith")
+
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "john@example.com", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say john@example.com?"),
+    ):
+        await _turn(repos, call_id, "tool-4", "john at example dot com")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
+
+    with patch(
+        "backend.supervisor.tools.confirm_field_answer",
+        return_value={"confirmed": True, "corrected_value": None},
+    ):
+        await _turn(repos, call_id, "tool-5", "Yes, that's right.")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "confirmed"
+
+    # FIELD_PRIORITY also requires phone before capture hands off to booking
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "5551234567", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-123-4567?"),
+    ):
+        await _turn(repos, call_id, "tool-6", "555-123-4567")
+
+    with patch(
+        "backend.supervisor.tools.confirm_field_answer",
+        return_value={"confirmed": True, "corrected_value": None},
+    ):
+        await _turn(repos, call_id, "tool-7", "Yes, that's right.")
+    assert CALL_STATES[call_id]["stage"] == "booking"
+
+    with (
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": "2026-09-03", "window": "afternoon", "time": "14:00", "confidence": 0.9},
+        ),
+        patch("backend.supervisor.tools.generate_confirmation_summary", return_value="Thursday at 2pm, sound right?"),
+    ):
+        await _turn(repos, call_id, "tool-8", "Thursday afternoon.")
+    assert CALL_STATES[call_id]["proposed_slot_id"] == SLOT_A["id"]
+
+    with patch(
+        "backend.supervisor.tools.confirm_booking_answer",
+        return_value={"accepted": True, "needs_clarification": False},
+    ):
+        await _turn(repos, call_id, "tool-9", "Yes, that works.")
+
+    final = CALL_STATES[call_id]
+    assert final["stage"] == "ended"
+    assert final["booking_confirmed"] is True
+    assert repos.slots.book_calls == [SLOT_A["id"]]
+    # FakeCallRepository.upsert stores outcome_override verbatim rather than
+    # deriving it from state the way SQLiteCallRepository._derive_outcome
+    # does (see that function for the real "booked" derivation), so the
+    # call-row assertion from docs/scenarios.md isn't meaningful against the
+    # fake here — CallState is the strictly stronger/more precise check.
+    assert repos.calls.get(call_id)["outcome"] is None
+
+
+async def test_scenario_s3_slot_conflict_booking(booking_repos):
+    repos = booking_repos
+    call_id = "scenario-s3"
+    # requested slot is taken (10am/day-1, deterministically pre-booked per
+    # docs/scenarios.md); check_availability returns None, one alternative offered
+    repos.slots.availability_result = None
+    repos.slots.alternatives_result = [SLOT_B]
+
+    await _turn(repos, call_id, "tool-1", "I'd like to book a consultation.")
+
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "tenancy", "confidence": 0.9},
+    ):
+        await _turn(repos, call_id, "tool-2", "It's about my flat.")
+
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "Jane Doe", "confidence": 0.9}):
+        await _turn(repos, call_id, "tool-3", "Jane Doe")
+
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "jane@example.com", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say jane@example.com?"),
+    ):
+        await _turn(repos, call_id, "tool-4", "jane at example dot com")
+
+    with patch(
+        "backend.supervisor.tools.confirm_field_answer",
+        return_value={"confirmed": True, "corrected_value": None},
+    ):
+        await _turn(repos, call_id, "tool-5", "Yes, that's right.")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "confirmed"
+
+    # FIELD_PRIORITY also requires phone before capture hands off to booking
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "5559876543", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-987-6543?"),
+    ):
+        await _turn(repos, call_id, "tool-6", "555-987-6543")
+
+    with patch(
+        "backend.supervisor.tools.confirm_field_answer",
+        return_value={"confirmed": True, "corrected_value": None},
+    ):
+        await _turn(repos, call_id, "tool-7", "Yes, that's right.")
+    assert CALL_STATES[call_id]["stage"] == "booking"
+
+    with (
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": "2026-09-03", "window": "morning", "time": "10:00", "confidence": 0.9},
+        ),
+        patch("backend.supervisor.tools.generate_confirmation_summary", return_value="3pm instead, sound right?"),
+    ):
+        await _turn(repos, call_id, "tool-8", "10am tomorrow please.")
+    # proposed the alternative, not the originally-requested (taken) slot
+    assert CALL_STATES[call_id]["proposed_slot_id"] == SLOT_B["id"]
+
+    with patch(
+        "backend.supervisor.tools.confirm_booking_answer",
+        return_value={"accepted": True, "needs_clarification": False},
+    ):
+        await _turn(repos, call_id, "tool-9", "Sure, that works.")
+
+    final = CALL_STATES[call_id]
+    assert final["stage"] == "ended"
+    assert final["booking_confirmed"] is True
+    assert repos.slots.book_calls == [SLOT_B["id"]]
+    # they accepted the first alternative offered, never declined one
+    assert final["declined_slot_ids"] == []
+
+
+async def test_scenario_s4_low_confidence_capture(repos):
+    call_id = "scenario-s4"
+
+    # NB: must avoid heuristics.EXPLICIT_REQUEST_PHRASES (e.g. "talk to
+    # someone") here, or the dispatcher's deterministic explicit-request
+    # check fires and this becomes an S6-style escalation instead of an
+    # ordinary routing turn.
+    await _turn(repos, call_id, "tool-1", "I think I need some legal advice.")
+    assert CALL_STATES[call_id]["stage"] == "routing"
+
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "tenancy", "confidence": 0.9},
+    ):
+        await _turn(repos, call_id, "tool-2", "It's about my flat.")
     assert CALL_STATES[call_id]["stage"] == "capture"
 
     # garbled name -> medium confidence -> pending_confirm + confirm-back
@@ -100,7 +250,7 @@ async def test_scenario_s4_low_confidence_capture(repos):
         patch("backend.supervisor.tools.extract_field", return_value={"value": "Alesh", "confidence": 0.4}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say Alesh?") as mock_confirm_back,
     ):
-        await on_ask_supervisor(repos, call_id, "tool-3", "capture", "uh, Alesh, maybe")
+        await _turn(repos, call_id, "tool-3", "uh, Alesh, maybe")
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "pending_confirm"
 
     # a clear correction resolves the pending name via confirm_field_answer's
@@ -110,7 +260,7 @@ async def test_scenario_s4_low_confidence_capture(repos):
         "backend.supervisor.tools.confirm_field_answer",
         return_value={"confirmed": False, "corrected_value": "Alex Smith"},
     ):
-        await on_ask_supervisor(repos, call_id, "tool-4", "capture", "No, it's Alex Smith.")
+        await _turn(repos, call_id, "tool-4", "No, it's Alex Smith.")
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"
 
     # garbled email -> always pending_confirm regardless of confidence (email/
@@ -119,7 +269,7 @@ async def test_scenario_s4_low_confidence_capture(repos):
         patch("backend.supervisor.tools.extract_field", return_value={"value": "alex@example.com", "confidence": 0.6}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say alex@example.com?"),
     ):
-        await on_ask_supervisor(repos, call_id, "tool-5", "capture", "alex at example dot com")
+        await _turn(repos, call_id, "tool-5", "alex at example dot com")
     assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
 
     # "yes that's right"
@@ -127,7 +277,7 @@ async def test_scenario_s4_low_confidence_capture(repos):
         "backend.supervisor.tools.confirm_field_answer",
         return_value={"confirmed": True, "corrected_value": None},
     ):
-        await on_ask_supervisor(repos, call_id, "tool-6", "capture", "Yes, that's right.")
+        await _turn(repos, call_id, "tool-6", "Yes, that's right.")
 
     final_profile = CALL_STATES[call_id]["caller_profile"]
     assert final_profile["name"]["status"] == "confirmed"
@@ -135,23 +285,55 @@ async def test_scenario_s4_low_confidence_capture(repos):
     mock_confirm_back.assert_called_once()
 
 
-@pytest.mark.skip(
-    reason=(
-        "blocked on Phase 5 — classify_practice_area's schema has no "
-        "'multiple_areas' value yet (docs/PLAN.md documents this as a Phase 5 "
-        "addition), so out_of_scope_multi_area escalation can't fire for real"
-    )
-)
-def test_scenario_s5_model_judged_escalation_multi_area():
-    ...
+async def test_scenario_s5_model_judged_escalation_multi_area(repos, tmp_path):
+    call_id = "scenario-s5"
+
+    await _turn(repos, call_id, "tool-1", "I have an issue with my employer and my visa.")
+    assert CALL_STATES[call_id]["stage"] == "routing"
+
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "multiple_areas", "confidence": 0.8},
+    ):
+        # exactly one classification call, no clarifying retry (unlike the
+        # "unclear" path), moves straight to the escalation stage
+        await _turn(repos, call_id, "tool-2", "My employer fired me over my visa status.")
+
+    mid = CALL_STATES[call_id]
+    assert mid["stage"] == "escalation"
+    assert mid["escalation_reason"] == "out_of_scope_multi_area"
+    assert mid["retry_counts"].get("classification") is None
+
+    # node_escalation itself (summary + handoff note + final "ended" stage)
+    # only runs on the graph's NEXT entry, since each dispatcher turn invokes
+    # exactly one node (route_by_stage now sees "escalation" and dispatches
+    # straight there — this is the same single-node-per-turn behavior S6
+    # below relies on, just arriving at the escalation stage one turn later
+    # here because the decision to escalate was itself made inside the
+    # routing node's own turn).
+    with (
+        patch.object(dispatcher.tools, "HANDOFFS_DIR", tmp_path),
+        patch("backend.supervisor.tools.generate_call_summary", return_value="Multi-area issue, needs a human."),
+    ):
+        await _turn(repos, call_id, "tool-3", "(silence)")
+
+    final = CALL_STATES[call_id]
+    assert final["stage"] == "ended"
+    assert final["escalation_reason"] == "out_of_scope_multi_area"
+    assert (tmp_path / f"{call_id}.md").exists()
 
 
-@pytest.mark.skip(
-    reason=(
-        "blocked on Phase 5 — no deterministic is_explicit_human_request "
-        "heuristic exists yet (heuristics.py is Phase 5 scope), so an "
-        "explicit-request escalation can't be triggered without an LLM guess"
-    )
-)
-def test_scenario_s6_explicit_escalation():
-    ...
+async def test_scenario_s6_explicit_escalation(repos, tmp_path):
+    call_id = "scenario-s6"
+
+    with (
+        patch.object(dispatcher.tools, "HANDOFFS_DIR", tmp_path),
+        patch("backend.supervisor.tools.generate_call_summary", return_value="Caller explicitly asked for a human."),
+    ):
+        # escalation happens on the FIRST ask_supervisor call, before
+        # routing/capture ever run
+        await _turn(repos, call_id, "tool-1", "Can you just put me through to a real person?")
+
+    final = CALL_STATES[call_id]
+    assert final["stage"] == "ended"
+    assert final["escalation_reason"] == "explicit_request"

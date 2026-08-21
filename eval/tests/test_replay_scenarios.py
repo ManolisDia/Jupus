@@ -20,7 +20,7 @@ async def test_replay_creates_one_call_per_scenario():
 
     # mock the pipeline entirely — this test file is harness-only, no live
     # API calls, per docs/phases/phase-6c-benevolent-dictator.md
-    with patch("backend.dispatcher.on_ask_supervisor", new=AsyncMock(return_value="ok")):
+    with patch("backend.dispatcher.process_supervisor_call", new=AsyncMock(return_value=None)):
         results = await replay_all(repos, "test-label")
 
     assert set(results.keys()) == set(SCENARIOS.keys())
