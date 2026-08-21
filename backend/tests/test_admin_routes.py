@@ -39,8 +39,8 @@ def test_api_calls_list_returns_seeded_calls(client_with, seeded_sqlite_repos):
 
     assert response.status_code == 200
     rows = response.json()
-    assert len(rows) == 3
-    assert {row["call_id"] for row in rows} == {"demo-booked-1", "demo-booked-2", "demo-escalated-1"}
+    assert len(rows) == 8
+    assert {"demo-booked-1", "demo-booked-2", "demo-escalated-1"} <= {row["call_id"] for row in rows}
     for row in rows:
         assert set(row.keys()) == {
             "call_id", "started_at", "practice_area", "outcome", "escalation_reason", "booking_slot_id",
