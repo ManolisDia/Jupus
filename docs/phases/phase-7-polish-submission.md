@@ -50,6 +50,24 @@ One section per question, each referencing actual file paths and specific behavi
 ## Optional stretch — Railway hosting
 **Only attempt this if every item above is already done and there's genuinely time left.** Per `docs/DECISIONS.md`: gate the deployed endpoint behind a shared-secret token (not committed to the repo), set a hard OpenAI spend cap/alert on the account first, and keep the local path as the primary, always-working submission — the hosted version is a convenience add-on mentioned in the README, never a dependency.
 
+## Optional stretch — Live "supervisor mind" visualization
+
+**Goal**: a real-time visual of a call moving through the LangGraph nodes, with the supervisor's actual reasoning/tool calls surfaced on screen as they happen — for use in the video's architecture-walkthrough beat. Of everything in this doc, this is the one most likely to genuinely stand out: most take-home submissions describe their graph after the fact in slides or narration; almost none show it executing live.
+
+**Data source — reuse, don't rebuild.** Every tool call already flows through `traced_call` into `trace_events` (rule #8, `docs/phases/cross-cutting.md` section 0), so this is a rendering layer on top of instrumentation that already exists, not a new logging path. Reads must go through `TraceRepository` (rule #9), same as the admin panel.
+
+**Approach**: a dedicated read-only WS (e.g. `WS /admin/trace/{call_id}`) streams each `trace_events` row to the browser as it's written, so a panel can render nodes lighting up *during* the call rather than only in a post-hoc replay.
+
+**Visual — make it sick, not just functional**:
+- The `CallState` machine (Greeting → Routing → Capture → Booking → Escalation, per `docs/architecture.md`/`docs/diagrams.md`) rendered as an animated node graph on a dark canvas.
+- The active node pulses/glows while the supervisor is working it; edges light up on the specific deterministic conditional that fired — e.g. show "confidence 0.62 < 0.75 → re-prompt" as the literal condition evaluated, not a vague "thinking" spinner. This directly demonstrates rule #2 (no LLM ever picks the next node) instead of just asserting it in the README.
+- A side panel streams the raw reasoning / tool-call args + result for the current node live, monospace, like a real-time trace of the graph's internal state — distinct from the caller-facing transcript the admin panel already shows.
+- Think "live brain scan of the agent," not a static architecture diagram with an arrow that moves.
+
+**Placement**: a separate spectator page (e.g. `admin/graph.html` or a new admin tab), never folded into the caller-facing `client/index.html` — it's read-only, driven off the trace stream, and must have zero ability to affect the live call or add latency/risk to the hot path.
+
+**Scope guard**: attempt only after every required Phase 7 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
+
 ## Optional stretch — Easter egg: joke confession
 **Fun, not required, and deliberately not part of the evaluator-facing demo** — a personal touch for when you're showing this to friends, not something to feature in the submitted video (it's off-brief and would read as unprofessional to an evaluator; keep it un-triggered/unmentioned in the Loom recording).
 
