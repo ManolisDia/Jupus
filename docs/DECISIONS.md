@@ -7,6 +7,14 @@ Short log of *why*, not *what* — so a later session doesn't quietly re-decide 
 ### `ask_supervisor` is one coarse dispatch tool, not many fine-grained tools on Realtime
 Realtime natively supports tool-calling, so it could call `book_consultation`/`check_availability`/etc. directly. We chose a single dispatch tool instead because Realtime models are tuned for naturalness/speed, not for reliably sequencing multi-step business logic (confidence handling, retries, booking conflict resolution) — that's exactly what this brief grades. Routing all of that through a separate Claude-driven LangGraph supervisor makes the logic deterministic, testable, and debuggable, at the cost of one extra hop of latency per "real" turn — mitigated with async dispatch (see below) rather than blocking.
 
+### Supervisor's Claude calls use `claude-haiku-4-5`, not flagship
+`backend/supervisor/llm_utils.py`'s `call_claude_json`/`call_claude_text` (Phase 3 onward) use
+Haiku rather than a larger model. These calls are still synchronous/blocking per conversational
+turn until Phase 5's async dispatcher exists, and the tasks themselves are simple — 4-way
+practice-area classification, single-field extraction from one utterance, a short confirm-back
+question — well within a fast/cheap model's capability. Revisit if extraction/classification
+accuracy proves unreliable in live testing; the model id is a one-line change.
+
 ### Graph edges are code conditionals, not LLM choice
 Deciding *which node runs next* (routing → capture → booking → escalation) is plain `if/else` on `CallState`, never an LLM decision. This keeps the flow testable with unit tests and predictable in the video demo. LLM judgment is scoped narrowly to *what a specific field/classification is*, never to *what should happen next*.
 
