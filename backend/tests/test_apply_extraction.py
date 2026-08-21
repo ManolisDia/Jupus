@@ -18,7 +18,12 @@ def test_low_confidence_discarded():
     assert status == "missing"
 
 
-def test_invalid_email_forces_pending_despite_high_confidence():
+def test_email_high_confidence_still_pending_regardless_of_format():
+    # apply_extraction itself does NOT check format validity for email/phone
+    # (that check now lives in node_capture's _is_valid_format, which runs
+    # before apply_extraction is ever reached for these two fields) — this
+    # just confirms apply_extraction doesn't special-case an invalid-looking
+    # value differently from a valid one; both always land on pending_confirm
     value, status = apply_extraction("email", "not-an-email", 0.95)
     assert status == "pending_confirm"
 

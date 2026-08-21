@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from backend.supervisor import tools
 from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from backend.supervisor.state import FIELD_PRIORITY, CallState
+from backend.supervisor.tracing import traced_call
 from backend.utils import now_iso
 
 logger = logging.getLogger(__name__)
@@ -152,10 +153,13 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
     utterance = state["transcript"][-1]["text"] if state["transcript"] else ""
 
     def _is_valid_format(field_name: str, value) -> bool:
+        # deterministic validators still go through traced_call — every
+        # tool_catalog call is traced, not just the LLM-backed ones (CLAUDE.md
+        # rule 8 / cross-cutting.md section 0)
         if field_name == "email":
-            return tools.validate_email(value)
+            return traced_call(repos.trace, call_id, "capture", "validate_email", tools.validate_email, value)
         if field_name == "phone":
-            return tools.validate_phone(value)
+            return traced_call(repos.trace, call_id, "capture", "validate_phone", tools.validate_phone, value)
         return True
 
     def _deny_and_reprompt(field_name: str, reply: str):
