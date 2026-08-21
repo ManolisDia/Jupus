@@ -21,7 +21,14 @@ class CallRepository(ABC):
 
 class SlotRepository(ABC):
     @abstractmethod
-    def check_availability(self, date: str, window: str, area: str) -> Optional[dict]: ...
+    def check_availability(
+        self,
+        date: str,
+        window: str,
+        area: str,
+        exact_time: Optional[str] = None,
+        exclude_ids: Optional[list[int]] = None,
+    ) -> Optional[dict]: ...
 
     @abstractmethod
     def suggest_alternatives(self, date: str, area: str, exclude_ids: list[int]) -> list[dict]: ...

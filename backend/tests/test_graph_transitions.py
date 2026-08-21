@@ -1,14 +1,16 @@
+from unittest.mock import patch
+
 import pytest
 
 from backend.db.repositories import Repositories
 from backend.supervisor.graph import GRAPH, route_by_stage
 from backend.supervisor.state import new_call_state
-from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
+from backend.tests.fakes import FakeCallRepository, FakeSlotRepository, FakeTraceRepository
 
 
 @pytest.fixture
 def repos():
-    return Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    return Repositories(calls=FakeCallRepository(), slots=FakeSlotRepository(), trace=FakeTraceRepository())
 
 
 def _invoke(state, repos):
@@ -24,7 +26,12 @@ def test_greeting_transitions_to_routing(repos):
 def test_booking_transitions_to_ended(repos):
     state = new_call_state("call-1")
     state["stage"] = "booking"
-    result = _invoke(state, repos)
+    state["proposed_slot_id"] = 1
+    state["requested_date"] = "2026-09-03"
+    state["requested_window"] = "morning"
+    state["transcript"] = [{"role": "caller", "text": "yes that works", "ts": "t"}]
+    with patch("backend.supervisor.tools.confirm_booking_answer", return_value={"accepted": True}):
+        result = _invoke(state, repos)
     assert result["stage"] == "ended"
     assert result["booking_confirmed"] is True
 
@@ -59,11 +66,15 @@ def test_transcript_accumulates_across_multiple_invocations(repos):
     assert len(first_result["transcript"]) == 1
 
     # dispatcher.py appends the caller's next utterance before re-invoking.
-    # Jump straight to "booking" (still a stub, no Claude call) rather than
-    # continuing to "routing" — routing is Claude-backed as of Phase 3 and
-    # is covered by the mocked tests in test_routing_node.py instead.
+    # Jump straight to "booking" with a slot already proposed (single
+    # confirm_booking_answer Claude call, mocked) rather than continuing to
+    # "routing" — routing is Claude-backed as of Phase 3 and is covered by
+    # the mocked tests in test_routing_node.py instead.
     second_input = dict(first_result)
     second_input["stage"] = "booking"
+    second_input["proposed_slot_id"] = 1
+    second_input["requested_date"] = "2026-09-03"
+    second_input["requested_window"] = "morning"
     second_input["transcript"] = first_result["transcript"] + [
         {"role": "caller", "text": "in between", "ts": "t"}
     ]
@@ -71,5 +82,6 @@ def test_transcript_accumulates_across_multiple_invocations(repos):
 
     # booking node adds 1 more agent turn — total should be all 3 turns,
     # not just the 1 turn this second invocation itself added
-    second_result = _invoke(second_input, repos)
+    with patch("backend.supervisor.tools.confirm_booking_answer", return_value={"accepted": True}):
+        second_result = _invoke(second_input, repos)
     assert len(second_result["transcript"]) == 3
