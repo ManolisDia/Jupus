@@ -15,6 +15,9 @@ from typing import Optional
 
 from backend.db.repositories import Repositories
 from backend.db.repositories.base import TraceRepository
+from backend.supervisor import tools
+from backend.supervisor.llm_utils import call_claude_tool
+from eval.error_classes import get_active_error_classes
 
 
 def booking_success_rate(calls: list[dict]) -> float:
@@ -103,6 +106,67 @@ def _parse_ts(raw: str) -> Optional[datetime]:
         return datetime.fromisoformat(raw)
     except (ValueError, TypeError):
         return None
+
+
+def run_classification_pass(repos: Repositories, calls: list[dict], eval_run_label: str) -> list[dict]:
+    """Phase 6b — the LLM-judge pass. For each call: classify_call_errors
+    against the current active taxonomy, using the full trace as evidence,
+    then persist any flags via repos.evals.add_error_flags (zero rows
+    written if the call had no errors — that's valid). Returns the full
+    per-call classification results (call_id + flags), which 6c's
+    run_taxonomy_critique takes as input."""
+    error_classes = get_active_error_classes()
+    results = []
+    for call in calls:
+        call_id = call["call_id"]
+        trace = repos.trace.get_trace(call_id)
+        classification = call_claude_tool(
+            repos.trace, call_id, "eval_judge", "classify_call_errors",
+            tools.classify_call_errors, call, trace, error_classes,
+        )
+        flags = classification.get("flags", [])
+        if flags:
+            repos.evals.add_error_flags(call_id, flags, eval_run_label)
+        results.append({"call_id": call_id, "flags": flags})
+    return results
+
+
+def compute_error_rates(repos: Repositories, eval_run_label: str) -> dict[str, float]:
+    """Delegates to repos.evals.compute_error_rates — {error_class_id: rate}
+    for every id in get_active_error_classes(), including 0.0 rates
+    (meaningful information, not absence of information)."""
+    return repos.evals.compute_error_rates(eval_run_label)
+
+
+def run_taxonomy_critique(repos: Repositories, batch_results: list[dict], eval_run_label: str) -> list[dict]:
+    """Phase 6c — the taxonomy-critique pass. Fetches any Benevolent Dictator
+    annotation for every call_id in batch_results (None for calls with no
+    call_reviews row — most calls, especially early on, and that's fine),
+    then calls propose_taxonomy_updates with the batch's own classifications
+    plus that human-annotation context. Every returned suggestion is
+    persisted with status="pending" — only a human approving it in the admin
+    panel should ever precede a hand-edit to eval/error_classes.py."""
+    human_annotations_by_call: dict[str, Optional[dict]] = {}
+    for result in batch_results:
+        call_id = result["call_id"]
+        review = repos.annotations.get_review(call_id)
+        if review is None:
+            human_annotations_by_call[call_id] = None
+        else:
+            human_annotations_by_call[call_id] = {
+                "flags": [a["error_class_id"] for a in review["annotations"] if a["error_class_id"]],
+                "note": review.get("overall_note"),
+                "uncategorized_notes": [a["note"] for a in review["annotations"] if a["error_class_id"] is None],
+            }
+
+    proposal = call_claude_tool(
+        repos.trace, "eval_run:" + eval_run_label, "eval_judge", "propose_taxonomy_updates",
+        tools.propose_taxonomy_updates, batch_results, human_annotations_by_call, get_active_error_classes(),
+    )
+    suggestions = proposal.get("suggestions", [])
+    if suggestions:
+        repos.evals.add_taxonomy_suggestions(suggestions, eval_run_label)
+    return suggestions
 
 
 def run_deterministic_pass(repos: Repositories, calls: list[dict]) -> dict:
