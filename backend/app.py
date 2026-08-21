@@ -1,22 +1,27 @@
 import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from backend import dispatcher
 from backend.config import settings
 from backend.db.repositories import Repositories, get_repositories
+from eval.insights_agent import run_deterministic_pass
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 REPOS = get_repositories(settings)
+
+ADMIN_DIR = Path(__file__).resolve().parents[1] / "admin"
 
 
 def get_repos() -> Repositories:
@@ -107,3 +112,63 @@ async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depen
             break
 
         await dispatcher.on_bridge_message(repos, call_id, msg.model_dump(exclude_none=True))
+
+
+# ---------------------------------------------------------------------------
+# Admin panel (base) — docs/phases/phase-6a-observability.md.
+# No auth (local-only prototype). No error-class badges/reviewed flag/
+# eval_flags key yet — those are additive in 6b/6c per that phase doc.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/calls")
+async def api_calls_list(repos: Repositories = Depends(get_repos)):
+    rows = repos.calls.list()
+    return [
+        {
+            "call_id": r["call_id"],
+            "started_at": r["started_at"],
+            "practice_area": r["practice_area"],
+            "outcome": r["outcome"],
+            "escalation_reason": r["escalation_reason"],
+            "booking_slot_id": r["booking_slot_id"],
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/calls/{call_id}")
+async def api_call_detail(call_id: str, repos: Repositories = Depends(get_repos)):
+    row = repos.calls.get(call_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="call not found")
+    transcript = json.loads(row["transcript_json"]) if row.get("transcript_json") else []
+    return {
+        "call_id": row["call_id"],
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "practice_area": row["practice_area"],
+        "outcome": row["outcome"],
+        "escalation_reason": row["escalation_reason"],
+        "caller_name": row["caller_name"],
+        "caller_email": row["caller_email"],
+        "caller_phone": row["caller_phone"],
+        "booking_slot_id": row["booking_slot_id"],
+        "transcript": transcript,
+    }
+
+
+@app.get("/api/calls/{call_id}/trace")
+async def api_call_trace(call_id: str, repos: Repositories = Depends(get_repos)):
+    return repos.trace.get_trace(call_id)
+
+
+@app.get("/api/eval/summary")
+async def api_eval_summary(repos: Repositories = Depends(get_repos)):
+    calls = repos.calls.list()
+    return run_deterministic_pass(repos, calls)
+
+
+# Mounted last so it never shadows the /api/* routes above. html=True serves
+# admin/index.html for both "/admin" and "/admin/".
+app.mount("/admin", StaticFiles(directory=ADMIN_DIR, html=True), name="admin")
