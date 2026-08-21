@@ -29,19 +29,24 @@ inserted an `@` neither said nor implied. This meant a supposedly `capture_faile
 malformed email got silently "fixed" upstream of anything `backend/supervisor/tools.py` or its
 prompts could see or control, defeating the confidence-threshold/validation pipeline entirely.
 
-Fixed at the one layer we do control: `client/app.js`'s tool schema now carries an explicit
-`description` on `last_caller_utterance` demanding a verbatim, uncompleted transcription, and
-`SUPERVISOR_INSTRUCTIONS` gained a matching rule (7). Not a certainty — this depends on the
-Realtime model actually following the instruction rather than a guaranteed platform behavior, so
-watch for it recurring in later live testing rather than assuming this fully closes the gap.
+Initially "fixed" via a stricter tool-schema `description` and a matching `SUPERVISOR_INSTRUCTIONS`
+rule — but this remained unreliable (prompting the Realtime model is not a guarantee). Properly
+closed instead by not depending on the model's argument at all: `client/app.js` now enables
+`session.audio.input.transcription` (`gpt-transcribe`) and captures
+`conversation.item.input_audio_transcription.completed` events into `lastVerbatimTranscript`,
+which is sent to `/bridge` as `last_caller_utterance` in place of the model-authored argument
+whenever available. This is real ASR output, not something an LLM can "helpfully" edit.
 
-### Supervisor's Claude calls use `claude-haiku-4-5`, not flagship
-`backend/supervisor/llm_utils.py`'s `call_claude_json`/`call_claude_text` (Phase 3 onward) use
-Haiku rather than a larger model. These calls are still synchronous/blocking per conversational
-turn until Phase 5's async dispatcher exists, and the tasks themselves are simple — 4-way
-practice-area classification, single-field extraction from one utterance, a short confirm-back
-question — well within a fast/cheap model's capability. Revisit if extraction/classification
-accuracy proves unreliable in live testing; the model id is a one-line change.
+### Supervisor's Claude calls use `claude-sonnet-5`, not Haiku — upgraded from an initial Haiku choice
+Originally set to `claude-haiku-4-5` for latency (these calls are still synchronous/blocking per
+turn until Phase 5's async dispatcher exists) and because the tasks looked simple enough — 4-way
+classification, single-field extraction, a short confirm-back question. Live Phase 3 testing
+showed this was the wrong tradeoff: Haiku repeatedly failed to reliably follow a precise
+instruction (converting spoken "at"/"dot" into `@`/`.` symbols) even after several rounds of
+prompt tightening — the extraction would sometimes pass through the literal words unconverted,
+failing `validate_email`/`validate_phone` and eventually escalating a call that should have
+succeeded. Upgraded to `claude-sonnet-5`, which followed the same instruction correctly. Revisit
+again (up to Opus) if Sonnet also proves unreliable; the model id is still a one-line change.
 
 ### Graph edges are code conditionals, not LLM choice
 Deciding *which node runs next* (routing → capture → booking → escalation) is plain `if/else` on `CallState`, never an LLM decision. This keeps the flow testable with unit tests and predictable in the video demo. LLM judgment is scoped narrowly to *what a specific field/classification is*, never to *what should happen next*.

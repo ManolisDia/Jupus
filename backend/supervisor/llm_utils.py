@@ -8,11 +8,12 @@ from backend.config import settings
 from backend.db.repositories.base import TraceRepository
 from backend.supervisor.tracing import traced_call
 
-# claude-haiku-4-5: these calls are synchronous/blocking per conversational
-# turn until Phase 5's async dispatcher exists, and each task here (4-way
-# classification, single-field extraction) is simple enough that Haiku's
-# speed matters more than Opus-tier reasoning. See docs/DECISIONS.md.
-MODEL_ID = "claude-haiku-4-5"
+# claude-sonnet-5: started on Haiku for latency (still synchronous/blocking
+# per turn until Phase 5), but live testing showed it unreliably following
+# precise instructions (e.g. converting spoken "at"/"dot" into @/.) even
+# after repeated prompt tightening — upgraded per the revisit condition
+# logged in docs/DECISIONS.md.
+MODEL_ID = "claude-sonnet-5"
 RETRY_BACKOFF_SECONDS = 0.5
 
 _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
