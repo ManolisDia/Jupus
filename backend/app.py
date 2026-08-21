@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
-REALTIME_MODEL = "gpt-realtime-2.1"
+REALTIME_MODEL = "gpt-realtime-2.1-mini"
 REALTIME_VOICE = "marin"
 
 
