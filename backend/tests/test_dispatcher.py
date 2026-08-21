@@ -1,7 +1,7 @@
 import pytest
 
 from backend.db.repositories import Repositories
-from backend.dispatcher import on_ask_supervisor
+from backend.dispatcher import mark_call_abandoned, on_ask_supervisor
 from backend.supervisor.state import CALL_STATES
 from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
 
@@ -42,3 +42,19 @@ async def test_guards_against_ended_call(repos):
 
     assert reply == "This call has already been completed."
     assert CALL_STATES["call-1"]["stage"] == "ended"
+
+
+async def test_mark_call_abandoned_ends_in_progress_call(repos):
+    await on_ask_supervisor(repos, "call-1", "tool-1", "r", "u")  # greeting -> routing
+
+    mark_call_abandoned(repos, "call-1")
+
+    assert CALL_STATES["call-1"]["stage"] == "ended"
+    assert repos.calls.get("call-1")["outcome"] == "abandoned"
+    assert any(e["event_type"] == "call_abandoned" for e in repos.trace.get_trace("call-1"))
+
+
+async def test_mark_call_abandoned_noop_for_unseen_call(repos):
+    # Should not raise even if the call never reached CALL_STATES
+    mark_call_abandoned(repos, "never-started")
+    assert repos.calls.get("never-started") is None

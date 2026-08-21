@@ -1,18 +1,13 @@
-from pathlib import Path
-
 from backend.config import settings
-from backend.db.repositories.connection import connect
+from backend.db.repositories.connection import connect, reset_schema
 from backend.db.repositories.sqlite_slots import SQLiteSlotRepository
 
-SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 AREAS = ["employment", "tenancy", "immigration"]
 BUSINESS_DAYS = 10
 
 
 def seed(conn) -> None:
-    for table in ("trace_events", "eval_flags", "calls", "slots"):
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
-    conn.executescript(SCHEMA_PATH.read_text())
+    reset_schema(conn)
     SQLiteSlotRepository(conn).seed(AREAS, BUSINESS_DAYS)
 
 

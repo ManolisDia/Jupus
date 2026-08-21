@@ -101,6 +101,7 @@ async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depen
             logger.warning("malformed /bridge message call_id=%s: %r", call_id, raw)
             continue
         except WebSocketDisconnect:
+            dispatcher.mark_call_abandoned(repos, call_id)
             break
 
         reply = await dispatcher.on_ask_supervisor(
