@@ -97,6 +97,30 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Jurisdiction caveat**: pick one real jurisdiction, state it explicitly in the corpus and in `docs/DECISIONS.md`, and don't imply the agent covers anywhere else.
 
+## Optional stretch — Follow-up call
+
+**Goal**: a second, distinct call flow that runs *after* the caller has already had an offline meeting with a lawyer. The lawyer logs structured notes/action items in the admin panel; the follow-up call is the agent walking the caller back through exactly those items by voice — confirming what was discussed, and driving whatever concrete next step the lawyer specified. This is the one stretch that touches the story end-to-end (booking → real meeting → structured follow-through), so it's high-value if time allows, but it's also the most build-heavy of the stretches — treat it as last in line after the others above.
+
+**Hard constraint — confirms fixed facts, never improvises them.** The agent must only ever speak/act on structured fields the lawyer explicitly entered in the admin panel (next steps, documents needed, a deadline date, a reschedule-needed flag) — it must never free-associate about "what the lawyer probably meant" or answer a substantive legal question that isn't already captured in those fields. Anything outside the logged fields is out of scope by design and routes straight to escalation, same as any other out-of-scope request. This keeps the feature consistent with the rest of the architecture doctrine (deterministic gating on structured state, not open-ended LLM judgment) rather than opening a second, less-guarded surface for the agent to "just talk."
+
+**What the lawyer logs (new admin panel input, per call)** — a small structured form, not free text the agent has to interpret:
+- `summary_note` (free text, spoken back verbatim as "here's what we discussed," not reasoned over)
+- `next_steps: list[{type, detail}]` where `type` is a fixed enum: `confirm_appointment`, `send_documents`, `request_information`, `reschedule_needed`, `deadline_reminder` (date + description)
+- each `next_step` has a `resolved: bool` the follow-up call flips to `true` once handled, so a second follow-up call (or an admin panel view) can show what's outstanding
+
+**Other things a follow-up call could reasonably drive**, beyond what's already listed above — worth picking 2–3 to actually build rather than all of them:
+- **Fee/retainer confirmation** — reading back key terms of an engagement letter and confirming receipt/understanding, not negotiating terms.
+- **Rescheduling** — reuses the existing `SlotRepository`/booking-conflict machinery from Phase 4 directly; this is the cheapest of the bunch to add given what's already built.
+- **Document collection** (inbound), not just delivery — "the lawyer needs your tenancy agreement before the next meeting, want me to text/email you an upload link?" — the link-sending itself can be a stub (log the intent, don't actually build file upload).
+- **Case-status read-back** for longer-running matters — literally reading `summary_note`/a status field back, no reasoning about case state.
+- **A structured "do you have new questions" gate** — if the caller raises something new mid-call, that's an immediate escalation, not a chance for the agent to improvise an answer.
+
+**Graph shape**: a second, separate `CallState`-style flow (e.g. `FollowUpCallState`) with its own small node set (`greeting_followup` → `confirm_summary` → `walk_next_steps` → `ended`/`escalation`), reusing the existing tool-scoping and tracing machinery (rules #5, #8) rather than widening the primary call graph's nodes. A follow-up call is triggered by a distinct `call_id`/`call_type="follow_up"` linked back to the original `call_id`, not a new stage bolted onto the original graph.
+
+**Tools — new, node-scoped, deterministic where possible**: `get_followup_items(call_id) -> {summary_note, next_steps}` (repository read, no LLM), `mark_step_resolved(call_id, step_index)` (deterministic write), plus reuse of the existing booking tools for the `confirm_appointment`/`reschedule_needed` cases. Only the confirm-back conversational phrasing goes through Claude — the fetch/write of what's actually true stays in code, not the model's memory of the conversation.
+
+**Demo value**: this is a strong second scenario for the video specifically because it shows the admin panel and the voice agent as one connected loop — lawyer enters structured notes, caller calls back, agent reads them out and drives action — rather than the admin panel being a read-only reporting surface.
+
 ## Optional stretch — Easter egg: joke confession
 **Fun, not required, and deliberately not part of the evaluator-facing demo** — a personal touch for when you're showing this to friends, not something to feature in the submitted video (it's off-brief and would read as unprofessional to an evaluator; keep it un-triggered/unmentioned in the Loom recording).
 
