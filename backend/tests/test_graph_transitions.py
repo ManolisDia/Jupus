@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.db.repositories import Repositories
+from backend.supervisor import tools
 from backend.supervisor.graph import GRAPH, route_by_stage
 from backend.supervisor.state import new_call_state
 from backend.tests.fakes import FakeCallRepository, FakeSlotRepository, FakeTraceRepository
@@ -36,10 +37,14 @@ def test_booking_transitions_to_ended(repos):
     assert result["booking_confirmed"] is True
 
 
-def test_escalation_sets_stage_ended(repos):
+def test_escalation_sets_stage_ended(repos, tmp_path):
     state = new_call_state("call-1")
     state["stage"] = "escalation"
-    result = _invoke(state, repos)
+    with (
+        patch.object(tools, "HANDOFFS_DIR", tmp_path),
+        patch("backend.supervisor.tools.generate_call_summary", return_value="summary"),
+    ):
+        result = _invoke(state, repos)
     assert result["stage"] == "ended"
 
 

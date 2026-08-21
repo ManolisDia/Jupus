@@ -55,6 +55,19 @@ def test_unclear_classification_twice_escalates(repos):
     assert second_result["escalation_reason"] == "unable_to_classify"
 
 
+def test_multiple_areas_escalates_immediately_no_retry(repos):
+    state = new_call_state("call-1")
+    state["stage"] = "routing"
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "multiple_areas", "confidence": 0.8},
+    ):
+        result = _invoke(state, repos)
+    assert result["stage"] == "escalation"
+    assert result["escalation_reason"] == "out_of_scope_multi_area"
+    assert result["retry_counts"].get("classification") is None
+
+
 def test_llm_failure_returns_fallback_reply_without_crashing(repos):
     state = new_call_state("call-1")
     state["stage"] = "routing"

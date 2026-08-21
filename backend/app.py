@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Optional
 
 import httpx
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
@@ -85,14 +86,15 @@ async def create_session(request: SessionRequest):
 
 class BridgeMessage(BaseModel):
     type: str
-    tool_call_id: str
-    reason: str
-    last_caller_utterance: str
+    tool_call_id: Optional[str] = None
+    reason: Optional[str] = None
+    last_caller_utterance: Optional[str] = None
 
 
 @app.websocket("/bridge")
 async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depends(get_repos)):
     await websocket.accept()
+    dispatcher.CONNECTIONS[call_id] = websocket
     while True:
         try:
             raw = await websocket.receive_text()
@@ -104,9 +106,4 @@ async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depen
             dispatcher.mark_call_abandoned(repos, call_id)
             break
 
-        reply = await dispatcher.on_ask_supervisor(
-            repos, call_id, msg.tool_call_id, msg.reason, msg.last_caller_utterance
-        )
-        await websocket.send_json(
-            {"type": "supervisor_result", "tool_call_id": msg.tool_call_id, "reply": reply}
-        )
+        await dispatcher.on_bridge_message(repos, call_id, msg.model_dump(exclude_none=True))

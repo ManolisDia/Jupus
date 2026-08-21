@@ -2,14 +2,19 @@
 
 import re
 from datetime import date, datetime
+from pathlib import Path
 
 from backend.supervisor import prompts
 from backend.supervisor.llm_utils import call_claude_json, call_claude_text
+from backend.utils import now_iso
 
 CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
-        "area": {"type": "string", "enum": ["employment", "tenancy", "immigration", "unclear"]},
+        "area": {
+            "type": "string",
+            "enum": ["employment", "tenancy", "immigration", "multiple_areas", "unclear"],
+        },
         "confidence": {"type": "number"},
     },
     "required": ["area", "confidence"],
@@ -93,6 +98,56 @@ def confirm_field_answer(utterance: str, field_name: str, candidate_value: str) 
         user_content=utterance,
         json_schema=CONFIRM_ANSWER_SCHEMA,
     )
+
+
+def generate_call_summary(state) -> str:
+    return call_claude_text(
+        system=prompts.GENERATE_CALL_SUMMARY_PROMPT,
+        user_content=(
+            f"Escalation reason: {state.get('escalation_reason')}\n\n"
+            f"Transcript:\n{_format_transcript(state.get('transcript', []))}"
+        ),
+    )
+
+
+HANDOFFS_DIR = Path(__file__).resolve().parents[2] / "docs" / "handoffs"
+
+
+def _caller_field_line(profile: dict, field_name: str, label: str) -> str:
+    field = profile[field_name]
+    value = field["value"] if field["status"] == "confirmed" else None
+    return f"- {label}: {value if value else 'not captured'}"
+
+
+def _handoff_note_text(call_id: str, state, summary: str) -> str:
+    profile = state["caller_profile"]
+    lines = [
+        f"# Escalation — {call_id}",
+        f"Time: {now_iso()}",
+        f"Practice area: {state.get('practice_area') or 'not yet determined'}",
+        f"Reason: {state.get('escalation_reason')}",
+        "",
+        "## Caller details collected",
+        _caller_field_line(profile, "name", "Name"),
+        _caller_field_line(profile, "email", "Email"),
+        _caller_field_line(profile, "phone", "Phone"),
+        "",
+        "## Summary",
+        summary,
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_handoff_note(call_id: str, state, summary: str) -> Path:
+    HANDOFFS_DIR.mkdir(parents=True, exist_ok=True)
+    path = HANDOFFS_DIR / f"{call_id}.md"
+    path.write_text(_handoff_note_text(call_id, state, summary), encoding="utf-8")
+    return path
+
+
+def write_minimal_handoff_note(call_id: str, state, reason: str) -> Path:
+    return write_handoff_note(call_id, state, summary=reason)
 
 
 # Domain half is stricter than the local part: rejects a leading/trailing/

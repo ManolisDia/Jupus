@@ -210,6 +210,14 @@ async function startCall() {
         lastVerbatimTranscript = parsed.transcript;
         return;
       }
+      if (parsed.type === "input_audio_buffer.speech_started") {
+        ws.send(JSON.stringify({ type: "speech_started" }));
+        return;
+      }
+      if (parsed.type === "input_audio_buffer.speech_stopped") {
+        ws.send(JSON.stringify({ type: "speech_stopped" }));
+        return;
+      }
       if (parsed.type === "response.function_call_arguments.done") {
         const args = JSON.parse(parsed.arguments);
         ws.send(

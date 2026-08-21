@@ -3,8 +3,19 @@
 CLASSIFY_PRACTICE_AREA_PROMPT = """You are routing an inbound call for a law firm to one of three
 practice areas: employment, tenancy, or immigration.
 
-Read the conversation so far and decide which area the caller's issue belongs to. If the issue
-spans multiple areas or doesn't clearly fit one, return "unclear" — do not guess."""
+Read the conversation so far and decide which area the caller's issue belongs to. If the
+caller's issue genuinely spans more than one area (e.g. an employment dispute tangled with an
+immigration status question), return "multiple_areas". If it's simply unclear or you don't have
+enough information yet, return "unclear" — do not guess. These are different situations: only
+use "multiple_areas" when the issue itself is genuinely cross-cutting, not merely ambiguous."""
+
+GENERATE_CALL_SUMMARY_PROMPT = """You are writing a short internal handoff summary for a human
+staff member who is about to take over this law firm intake call.
+
+In one short paragraph (2-4 sentences), summarize: what the caller needs, what's been captured
+so far, and why a human is needed now. Be factual and grounded only in the transcript and the
+stated escalation reason — do not invent details, legal advice, or next steps. Write it as a
+neutral internal note, not a message to the caller."""
 
 EXTRACT_FIELD_PROMPT = """You are extracting a single field, "{field_name}", from the caller's
 most recent utterance in a law firm intake call.
