@@ -151,6 +151,45 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
     profile = state["caller_profile"]
     utterance = state["transcript"][-1]["text"] if state["transcript"] else ""
 
+    def _is_valid_format(field_name: str, value) -> bool:
+        if field_name == "email":
+            return tools.validate_email(value)
+        if field_name == "phone":
+            return tools.validate_phone(value)
+        return True
+
+    def _deny_and_reprompt(field_name: str, reply: str):
+        # Shared by an explicit "no", a "yes" to a value that can never pass
+        # format validation, and a fresh extraction that's already invalid —
+        # all are failed attempts and must count toward escalation, or an
+        # unconfirmable value (e.g. an email with no @ at all) loops forever.
+        attempts = profile[field_name]["attempts"] + 1
+        if attempts >= 3:
+            escalate_reply = "I'm having trouble getting that detail — let me get you to someone who can help directly."
+            repos.trace.record_event(
+                call_id, "node_exited", node="capture",
+                stage_from="capture", stage_to="escalation", pending_reply=escalate_reply,
+            )
+            return {
+                "stage": "escalation",
+                "escalation_reason": "capture_failed",
+                "caller_profile": {**profile, field_name: {**profile[field_name], "attempts": attempts}},
+                "consecutive_llm_failures": 0,
+                **_agent_turn(escalate_reply),
+            }
+        repos.trace.record_event(
+            call_id, "node_exited", node="capture",
+            stage_from="capture", stage_to="capture", pending_reply=reply,
+        )
+        return {
+            "caller_profile": {**profile, field_name: {**profile[field_name], "status": "missing", "attempts": attempts}},
+            "consecutive_llm_failures": 0,
+            **_agent_turn(reply),
+        }
+
+    def _invalid_format_reply(field_name: str) -> str:
+        return f"That doesn't look like a valid {FIELD_LABELS[field_name]} — could you say it again?"
+
     try:
         pending_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
 
@@ -161,47 +200,20 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
             )
             if answer["confirmed"]:
                 candidate = profile[pending_field]["value"]
-                valid = True
-                if pending_field in ("email", "phone"):
-                    valid = (
-                        tools.validate_email(candidate) if pending_field == "email" else tools.validate_phone(candidate)
-                    )
-                if valid:
+                if _is_valid_format(pending_field, candidate):
                     target_field, new_value, new_status = pending_field, candidate, "confirmed"
                 else:
                     # defense in depth: an invalid value should never have reached
-                    # pending_confirm, but if it did, don't let a "yes" confirm garbage
-                    target_field, new_value, new_status = pending_field, candidate, "pending_confirm"
+                    # pending_confirm, but if it did, a "yes" can't be allowed to
+                    # confirm it — that value will never validate
+                    return _deny_and_reprompt(pending_field, _invalid_format_reply(pending_field))
             elif answer["corrected_value"]:
+                if not _is_valid_format(pending_field, answer["corrected_value"]):
+                    return _deny_and_reprompt(pending_field, _invalid_format_reply(pending_field))
                 target_field = pending_field
                 new_value, new_status = apply_extraction(pending_field, answer["corrected_value"], 0.9)
             else:
-                attempts = profile[pending_field]["attempts"] + 1
-                if attempts >= 3:
-                    reply = "I'm having trouble getting that detail — let me get you to someone who can help directly."
-                    repos.trace.record_event(
-                        call_id, "node_exited", node="capture",
-                        stage_from="capture", stage_to="escalation", pending_reply=reply,
-                    )
-                    return {
-                        "stage": "escalation",
-                        "escalation_reason": "capture_failed",
-                        "caller_profile": {**profile, pending_field: {**profile[pending_field], "attempts": attempts}},
-                        "consecutive_llm_failures": 0,
-                        **_agent_turn(reply),
-                    }
-                reply = f"Sorry, could you tell me your {FIELD_LABELS[pending_field]} again?"
-                repos.trace.record_event(
-                    call_id, "node_exited", node="capture",
-                    stage_from="capture", stage_to="capture", pending_reply=reply,
-                )
-                return {
-                    "caller_profile": {
-                        **profile, pending_field: {**profile[pending_field], "status": "missing", "attempts": attempts}
-                    },
-                    "consecutive_llm_failures": 0,
-                    **_agent_turn(reply),
-                }
+                return _deny_and_reprompt(pending_field, f"Sorry, could you tell me your {FIELD_LABELS[pending_field]} again?")
         else:
             target_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "missing"), None)
             if target_field is None:
@@ -214,6 +226,12 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
             extracted = call_claude_tool(
                 repos.trace, call_id, "capture", "extract_field", tools.extract_field, utterance, target_field
             )
+            if (
+                extracted["confidence"] > 0
+                and extracted["value"] is not None
+                and not _is_valid_format(target_field, extracted["value"])
+            ):
+                return _deny_and_reprompt(target_field, _invalid_format_reply(target_field))
             new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
     except LLMCallFailed:
         return _llm_failure_fallback(repos, state, "capture")

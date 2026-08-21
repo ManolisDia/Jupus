@@ -147,9 +147,30 @@ def test_confirmation_with_correction_reextracts_and_validates(repos):
         return_value={"confirmed": False, "corrected_value": "not-an-email"},
     ):
         result = _invoke(state, repos)
-    # a correction still goes through apply_extraction's validation — an
-    # invalid email must not be accepted as "confirmed" just because it's a correction
-    assert result["caller_profile"]["email"]["status"] == "pending_confirm"
+    # an invalid correction is caught immediately — explained and re-asked,
+    # not silently accepted as "confirmed" just because it's a correction
+    assert result["caller_profile"]["email"]["status"] == "missing"
+    assert result["caller_profile"]["email"]["attempts"] == 1
+    assert "valid" in result["pending_reply"].lower()
+
+
+def test_persistently_invalid_email_explains_and_escalates_instead_of_looping(repos):
+    # regression: an email that can never pass format validation (e.g. no @
+    # at all) must be caught immediately at extraction, explained to the
+    # caller, and count toward escalation — not loop forever
+    state = _capture_state(
+        name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
+    )
+    for _ in range(3):
+        with patch("backend.supervisor.tools.extract_field", return_value={"value": "manos44", "confidence": 0.9}):
+            state = _invoke(state, repos)
+        if state["stage"] == "escalation":
+            break
+        assert state["caller_profile"]["email"]["status"] == "missing"
+        assert "valid" in state["pending_reply"].lower()
+
+    assert state["stage"] == "escalation"
+    assert state["escalation_reason"] == "capture_failed"
 
 
 def test_all_fields_confirmed_transitions_to_booking(repos):
