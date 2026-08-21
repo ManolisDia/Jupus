@@ -15,6 +15,11 @@ from backend.supervisor.tracing import traced_call
 # logged in docs/DECISIONS.md.
 MODEL_ID = "claude-sonnet-5"
 RETRY_BACKOFF_SECONDS = 0.5
+# json.JSONDecodeError/StopIteration: a malformed or truncated response is
+# functionally the same failure as an API error from the caller's
+# perspective — retry it the same way, don't let it escape as an unhandled
+# exception that kills the whole graph invocation.
+RETRYABLE_ERRORS = (anthropic.APIError, json.JSONDecodeError, StopIteration)
 
 _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
@@ -26,7 +31,7 @@ class LLMCallFailed(Exception):
 def call_claude_json(system: str, user_content: str, json_schema: dict) -> dict:
     response = _client.messages.create(
         model=MODEL_ID,
-        max_tokens=256,
+        max_tokens=512,
         system=system,
         messages=[{"role": "user", "content": user_content}],
         output_config={"format": {"type": "json_schema", "schema": json_schema}},
@@ -38,7 +43,7 @@ def call_claude_json(system: str, user_content: str, json_schema: dict) -> dict:
 def call_claude_text(system: str, user_content: str) -> str:
     response = _client.messages.create(
         model=MODEL_ID,
-        max_tokens=256,
+        max_tokens=512,
         system=system,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -50,11 +55,11 @@ def call_claude_tool(
 ):
     try:
         return traced_call(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
-    except anthropic.APIError as e:
+    except RETRYABLE_ERRORS as e:
         trace_repo.record_event(call_id, "llm_retry", node=node, tool_name=tool_name, attempt=1, error=str(e))
         time.sleep(RETRY_BACKOFF_SECONDS)
         try:
             return traced_call(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
-        except anthropic.APIError as retry_error:
+        except RETRYABLE_ERRORS as retry_error:
             trace_repo.record_event(call_id, "llm_call_failed", node=node, tool_name=tool_name, error=str(retry_error))
             raise LLMCallFailed(retry_error) from retry_error
