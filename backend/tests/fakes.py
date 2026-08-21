@@ -2,6 +2,7 @@ from typing import Optional
 
 from backend.db.repositories.base import CallRepository, SlotRepository, TraceRepository
 from backend.supervisor.state import CallState
+from backend.utils import now_iso
 
 
 class FakeCallRepository(CallRepository):
@@ -67,7 +68,14 @@ class FakeTraceRepository(TraceRepository):
         seq = self._seq_counters.get(call_id, 0)
         self._seq_counters[call_id] = seq + 1
         self.events.append(
-            {"call_id": call_id, "seq": seq, "event_type": event_type, "node": node, "payload": payload}
+            {
+                "call_id": call_id,
+                "seq": seq,
+                "ts": now_iso(),
+                "event_type": event_type,
+                "node": node,
+                "payload": payload,
+            }
         )
 
     def get_trace(self, call_id: str) -> list[dict]:
