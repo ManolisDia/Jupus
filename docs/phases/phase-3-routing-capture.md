@@ -206,10 +206,10 @@ This function is the concrete, testable home of the confidence thresholds and th
 
 ## Definition of Done
 
-- [ ] `pytest backend/tests/test_validators.py backend/tests/test_apply_extraction.py backend/tests/test_capture_node.py backend/tests/test_routing_node.py` — all pass, zero live Anthropic API calls made during the run (verify by checking no `ANTHROPIC_API_KEY`-dependent network activity, e.g. run once with the env var unset and confirm tests still pass because everything's mocked).
-- [ ] Manual live call #1: state an employment-flavored issue — confirm the follow-up questions and any info given are employment-specific.
-- [ ] Manual live call #2 (separate call): state a tenancy-flavored issue — confirm the follow-up questions are visibly different from call #1's.
-- [ ] Manual live call #3: deliberately mumble or garble your email — confirm the agent asks a "did you say...?" confirm-back rather than silently accepting it.
-- [ ] Manual live call #4: give an invalid-format email clearly and confidently (e.g. say "my email is john at gmail" with no way to form a valid address) three times in a row — confirm the call escalates with `capture_failed` rather than looping forever or silently accepting garbage.
-- [ ] Manual live call #5: state a genuinely ambiguous/multi-area issue — confirm it escalates with `unable_to_classify` after one reprompt attempt, rather than guessing an area.
-- [ ] Backend log for each manual call shows the expected `FieldCapture.status` transitions matching what was said out loud.
+- [x] `pytest backend/tests/test_validators.py backend/tests/test_apply_extraction.py backend/tests/test_capture_node.py backend/tests/test_routing_node.py` — all pass, zero live Anthropic API calls made during the run (verify by checking no `ANTHROPIC_API_KEY`-dependent network activity, e.g. run once with the env var unset and confirm tests still pass because everything's mocked).
+- [x] Manual live call #1: state an employment-flavored issue — confirm the follow-up questions and any info given are employment-specific.
+- [x] Manual live call #2 (separate call): state a tenancy-flavored issue — confirm the follow-up questions are visibly different from call #1's.
+- [x] Manual live call #3: deliberately mumble or garble your email — confirm the agent asks a "did you say...?" confirm-back rather than silently accepting it.
+- [x] Manual live call #4: give an invalid-format email clearly and confidently (e.g. say "my email is john at gmail" with no way to form a valid address) three times in a row — confirm the call escalates with `capture_failed` rather than looping forever or silently accepting garbage.
+- [x] Manual live call #5: state a genuinely ambiguous/multi-area issue — confirm it escalates with `unable_to_classify` after one reprompt attempt, rather than guessing an area.
+- [x] Backend log for each manual call shows the expected `FieldCapture.status` transitions matching what was said out loud.

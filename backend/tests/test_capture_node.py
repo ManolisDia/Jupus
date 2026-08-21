@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import pytest
@@ -198,3 +199,15 @@ def test_all_fields_confirmed_transitions_to_booking(repos):
     )
     result = _invoke(state, repos)
     assert result["stage"] == "booking"
+
+
+def test_llm_failure_returns_fallback_reply_without_crashing(repos):
+    state = _capture_state()
+    with patch(
+        "backend.supervisor.tools.extract_field",
+        side_effect=json.JSONDecodeError("truncated", "doc", 0),
+    ):
+        result = _invoke(state, repos)
+    assert result["stage"] == "capture"
+    assert result["consecutive_llm_failures"] == 1
+    assert result["pending_reply"]

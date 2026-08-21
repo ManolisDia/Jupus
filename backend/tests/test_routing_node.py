@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import pytest
@@ -52,3 +53,30 @@ def test_unclear_classification_twice_escalates(repos):
         second_result = _invoke(first_result, repos)
     assert second_result["stage"] == "escalation"
     assert second_result["escalation_reason"] == "unable_to_classify"
+
+
+def test_llm_failure_returns_fallback_reply_without_crashing(repos):
+    state = new_call_state("call-1")
+    state["stage"] = "routing"
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        side_effect=json.JSONDecodeError("truncated", "doc", 0),
+    ):
+        result = _invoke(state, repos)
+    assert result["stage"] == "routing"
+    assert result["consecutive_llm_failures"] == 1
+    assert result["pending_reply"]
+
+
+def test_three_consecutive_llm_failures_escalates_with_system_error(repos):
+    state = new_call_state("call-1")
+    state["stage"] = "routing"
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        side_effect=json.JSONDecodeError("truncated", "doc", 0),
+    ):
+        for _ in range(3):
+            state = _invoke(state, repos)
+
+    assert state["stage"] == "escalation"
+    assert state["escalation_reason"] == "system_error"
