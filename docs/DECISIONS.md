@@ -28,29 +28,24 @@ Drafted explicitly in Phase 2 (not left as a vague "be helpful" prompt) because 
 ### No cap on session/call duration
 Considered a hard server-side timeout on call length (protects against a stuck loop or an abandoned tab with a live mic). Explicitly decided against — not part of this build. If cost or runaway-session risk becomes a real concern later (e.g. if a hosted demo is ever stood up), address it there specifically rather than constraining every local test call now.
 
-### Realtime model: `gpt-realtime-2.1-mini`, not flagship `gpt-realtime-2.1` — provisional, revisit at Phase 2/4
-Switched during Phase 1 live testing after noticing perceptible reply latency on longer turns.
-`gpt-realtime-2.1-mini` is OpenAI's faster/cheaper sibling to the flagship model, released
-alongside it (July 2026) for exactly this latency/cost tradeoff. The case for it fitting here
-specifically: rule 1 above means Realtime *never* does classification, extraction, confidence
-scoring, or booking logic — all business reasoning is offloaded to Claude via the LangGraph
-supervisor precisely because Realtime models aren't meant to sequence multi-step logic. So
-Realtime's job stays narrow for the life of this project: decide whether to call
-`ask_supervisor`, relay the reason, and speak the result back naturally. That's within mini's
-stated strengths; OpenAI's own guidance is to reach for full `gpt-realtime-2.1` only when you
-need "the strongest realtime reasoning, tool use, instruction following, and voice-agent
-behavior."
+### Realtime model: staying on flagship `gpt-realtime-2.1`, tried and reverted from `gpt-realtime-2.1-mini`
+During Phase 1 live testing, replies sometimes took 7-8 seconds and felt sluggish. First
+hypothesis was model choice, so `gpt-realtime-2.1-mini` (OpenAI's faster/cheaper sibling,
+released alongside flagship in July 2026) was tried. The actual root cause turned out to be
+unrelated to the model: background noise (e.g. a sniff) was being misdetected as speech by
+`semantic_vad`, triggering false interruptions and re-generated responses that read as "long/
+slow" turns. Fixed by adding `session.audio.input.noise_reduction: {type: "near_field"}` and
+lowering `turn_detection.eagerness` to `"low"` (see `client/app.js`'s `sendSessionUpdate`) — not
+by a model swap. With the real cause fixed, reverted to flagship `gpt-realtime-2.1` since it was
+already working well once retested and there was no remaining evidence pointing at mini being
+needed.
 
-**Where this could bite and needs re-checking, not assumed fine:**
-- Phase 2's DoD already requires live-verifying that Realtime reliably defers to `ask_supervisor`
-  instead of answering on its own — mini's weaker instruction-following is the specific risk that
-  check exists to catch.
-- Phase 3/4's confirm-back and booking-confirmation loops require Realtime to speak back emails,
-  phone numbers, and appointment times accurately — mini's accuracy here hasn't been tested yet
-  (nothing to test it against in Phase 1, which has zero tools).
-
-If either of those checks shows mini stumbling, this reverts to `gpt-realtime-2.1` — it's a
-one-line constant change (`backend/app.py`'s `REALTIME_MODEL`), not an architecture change.
+Rule 1 above still means Realtime never does classification, extraction, confidence scoring, or
+booking logic — all business reasoning is offloaded to Claude via the LangGraph supervisor — so
+mini remains a plausible cost/latency optimization worth trying again later if flagship proves
+slower than needed once real tool-call round trips exist (Phase 2+). Not revisited now — this
+was a live A/B, not a settled rejection; if revisited, `backend/app.py`'s `REALTIME_MODEL` is a
+one-line change.
 
 ### Realtime (OpenAI) + Supervisor (Claude) — two vendors, deliberately
 OpenAI Realtime has the most mature WebRTC/tool-calling/interrupt handling of the available realtime voice APIs. Claude powers the supervisor's reasoning (extraction, classification, summarization). Two API keys is an accepted tradeoff, documented clearly in the README since the brief requires documenting exactly what's needed to run the project.

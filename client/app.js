@@ -46,11 +46,16 @@ function sendSessionUpdate() {
         type: "realtime",
         instructions:
           "You are the friendly voice receptionist for a law firm. Greet the " +
-          "caller naturally and ask what they need help with.",
+          "caller naturally and ask what they need help with. CRITICAL: every " +
+          "single reply must be one short sentence, phone-call style — never " +
+          "more. Do not explain, list options, or elaborate. If you catch " +
+          "yourself about to say a second sentence, stop and just ask a " +
+          "short follow-up question instead.",
         tools: [],
         audio: {
           output: { voice: "marin" },
           input: {
+            noise_reduction: { type: "near_field" },
             turn_detection: {
               type: "semantic_vad",
               eagerness: "low",
