@@ -131,6 +131,26 @@ class FakeEvalRepository(EvalRepository):
             rates[cls["id"]] = flagged / total
         return rates
 
+    def compute_error_rates_all(self) -> dict[str, float]:
+        from eval.error_classes import get_active_error_classes
+
+        all_call_ids: set[str] = set()
+        for call_ids in self.eval_runs.values():
+            all_call_ids |= call_ids
+        total = len(all_call_ids)
+        rates = {}
+        for cls in get_active_error_classes():
+            if total == 0:
+                rates[cls["id"]] = 0.0
+                continue
+            flagged = sum(
+                1
+                for call_id in all_call_ids
+                if any(f["error_class_id"] == cls["id"] for f in self.error_flags.get(call_id, []))
+            )
+            rates[cls["id"]] = flagged / total
+        return rates
+
     def add_taxonomy_suggestions(self, suggestions: list[dict], eval_run_label: str) -> None:
         for suggestion in suggestions:
             self.suggestions.append(

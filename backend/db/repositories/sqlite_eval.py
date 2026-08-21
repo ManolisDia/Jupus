@@ -71,6 +71,28 @@ class SQLiteEvalRepository(EvalRepository):
             rates[class_id] = flagged / total_calls
         return rates
 
+    def compute_error_rates_all(self) -> dict[str, float]:
+        """Same shape as compute_error_rates, but pooled across every
+        eval_run_label ever recorded — used by GET /api/eval/summary when no
+        specific ?label= is given (a reasonable "overall health" default for
+        the admin panel rather than an arbitrary single label)."""
+        from eval.error_classes import get_active_error_classes
+
+        total_calls = self._conn.execute("SELECT COUNT(DISTINCT call_id) FROM eval_runs").fetchone()[0]
+
+        rates: dict[str, float] = {}
+        for error_class in get_active_error_classes():
+            class_id = error_class["id"]
+            if total_calls == 0:
+                rates[class_id] = 0.0
+                continue
+            flagged = self._conn.execute(
+                "SELECT COUNT(DISTINCT call_id) FROM call_error_flags WHERE error_class_id = ?",
+                (class_id,),
+            ).fetchone()[0]
+            rates[class_id] = flagged / total_calls
+        return rates
+
     def call_ids_already_evaluated(self) -> set[str]:
         cursor = self._conn.execute("SELECT DISTINCT call_id FROM eval_runs")
         return {row[0] for row in cursor.fetchall()}

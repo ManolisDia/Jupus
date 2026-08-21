@@ -65,6 +65,9 @@ class EvalRepository(ABC):
     def compute_error_rates(self, eval_run_label: str) -> dict[str, float]: ...
 
     @abstractmethod
+    def compute_error_rates_all(self) -> dict[str, float]: ...
+
+    @abstractmethod
     def list_taxonomy_suggestions(
         self, eval_run_label: Optional[str], status: Optional[str]
     ) -> list[dict]: ...

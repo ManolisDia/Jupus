@@ -6,7 +6,7 @@ from typing import Optional
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -115,15 +115,29 @@ async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depen
 
 
 # ---------------------------------------------------------------------------
-# Admin panel (base) — docs/phases/phase-6a-observability.md.
-# No auth (local-only prototype). No error-class badges/reviewed flag/
-# eval_flags key yet — those are additive in 6b/6c per that phase doc.
+# Admin panel — base scaffold from docs/phases/phase-6a-observability.md,
+# extended per docs/phases/phase-6b-error-taxonomy.md (error-class badges/
+# evidence, error_rates) and docs/phases/phase-6c-benevolent-dictator.md
+# (reviewed flag/human review, taxonomy-suggestions, BD annotation routes).
+# No auth (local-only prototype).
 # ---------------------------------------------------------------------------
+
+
+def _error_badges(repos: Repositories, call_id: str) -> list[str]:
+    if repos.evals is None:
+        return []
+    flags = repos.evals.get_error_flags(call_id)
+    return sorted({f["error_class_id"] for f in flags})
 
 
 @app.get("/api/calls")
 async def api_calls_list(repos: Repositories = Depends(get_repos)):
     rows = repos.calls.list()
+    reviewed_ids = set()
+    if repos.annotations is not None:
+        for row in rows:
+            if repos.annotations.get_review(row["call_id"]) is not None:
+                reviewed_ids.add(row["call_id"])
     return [
         {
             "call_id": r["call_id"],
@@ -132,9 +146,19 @@ async def api_calls_list(repos: Repositories = Depends(get_repos)):
             "outcome": r["outcome"],
             "escalation_reason": r["escalation_reason"],
             "booking_slot_id": r["booking_slot_id"],
+            "error_classes": _error_badges(repos, r["call_id"]),
+            "reviewed": r["call_id"] in reviewed_ids,
         }
         for r in rows
     ]
+
+
+@app.get("/api/calls/unreviewed")
+async def api_calls_unreviewed(repos: Repositories = Depends(get_repos)):
+    # Registered before "/api/calls/{call_id}" — a path-parameter route
+    # registered first would otherwise greedily match "unreviewed" as a
+    # call_id (FastAPI/Starlette match routes in registration order).
+    return repos.annotations.list_unreviewed()
 
 
 @app.get("/api/calls/{call_id}")
@@ -143,6 +167,8 @@ async def api_call_detail(call_id: str, repos: Repositories = Depends(get_repos)
     if row is None:
         raise HTTPException(status_code=404, detail="call not found")
     transcript = json.loads(row["transcript_json"]) if row.get("transcript_json") else []
+    error_flags = repos.evals.get_error_flags(call_id) if repos.evals is not None else []
+    human_review = repos.annotations.get_review(call_id) if repos.annotations is not None else None
     return {
         "call_id": row["call_id"],
         "started_at": row["started_at"],
@@ -155,6 +181,8 @@ async def api_call_detail(call_id: str, repos: Repositories = Depends(get_repos)
         "caller_phone": row["caller_phone"],
         "booking_slot_id": row["booking_slot_id"],
         "transcript": transcript,
+        "call_error_flags": error_flags,
+        "human_review": human_review,
     }
 
 
@@ -164,11 +192,85 @@ async def api_call_trace(call_id: str, repos: Repositories = Depends(get_repos))
 
 
 @app.get("/api/eval/summary")
-async def api_eval_summary(repos: Repositories = Depends(get_repos)):
+async def api_eval_summary(repos: Repositories = Depends(get_repos), label: str | None = None):
     calls = repos.calls.list()
-    return run_deterministic_pass(repos, calls)
+    summary = run_deterministic_pass(repos, calls)
+    if repos.evals is not None:
+        summary["error_rates"] = (
+            repos.evals.compute_error_rates(label) if label else repos.evals.compute_error_rates_all()
+        )
+    return summary
 
 
-# Mounted last so it never shadows the /api/* routes above. html=True serves
-# admin/index.html for both "/admin" and "/admin/".
+@app.get("/api/eval/error-classes")
+async def api_error_classes():
+    from eval.error_classes import get_active_error_classes
+
+    return get_active_error_classes()
+
+
+@app.get("/api/eval/taxonomy-suggestions")
+async def api_taxonomy_suggestions(
+    repos: Repositories = Depends(get_repos), label: str | None = None, status: str | None = None
+):
+    return repos.evals.list_taxonomy_suggestions(label, status)
+
+
+@app.post("/api/eval/taxonomy-suggestions/{suggestion_id}/approve")
+async def api_approve_taxonomy_suggestion(suggestion_id: int, repos: Repositories = Depends(get_repos)):
+    repos.evals.update_suggestion_status(suggestion_id, "approved")
+    return {"id": suggestion_id, "status": "approved"}
+
+
+@app.post("/api/eval/taxonomy-suggestions/{suggestion_id}/reject")
+async def api_reject_taxonomy_suggestion(suggestion_id: int, repos: Repositories = Depends(get_repos)):
+    repos.evals.update_suggestion_status(suggestion_id, "rejected")
+    return {"id": suggestion_id, "status": "rejected"}
+
+
+@app.get("/api/eval/compare")
+async def api_compare_runs(baseline: str, candidate: str, repos: Repositories = Depends(get_repos)):
+    from eval.compare_runs import build_comparison
+
+    return build_comparison(repos, baseline, candidate)
+
+
+@app.get("/api/calls/{call_id}/review")
+async def api_get_review(call_id: str, repos: Repositories = Depends(get_repos)):
+    review = repos.annotations.get_review(call_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="call has not been reviewed yet")
+    return review
+
+
+class ReviewRequest(BaseModel):
+    error_class_ids: list[str] = []
+    uncategorized_notes: list[str] = []
+    overall_note: str = ""
+    is_gold: bool = False
+
+
+@app.post("/api/calls/{call_id}/review")
+async def api_post_review(call_id: str, request: ReviewRequest, repos: Repositories = Depends(get_repos)):
+    repos.annotations.save_review(
+        call_id,
+        annotator=settings.annotator_name,
+        error_class_ids=request.error_class_ids,
+        uncategorized_notes=request.uncategorized_notes,
+        overall_note=request.overall_note,
+        is_gold=request.is_gold,
+    )
+    return repos.annotations.get_review(call_id)
+
+
+@app.get("/admin/annotate")
+async def admin_annotate_page():
+    # StaticFiles(html=True) below only auto-serves "index.html" for a bare
+    # directory path — "/admin/annotate" (no .html) needs its own route to
+    # reach admin/annotate.html, the Benevolent Dictator's dedicated page.
+    return FileResponse(ADMIN_DIR / "annotate.html")
+
+
+# Mounted last so it never shadows the /api/* or /admin/annotate routes
+# above. html=True serves admin/index.html for both "/admin" and "/admin/".
 app.mount("/admin", StaticFiles(directory=ADMIN_DIR, html=True), name="admin")
