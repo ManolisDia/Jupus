@@ -71,7 +71,11 @@ def confirm_field_answer(utterance: str, field_name: str, candidate_value: str) 
     )
 
 
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Domain half is stricter than the local part: rejects a leading/trailing/
+# repeated dot in the domain (e.g. "x@...com"), which a naive
+# "[^@\s]+\.[^@\s]+" would wrongly accept since dots aren't excluded from
+# that character class. Still a documented simplification, not full RFC 5322.
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 
 def validate_email(email: str) -> bool:
