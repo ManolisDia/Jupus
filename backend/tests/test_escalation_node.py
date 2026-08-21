@@ -64,6 +64,30 @@ def test_handoff_note_omits_unconfirmed_fields(repos, tmp_path):
     assert "Email: not captured" in note
 
 
+def test_no_acceptable_slot_from_booking_flows_into_escalation_note(repos, tmp_path):
+    # Integration point with Phase 4: node_booking sets escalation_reason on
+    # its own exit turn but doesn't write the handoff note itself — the
+    # NEXT turn is what actually routes into node_escalation, same as every
+    # other escalation_reason. Prove the two nodes hand off correctly rather
+    # than just asserting each one in isolation.
+    state = new_call_state("call-1")
+    state["stage"] = "escalation"
+    state["escalation_reason"] = "no_acceptable_slot"
+    state["practice_area"] = "tenancy"
+    state["requested_date"] = "2026-09-03"
+    state["requested_window"] = "morning"
+    with (
+        patch.object(tools, "HANDOFFS_DIR", tmp_path),
+        patch("backend.supervisor.tools.generate_call_summary", return_value="No slots worked for the caller."),
+    ):
+        result = _invoke(state, repos)
+
+    assert result["stage"] == "ended"
+    note = (tmp_path / "call-1.md").read_text(encoding="utf-8")
+    assert "no_acceptable_slot" in note
+    assert "No slots worked for the caller." in note
+
+
 def test_llm_failure_falls_back_to_minimal_handoff_note(repos, tmp_path):
     import json
 
