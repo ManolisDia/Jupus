@@ -28,5 +28,24 @@ Drafted explicitly in Phase 2 (not left as a vague "be helpful" prompt) because 
 ### No cap on session/call duration
 Considered a hard server-side timeout on call length (protects against a stuck loop or an abandoned tab with a live mic). Explicitly decided against — not part of this build. If cost or runaway-session risk becomes a real concern later (e.g. if a hosted demo is ever stood up), address it there specifically rather than constraining every local test call now.
 
+### Realtime model: staying on flagship `gpt-realtime-2.1`, tried and reverted from `gpt-realtime-2.1-mini`
+During Phase 1 live testing, replies sometimes took 7-8 seconds and felt sluggish. First
+hypothesis was model choice, so `gpt-realtime-2.1-mini` (OpenAI's faster/cheaper sibling,
+released alongside flagship in July 2026) was tried. The actual root cause turned out to be
+unrelated to the model: background noise (e.g. a sniff) was being misdetected as speech by
+`semantic_vad`, triggering false interruptions and re-generated responses that read as "long/
+slow" turns. Fixed by adding `session.audio.input.noise_reduction: {type: "near_field"}` and
+lowering `turn_detection.eagerness` to `"low"` (see `client/app.js`'s `sendSessionUpdate`) — not
+by a model swap. With the real cause fixed, reverted to flagship `gpt-realtime-2.1` since it was
+already working well once retested and there was no remaining evidence pointing at mini being
+needed.
+
+Rule 1 above still means Realtime never does classification, extraction, confidence scoring, or
+booking logic — all business reasoning is offloaded to Claude via the LangGraph supervisor — so
+mini remains a plausible cost/latency optimization worth trying again later if flagship proves
+slower than needed once real tool-call round trips exist (Phase 2+). Not revisited now — this
+was a live A/B, not a settled rejection; if revisited, `backend/app.py`'s `REALTIME_MODEL` is a
+one-line change.
+
 ### Realtime (OpenAI) + Supervisor (Claude) — two vendors, deliberately
 OpenAI Realtime has the most mature WebRTC/tool-calling/interrupt handling of the available realtime voice APIs. Claude powers the supervisor's reasoning (extraction, classification, summarization). Two API keys is an accepted tradeoff, documented clearly in the README since the brief requires documenting exactly what's needed to run the project.
