@@ -23,7 +23,21 @@ def test_invalid_email_forces_pending_despite_high_confidence():
     assert status == "pending_confirm"
 
 
-def test_valid_email_high_confidence_confirms():
+def test_valid_email_high_confidence_still_requires_confirmation():
+    # email/phone are never auto-trusted regardless of validity/confidence —
+    # a wrong value here means the firm can't reach the caller back
     value, status = apply_extraction("email", "a@b.com", 0.9)
     assert value == "a@b.com"
-    assert status == "confirmed"
+    assert status == "pending_confirm"
+
+
+def test_phone_high_confidence_still_requires_confirmation():
+    value, status = apply_extraction("phone", "5551234567", 0.9)
+    assert value == "5551234567"
+    assert status == "pending_confirm"
+
+
+def test_email_zero_confidence_discarded():
+    value, status = apply_extraction("email", None, 0)
+    assert value is None
+    assert status == "missing"

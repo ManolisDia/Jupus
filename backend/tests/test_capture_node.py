@@ -36,6 +36,25 @@ def test_field_priority_order_targets_name_first(repos):
     assert mock_extract.call_args.args[1] == "name"
 
 
+def test_high_confidence_valid_email_still_confirms_back(repos):
+    # email/phone are never auto-trusted, even at high confidence with a
+    # perfectly valid format — the caller must explicitly confirm first
+    state = _capture_state(
+        name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
+    )
+    with (
+        patch(
+            "backend.supervisor.tools.extract_field", return_value={"value": "a@b.com", "confidence": 0.95}
+        ),
+        patch(
+            "backend.supervisor.tools.generate_confirm_back", return_value="Did you say a@b.com?"
+        ) as mock_confirm_back,
+    ):
+        result = _invoke(state, repos)
+    assert result["caller_profile"]["email"]["status"] == "pending_confirm"
+    mock_confirm_back.assert_called_once()
+
+
 def test_confirmed_field_advances_to_next_target(repos):
     state = _capture_state()
     with patch(

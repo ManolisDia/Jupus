@@ -7,6 +7,18 @@ Short log of *why*, not *what* — so a later session doesn't quietly re-decide 
 ### `ask_supervisor` is one coarse dispatch tool, not many fine-grained tools on Realtime
 Realtime natively supports tool-calling, so it could call `book_consultation`/`check_availability`/etc. directly. We chose a single dispatch tool instead because Realtime models are tuned for naturalness/speed, not for reliably sequencing multi-step business logic (confidence handling, retries, booking conflict resolution) — that's exactly what this brief grades. Routing all of that through a separate Claude-driven LangGraph supervisor makes the logic deterministic, testable, and debuggable, at the cost of one extra hop of latency per "real" turn — mitigated with async dispatch (see below) rather than blocking.
 
+### email/phone are always confirmed back, regardless of confidence — supersedes PLAN.md's threshold-only description
+`apply_extraction` (`backend/supervisor/graph.py`) never returns `"confirmed"` for email/phone
+on first extraction, no matter how high the confidence or how well-formed the value looks — it
+always goes to `pending_confirm` and gets read back to the caller, only becoming `"confirmed"`
+once they explicitly say yes. `name`/`preferred_time` keep the original confidence-threshold
+behavior (≥0.75 auto-confirms). Decided after repeated live-testing failures during Phase 3: both
+the Realtime model's own transcription-to-argument pipeline and (independently) Claude's
+extraction confidence proved unreliable for catching malformed emails/phone numbers — see the
+entry below on `last_caller_utterance`. Since a wrong email/phone means the firm can't reach the
+caller back, the cost of always confirming (one extra turn per field) is worth it; a wrong
+name/time is comparatively low-stakes and doesn't need the same treatment.
+
 ### `last_caller_utterance` is authored by the Realtime model, not a raw ASR transcript
 Discovered during Phase 3 live testing: `ask_supervisor`'s `last_caller_utterance` argument is
 not a passthrough of what OpenAI's speech recognition literally heard — it's a string the

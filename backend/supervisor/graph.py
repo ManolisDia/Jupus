@@ -48,10 +48,15 @@ def _llm_failure_fallback(repos, state: CallState, node: str) -> dict:
 
 
 def apply_extraction(field_name: str, value, confidence: float):
+    # email/phone are always confirmed back to the caller before being
+    # accepted, regardless of extraction confidence or format validity —
+    # a wrong value here means we can't reach the caller back, so it's
+    # never auto-trusted. Only a genuinely empty extraction (confidence 0,
+    # field not present in the utterance at all) is discarded outright.
     if field_name in ("email", "phone"):
-        valid = tools.validate_email(value) if field_name == "email" else tools.validate_phone(value)
-        if not valid:
-            return value, "pending_confirm"
+        if confidence <= 0 or value is None:
+            return None, "missing"
+        return value, "pending_confirm"
     if confidence >= 0.75:
         return value, "confirmed"
     elif confidence >= 0.4:

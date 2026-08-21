@@ -258,9 +258,15 @@ Rules, always:
 3. If the caller asks to speak to a person, still call ask_supervisor —
    do not handle that yourself, and do not argue or try to talk them out
    of it.
-4. While waiting on ask_supervisor, you may say a brief natural
-   acknowledgment ("Let me check that for you" / "One moment") — keep it
-   to a few words, and never guess at what the answer will be.
+4. Never narrate that you're checking, looking something up, or
+   thinking — no "one moment," "let me check that for you," "just a
+   second," or anything similar. Do not promise a follow-up you can't
+   immediately deliver. If there's a brief pause before your next reply,
+   that's natural and fine — a person doesn't announce every small pause
+   either. When ask_supervisor returns, treat its reply as your next
+   conversational turn and flow straight into it, the way a person
+   continuing a conversation would — not as the payoff to an earlier
+   promise.
 5. When ask_supervisor returns a reply, speak it naturally in your own
    voice — you may lightly rephrase for tone, but never alter facts,
    names, dates, or numbers it gives you.
@@ -269,7 +275,7 @@ Rules, always:
    you'll check rather than guessing.
 ```
 
-**Rule 4's filler-phrase behavior needs empirical verification, not just trust**: whether the Realtime model can speak a short acknowledgment *and* emit the function call within the same turn (rather than only one or the other) depends on the exact behavior of the installed API version — confirm this live during Phase 2's manual testing below, not by assuming the instruction alone guarantees it. If it turns out the model can only do one or the other per turn, drop rule 4 rather than fight the platform, and rely on Phase 1's `semantic_vad` + Phase 5's non-blocking dispatch to keep the gap feeling natural instead.
+**Rule 4 was originally a filler-phrase allowance ("let me check that," "one moment") and was deliberately reversed** — live testing confirmed the model *could* speak an acknowledgment and call the tool in the same turn, but the actual experience was worse, not better: a spoken promise ("one moment") followed by dead air until the reply eventually arrives reads as more broken than a brief natural pause with no announcement at all. Rely on Phase 1's `semantic_vad` and Phase 5's non-blocking dispatch to keep any gap feeling human-paced; don't paper over it with a verbal placeholder. See `docs/DECISIONS.md`.
 
 - `sendSessionUpdate()` now includes exactly one tool:
   ```json
@@ -324,7 +330,7 @@ Also implement and pass `backend/tests/test_tracing.py` per `docs/phases/cross-c
 - [x] `pytest backend/tests/test_graph_transitions.py backend/tests/test_dispatcher.py backend/tests/test_seed_slots.py` — all pass.
 - [x] `session.update` sent by the client contains exactly one tool (`ask_supervisor`) with the schema above — confirm by inspecting the browser devtools network/data-channel log, not just by reading the source.
 - [x] Manual: ask a substantive legal question live (e.g. "can my landlord evict me for this") — confirm the agent does **not** answer it directly. Since the stub nodes in this phase return canned text, "correct" behavior here is any visibly generic/stub-sounding reply coming back through `ask_supervisor`, not a confident freelanced legal answer. If it answers directly without triggering the tool at all, the instructions text needs tightening before Phase 3 — don't proceed with a supervisor that Realtime is routing around.
-- [x] Manual: confirm whether rule 4's filler-phrase behavior actually works as one turn (spoken acknowledgment + function call together) or not, and note the result in `docs/known-issues/` or adjust the instructions text accordingly per the note above. (Confirmed working as one turn — spoken acknowledgment consistently accompanied the function call.)
+- [ ] Manual: after removing rule 4's filler-phrase allowance, confirm live that the agent no longer says "one moment"/"let me check" style acknowledgments, and that its next reply lands as a natural conversational continuation rather than dead air with no announcement at all — a silent pause is fine, a silent pause that *was* preceded by an unfulfilled verbal promise is what this change is fixing.
 - [x] Manual live test: start a call, say anything (content doesn't matter, nodes are stubs) — confirm you hear, in order across successive utterances: the greeting stub reply, then the routing stub reply, then the capture stub reply, then "You're all set. (stub)" from booking — proving the full chain (Realtime → data channel → `/bridge` WS → dispatcher → graph → WS → data channel → spoken reply) works end to end.
 - [x] Manual: backend log shows `CALL_STATES[call_id]["stage"]` progressing greeting → routing → capture → booking → ended across that same test call.
 - [x] Manual: `SELECT event_type, node FROM trace_events WHERE call_id=? ORDER BY seq` for that same test call shows a `node_entered`/`node_exited` pair for each of the four stub stages plus a final `call_ended`.

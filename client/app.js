@@ -10,6 +10,7 @@ let pc = null;
 let dataChannel = null;
 let localStream = null;
 let ws = null;
+let lastVerbatimTranscript = null;
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -57,9 +58,15 @@ Rules, always:
 3. If the caller asks to speak to a person, still call ask_supervisor —
    do not handle that yourself, and do not argue or try to talk them out
    of it.
-4. While waiting on ask_supervisor, you may say a brief natural
-   acknowledgment ("Let me check that for you" / "One moment") — keep it
-   to a few words, and never guess at what the answer will be.
+4. Never narrate that you're checking, looking something up, or
+   thinking — no "one moment," "let me check that for you," "just a
+   second," or anything similar. Do not promise a follow-up you can't
+   immediately deliver. If there's a brief pause before your next reply,
+   that's natural and fine — a person doesn't announce every small pause
+   either. When ask_supervisor returns, treat its reply as your next
+   conversational turn and flow straight into it, the way a person
+   continuing a conversation would — not as the payoff to an earlier
+   promise.
 5. When ask_supervisor returns a reply, speak it naturally in your own
    voice — you may lightly rephrase for tone, but never alter facts,
    names, dates, or numbers it gives you.
@@ -111,6 +118,7 @@ function sendSessionUpdate() {
         output: { voice: "marin" },
         input: {
           noise_reduction: { type: "near_field" },
+          transcription: { model: "gpt-transcribe" },
           turn_detection: {
             type: "semantic_vad",
             eagerness: "low",
@@ -193,6 +201,15 @@ async function startCall() {
         teardown("error: " + (parsed.error?.message || "realtime session error"));
         return;
       }
+      if (parsed.type === "conversation.item.input_audio_transcription.completed") {
+        // The verbatim ASR transcript of what the caller actually said —
+        // more trustworthy than the model's own last_caller_utterance
+        // argument, which has been observed "helpfully" completing
+        // malformed input (e.g. inventing an "@domain.com" the caller
+        // never said). See docs/DECISIONS.md.
+        lastVerbatimTranscript = parsed.transcript;
+        return;
+      }
       if (parsed.type === "response.function_call_arguments.done") {
         const args = JSON.parse(parsed.arguments);
         ws.send(
@@ -200,7 +217,7 @@ async function startCall() {
             type: "ask_supervisor",
             tool_call_id: parsed.call_id,
             reason: args.reason,
-            last_caller_utterance: args.last_caller_utterance,
+            last_caller_utterance: lastVerbatimTranscript ?? args.last_caller_utterance,
           })
         );
         return;
