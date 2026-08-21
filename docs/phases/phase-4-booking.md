@@ -187,8 +187,9 @@ Note: the `else` branch needs the original requested date to keep suggesting alt
 
 ## Definition of Done
 
-- [ ] `pytest backend/tests/test_booking_tools.py backend/tests/test_booking_node.py backend/tests/test_repository.py` — all pass.
-- [ ] Manual live call (happy path): request a date/window you've confirmed via the seed data is free — confirm the agent proposes it, reads back name/email/slot/area for confirmation, and on "yes" says a clear booking confirmation. Verify in the DB: `slots.is_booked=1` for that slot, `calls` row has `outcome='booked'`.
-- [ ] Manual live call (conflict path): request the specific 10am slot on day 1 for one of the three areas (deterministically pre-booked by the seed script) — confirm the agent offers an alternative instead of silently failing or booking the taken slot.
-- [ ] Manual live call (decline-twice path): reject two consecutive proposed slots — confirm the call escalates gracefully (`no_acceptable_slot`) rather than looping indefinitely.
-- [ ] Manual: attempt to book the same slot from two near-simultaneous calls (two browser tabs) — confirm the second caller gets offered an alternative rather than the app crashing or double-booking.
+- [x] `pytest backend/tests/test_sqlite_slot_repository.py backend/tests/test_booking_node.py backend/tests/test_repository.py` — all pass.
+- [x] Manual live call (happy path): request a date/window you've confirmed via the seed data is free — confirm the agent proposes it, reads back name/email/slot/area for confirmation, and on "yes" says a clear booking confirmation. Verify in the DB: `slots.is_booked=1` for that slot, `calls` row has `outcome='booked'`.
+- [x] Manual live call (conflict path): request the specific 10am slot on day 1 for one of the three areas (deterministically pre-booked by the seed script) — confirm the agent offers an alternative instead of silently failing or booking the taken slot.
+- [x] Manual live call (decline-twice path): reject two consecutive proposed slots — confirm the call escalates gracefully (`no_acceptable_slot`) rather than looping indefinitely.
+
+Confirmed live against the real OpenAI Realtime + Claude APIs. Several bugs surfaced only through live testing and were fixed within this phase branch (see commit history): `suggest_alternatives`' `id NOT IN (NULL)` silently matching zero rows, `extract_datetime` confidence being ignored (fabricated a proposal from an empty date), the capture-stage `preferred_time` field asking for a date the booking node immediately asked for again, and `confirm_field_answer`/`confirm_booking_answer` having no way to represent "I didn't understand" other than as a decline. The concurrent-double-booking manual check originally listed here was dropped by explicit product decision — the atomic `UPDATE ... WHERE is_booked=0` guard in `SQLiteSlotRepository.book` is still in place and covered by an `asyncio.gather` test matching the real single-event-loop deployment model.
