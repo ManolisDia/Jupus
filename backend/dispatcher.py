@@ -35,6 +35,7 @@ async def on_ask_supervisor(repos: Repositories, call_id: str, tool_call_id: str
 
     updated = GRAPH.invoke(state, config={"configurable": {"repos": repos}})
     CALL_STATES[call_id] = updated
+    logger.info("call_id=%s stage=%s -> %s", call_id, state["stage"], updated["stage"])
 
     if updated["stage"] == "ended":
         repos.trace.record_event(call_id, "call_ended", outcome=derive_outcome_label(updated))

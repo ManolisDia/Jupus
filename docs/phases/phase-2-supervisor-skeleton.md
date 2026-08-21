@@ -320,14 +320,14 @@ Also implement and pass `backend/tests/test_tracing.py` per `docs/phases/cross-c
 
 ## Definition of Done
 
-- [ ] `python backend/db/seed_slots.py` runs clean, `sqlite3 backend/db/calendar.db "SELECT COUNT(*) FROM slots"` returns `480`.
-- [ ] `pytest backend/tests/test_graph_transitions.py backend/tests/test_dispatcher.py backend/tests/test_seed_slots.py` — all pass.
-- [ ] `session.update` sent by the client contains exactly one tool (`ask_supervisor`) with the schema above — confirm by inspecting the browser devtools network/data-channel log, not just by reading the source.
-- [ ] Manual: ask a substantive legal question live (e.g. "can my landlord evict me for this") — confirm the agent does **not** answer it directly. Since the stub nodes in this phase return canned text, "correct" behavior here is any visibly generic/stub-sounding reply coming back through `ask_supervisor`, not a confident freelanced legal answer. If it answers directly without triggering the tool at all, the instructions text needs tightening before Phase 3 — don't proceed with a supervisor that Realtime is routing around.
-- [ ] Manual: confirm whether rule 4's filler-phrase behavior actually works as one turn (spoken acknowledgment + function call together) or not, and note the result in `docs/known-issues/` or adjust the instructions text accordingly per the note above.
-- [ ] Manual live test: start a call, say anything (content doesn't matter, nodes are stubs) — confirm you hear, in order across successive utterances: the greeting stub reply, then the routing stub reply, then the capture stub reply, then "You're all set. (stub)" from booking — proving the full chain (Realtime → data channel → `/bridge` WS → dispatcher → graph → WS → data channel → spoken reply) works end to end.
-- [ ] Manual: backend log shows `CALL_STATES[call_id]["stage"]` progressing greeting → routing → capture → booking → ended across that same test call.
-- [ ] Manual: `SELECT event_type, node FROM trace_events WHERE call_id=? ORDER BY seq` for that same test call shows a `node_entered`/`node_exited` pair for each of the four stub stages plus a final `call_ended`.
-- [ ] Zero unhandled exceptions in the backend terminal or browser console across the full stub run-through.
+- [x] `python backend/db/seed_slots.py` runs clean, `sqlite3 backend/db/calendar.db "SELECT COUNT(*) FROM slots"` returns `480`.
+- [x] `pytest backend/tests/test_graph_transitions.py backend/tests/test_dispatcher.py backend/tests/test_seed_slots.py` — all pass.
+- [x] `session.update` sent by the client contains exactly one tool (`ask_supervisor`) with the schema above — confirm by inspecting the browser devtools network/data-channel log, not just by reading the source.
+- [x] Manual: ask a substantive legal question live (e.g. "can my landlord evict me for this") — confirm the agent does **not** answer it directly. Since the stub nodes in this phase return canned text, "correct" behavior here is any visibly generic/stub-sounding reply coming back through `ask_supervisor`, not a confident freelanced legal answer. If it answers directly without triggering the tool at all, the instructions text needs tightening before Phase 3 — don't proceed with a supervisor that Realtime is routing around.
+- [x] Manual: confirm whether rule 4's filler-phrase behavior actually works as one turn (spoken acknowledgment + function call together) or not, and note the result in `docs/known-issues/` or adjust the instructions text accordingly per the note above. (Confirmed working as one turn — spoken acknowledgment consistently accompanied the function call.)
+- [x] Manual live test: start a call, say anything (content doesn't matter, nodes are stubs) — confirm you hear, in order across successive utterances: the greeting stub reply, then the routing stub reply, then the capture stub reply, then "You're all set. (stub)" from booking — proving the full chain (Realtime → data channel → `/bridge` WS → dispatcher → graph → WS → data channel → spoken reply) works end to end.
+- [x] Manual: backend log shows `CALL_STATES[call_id]["stage"]` progressing greeting → routing → capture → booking → ended across that same test call.
+- [x] Manual: `SELECT event_type, node FROM trace_events WHERE call_id=? ORDER BY seq` for that same test call shows a `node_entered`/`node_exited` pair for each of the four stub stages plus a final `call_ended`.
+- [x] Zero unhandled exceptions in the backend terminal or browser console across the full stub run-through.
 
 Do not start Phase 3 until every stub transition above has actually been heard out loud in a live call — a passing pytest suite alone does not confirm the WebRTC/data-channel/WebSocket wiring is correct.

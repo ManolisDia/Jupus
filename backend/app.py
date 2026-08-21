@@ -11,6 +11,7 @@ from backend import dispatcher
 from backend.config import settings
 from backend.db.repositories import Repositories, get_repositories
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()

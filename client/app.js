@@ -87,28 +87,27 @@ const ASK_SUPERVISOR_TOOL = {
 };
 
 function sendSessionUpdate() {
-  dataChannel.send(
-    JSON.stringify({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        instructions: SUPERVISOR_INSTRUCTIONS,
-        tools: [ASK_SUPERVISOR_TOOL],
-        audio: {
-          output: { voice: "marin" },
-          input: {
-            noise_reduction: { type: "near_field" },
-            turn_detection: {
-              type: "semantic_vad",
-              eagerness: "low",
-              create_response: true,
-              interrupt_response: true,
-            },
+  const payload = {
+    type: "session.update",
+    session: {
+      type: "realtime",
+      instructions: SUPERVISOR_INSTRUCTIONS,
+      tools: [ASK_SUPERVISOR_TOOL],
+      audio: {
+        output: { voice: "marin" },
+        input: {
+          noise_reduction: { type: "near_field" },
+          turn_detection: {
+            type: "semantic_vad",
+            eagerness: "low",
+            create_response: true,
+            interrupt_response: true,
           },
         },
       },
-    })
-  );
+    },
+  };
+  dataChannel.send(JSON.stringify(payload));
 }
 
 async function startCall() {
