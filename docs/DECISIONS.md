@@ -69,6 +69,26 @@ Drafted explicitly in Phase 2 (not left as a vague "be helpful" prompt) because 
 ### No filler acknowledgment ("let me check that" / "one moment") while waiting on `ask_supervisor` — reversed after live testing
 Originally the instructions allowed a short filler ("let me check that for you") while waiting on the supervisor, and Phase 2's DoD confirmed the Realtime model genuinely could speak that acknowledgment and call the tool in the same turn — so this wasn't a technical limitation. It was removed anyway: the actual caller experience of a spoken promise ("one moment") followed by dead air until the real reply eventually lands reads as *more* broken than a brief, unannounced pause. The fix isn't a better filler phrase, it's not narrating the wait at all — when the supervisor's reply arrives, it's delivered as the agent's next natural conversational turn, not as the payoff to an earlier promise. `semantic_vad` (Phase 1) and the non-blocking dispatcher (Phase 5) are what keep the actual gap feeling human-paced; the instructions no longer try to paper over it verbally.
 
+### `interrupt_response: false` — disabled after live testing dropped tool calls, not just audio
+The Phase 1 fix for `semantic_vad` misdetecting background noise as speech (see the flagship-model
+entry below) lowered `eagerness` and added `near_field` noise reduction, but kept
+`interrupt_response: true` for barge-in. During live Phase 5 testing, the same false-trigger
+pattern resurfaced with a worse consequence: `interrupt_response: true` cancels the in-flight
+response the instant any further speech is detected — and when that response was mid-way through
+building an `ask_supervisor` function call, the cancellation silently dropped the tool call
+entirely (confirmed via captured `response.function_call_arguments.delta` events that never
+reached a `.done`, and zero corresponding backend/Claude activity in `backend.log`). This read to
+the caller as the agent saying its canned line, then going dead — nothing said, nothing asked
+again, no recovery, on nearly every real (non-canned-greeting) turn. Fixed by setting
+`interrupt_response: false` in `client/app.js`'s `sendSessionUpdate`. This costs literal
+mid-sentence barge-in over the agent's own audio, but doesn't affect the Phase 5 async
+requirement (the caller speaking a follow-up while a supervisor call is in flight) — by that
+point the agent has already finished speaking and is idle waiting on the backend, so a new
+`speech_stopped` there starts a fresh response normally without needing an interruption.
+`client/app.js` also gained a `response.done` handler that retries once/twice via a bare
+`response.create` if a response ends `cancelled`/`incomplete` without ever completing a function
+call, as a backstop for whatever residual false-triggers still get through.
+
 ### No cap on session/call duration
 Considered a hard server-side timeout on call length (protects against a stuck loop or an abandoned tab with a live mic). Explicitly decided against — not part of this build. If cost or runaway-session risk becomes a real concern later (e.g. if a hosted demo is ever stood up), address it there specifically rather than constraining every local test call now.
 

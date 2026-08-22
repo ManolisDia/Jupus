@@ -90,14 +90,22 @@ def route_by_stage(state: CallState) -> str:
 
 
 def node_greeting(state: CallState, config: RunnableConfig) -> dict:
+    # No spoken reply of its own: the Realtime client already delivers the
+    # actual verbal greeting itself (per its own instructions), without ever
+    # calling ask_supervisor for it. This node's only job is the one-time
+    # stage bump so the caller's first real utterance — already sitting in
+    # this same invocation's transcript — gets classified by node_routing
+    # right away instead of being silently discarded for a turn. See
+    # dispatcher.process_supervisor_call, which chains straight into the
+    # next node when a call starts from "greeting" rather than treating
+    # this stage bump as a turn worth replying to on its own.
     repos = _repos(config)
     repos.trace.record_event(state["call_id"], "node_entered", node="greeting")
-    reply = "Thanks for calling — let me get you sorted."
     repos.trace.record_event(
         state["call_id"], "node_exited", node="greeting",
-        stage_from="greeting", stage_to="routing", pending_reply=reply,
+        stage_from="greeting", stage_to="routing", pending_reply=None,
     )
-    return {"stage": "routing", "consecutive_llm_failures": 0, **_agent_turn(reply)}
+    return {"stage": "routing", "consecutive_llm_failures": 0}
 
 
 def node_routing(state: CallState, config: RunnableConfig) -> dict:

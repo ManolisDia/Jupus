@@ -4,3 +4,4 @@ Bugs investigated but not solved — what was ruled out, failed workarounds, cur
 
 | Date | File | Summary |
 |---|---|---|
+| 2026-08-22 | [2026-08-22-001.md](2026-08-22-001.md) | Interrupted realtime response silently drops the `ask_supervisor` tool call — likely `semantic_vad`/`interrupt_response` race, no client-side recovery |

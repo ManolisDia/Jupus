@@ -6,6 +6,7 @@ from fastapi import WebSocket
 
 from backend.db.repositories import Repositories
 from backend.supervisor import tools
+from backend.supervisor.faq import match_faq
 from backend.supervisor.graph import GRAPH
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.state import CALL_STATES, CallState, get_or_create_state
@@ -57,7 +58,16 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             if is_explicit_human_request(utterance):
                 state["stage"] = "escalation"
                 state["escalation_reason"] = "explicit_request"
+            stage_before = state["stage"]
             updated = GRAPH.invoke(state, config={"configurable": {"repos": repos}})
+            if stage_before == "greeting" and updated["stage"] not in ("ended", "escalation"):
+                # node_greeting is a silent, content-blind stub (it only bumps
+                # the stage) — the caller's first real utterance is already in
+                # this turn's transcript and would otherwise sit unprocessed
+                # until the caller spoke again. Chain straight into the next
+                # node now, within the same dispatch, rather than treating the
+                # greeting stage-bump as a turn worth replying to on its own.
+                updated = GRAPH.invoke(updated, config={"configurable": {"repos": repos}})
             # Tag the deferred reply with the stage it resulted in, not the
             # stage it started from — a node that naturally advances the
             # stage (e.g. greeting -> routing) must not have its own reply
@@ -65,6 +75,17 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             # should only fire when a LATER, separately-dispatched turn has
             # since moved the conversation past this reply's own result.
             dispatch_stage = updated["stage"]
+            # Checked unconditionally against the caller's raw utterance for
+            # this turn, regardless of whether the node's own logic succeeded
+            # or failed — a caller can tack a genuine side-question ("...and
+            # are you open weekends?") onto an otherwise-successful utterance,
+            # and nothing node-specific (classify_practice_area, extract_field,
+            # etc.) ever looks at anything but the part it cares about. This
+            # is the one place every turn's reply passes through, so it's the
+            # one place that can catch a tangent no matter which node ran.
+            faq_answer = match_faq(utterance)
+            if faq_answer and updated.get("pending_reply"):
+                updated["pending_reply"] = f"{faq_answer} {updated['pending_reply']}"
             CALL_STATES[call_id] = updated
             repos.calls.upsert(updated)
             if updated["stage"] == "ended":

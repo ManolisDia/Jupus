@@ -11,6 +11,9 @@ let dataChannel = null;
 let localStream = null;
 let ws = null;
 let lastVerbatimTranscript = null;
+let toolCalledThisResponse = false;
+let cancelledRetryCount = 0;
+const MAX_CANCELLED_RETRIES = 2;
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -58,18 +61,33 @@ Rules, always:
 3. If the caller asks to speak to a person, still call ask_supervisor —
    do not handle that yourself, and do not argue or try to talk them out
    of it.
-4. Never narrate that you're checking, looking something up, or
+3a. Call ask_supervisor separately for each new thing the caller says —
+   never wait to combine two or more caller utterances into a single
+   call. If the caller says something new before you've replied to
+   their previous utterance, that is a fresh, separate call to
+   ask_supervisor with last_caller_utterance set to only that new
+   utterance, not a merge of it with anything said before.
+4. The instant you decide to call ask_supervisor, call it — as the very
+   first thing you do in your turn, before speaking any words out loud.
+   Never narrate that you're checking, looking something up, or
    thinking — no "one moment," "let me check that for you," "just a
-   second," or anything similar. Do not promise a follow-up you can't
-   immediately deliver. If there's a brief pause before your next reply,
-   that's natural and fine — a person doesn't announce every small pause
+   second," or anything similar, and never speak any other sentence
+   first either. Do not promise a follow-up you can't immediately
+   deliver. If there's a brief pause before your next reply, that's
+   natural and fine — a person doesn't announce every small pause
    either. When ask_supervisor returns, treat its reply as your next
    conversational turn and flow straight into it, the way a person
    continuing a conversation would — not as the payoff to an earlier
    promise.
-5. When ask_supervisor returns a reply, speak it naturally in your own
-   voice — you may lightly rephrase for tone, but never alter facts,
-   names, dates, or numbers it gives you.
+5. When ask_supervisor returns a reply, speak ONLY that reply, naturally
+   in your own voice — you may lightly rephrase for tone, but never
+   alter facts, names, dates, or numbers it gives you, and never append
+   a follow-up question or next step of your own after it, even if it
+   seems like the obvious next thing to ask. ask_supervisor decides what
+   to ask next, not you. After speaking its reply, stop and wait for the
+   caller to speak again — whatever they say next is a brand new
+   ask_supervisor call (per rule 3a), never something you answer
+   yourself just because you can guess what they're going to say.
 6. Never invent details about the firm, its lawyers, its fees, or the
    law itself. If you don't have an answer from ask_supervisor yet, say
    you'll check rather than guessing.
@@ -123,7 +141,7 @@ function sendSessionUpdate() {
             type: "semantic_vad",
             eagerness: "low",
             create_response: true,
-            interrupt_response: true,
+            interrupt_response: false,
           },
         },
       },
@@ -219,6 +237,8 @@ async function startCall() {
         return;
       }
       if (parsed.type === "response.function_call_arguments.done") {
+        toolCalledThisResponse = true;
+        cancelledRetryCount = 0;
         const args = JSON.parse(parsed.arguments);
         ws.send(
           JSON.stringify({
@@ -228,6 +248,30 @@ async function startCall() {
             last_caller_utterance: lastVerbatimTranscript ?? args.last_caller_utterance,
           })
         );
+        return;
+      }
+      if (parsed.type === "response.created") {
+        toolCalledThisResponse = false;
+        return;
+      }
+      if (parsed.type === "response.done") {
+        // Known failure mode (docs/known-issues/2026-08-22-001.md): semantic_vad's
+        // interrupt_response can cancel a response mid-generation, after the model
+        // has started but before response.function_call_arguments.done fires. That
+        // silently drops the turn with no recovery. If the response was genuinely
+        // cancelled/incomplete and never got as far as calling ask_supervisor,
+        // nudge the model to retry rather than leaving the caller in dead air.
+        const status = parsed.response?.status;
+        if (
+          (status === "cancelled" || status === "incomplete") &&
+          !toolCalledThisResponse &&
+          cancelledRetryCount < MAX_CANCELLED_RETRIES
+        ) {
+          cancelledRetryCount += 1;
+          dataChannel.send(JSON.stringify({ type: "response.create" }));
+        } else {
+          cancelledRetryCount = 0;
+        }
         return;
       }
       console.log("oai event", parsed);

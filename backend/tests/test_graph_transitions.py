@@ -66,9 +66,10 @@ def test_router_dispatches_to_correct_node_for_each_stage(stage, expected_node):
 
 def test_transcript_accumulates_across_multiple_invocations(repos):
     state = new_call_state("call-1")
-    # greeting node adds 1 agent turn, ends at stage="routing"
+    # greeting node is a silent stub — no reply/agent turn of its own, just
+    # a stage bump — so it adds 0 agent turns, ends at stage="routing"
     first_result = _invoke(state, repos)
-    assert len(first_result["transcript"]) == 1
+    assert len(first_result["transcript"]) == 0
 
     # dispatcher.py appends the caller's next utterance before re-invoking.
     # Jump straight to "booking" with a slot already proposed (single
@@ -83,10 +84,10 @@ def test_transcript_accumulates_across_multiple_invocations(repos):
     second_input["transcript"] = first_result["transcript"] + [
         {"role": "caller", "text": "in between", "ts": "t"}
     ]
-    assert len(second_input["transcript"]) == 2
+    assert len(second_input["transcript"]) == 1
 
-    # booking node adds 1 more agent turn — total should be all 3 turns,
+    # booking node adds 1 more agent turn — total should be both turns,
     # not just the 1 turn this second invocation itself added
     with patch("backend.supervisor.tools.confirm_booking_answer", return_value={"accepted": True}):
         second_result = _invoke(second_input, repos)
-    assert len(second_result["transcript"]) == 3
+    assert len(second_result["transcript"]) == 2

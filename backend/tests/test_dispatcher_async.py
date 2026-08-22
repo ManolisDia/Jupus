@@ -89,6 +89,111 @@ async def test_result_deferred_when_speaking(repos):
     assert dispatcher.DEFERRED["call-1"][0][0] == "tool-1"
 
 
+async def test_greeting_start_chains_into_next_node_same_dispatch(repos):
+    # Regression test: node_greeting is a silent, content-blind stage bump.
+    # A fresh call must not stop there and speak nothing useful for the
+    # caller's first real utterance — the dispatcher should immediately
+    # chain into whatever node "routing" (or wherever greeting leads)
+    # actually decides, within the same dispatch, so the caller gets a
+    # real reply to what they actually said on turn one.
+    _seed_state("call-1", stage="greeting")
+    dispatcher.SPEAKING["call-1"] = False
+    call_count = {"n": 0}
+
+    def fake_invoke(state, config=None):
+        call_count["n"] += 1
+        if state["stage"] == "greeting":
+            return {**state, "stage": "routing", "pending_reply": None}
+        return {**state, "stage": "capture", "pending_reply": "Got it — this falls under employment law."}
+
+    with (
+        patch("backend.dispatcher.GRAPH.invoke", side_effect=fake_invoke),
+        patch("backend.dispatcher.send_over_bridge") as spy,
+    ):
+        await process_supervisor_call(repos, "call-1", "tool-1", "I need help, my boss fired me")
+
+    assert call_count["n"] == 2
+    spy.assert_called_once_with("call-1", "tool-1", "Got it — this falls under employment law.")
+    assert CALL_STATES["call-1"]["stage"] == "capture"
+
+
+async def test_greeting_chain_not_triggered_when_already_past_greeting(repos):
+    _seed_state("call-1", stage="routing")
+    dispatcher.SPEAKING["call-1"] = False
+    call_count = {"n": 0}
+
+    def fake_invoke(state, config=None):
+        call_count["n"] += 1
+        return {**state, "stage": "capture", "pending_reply": "ok"}
+
+    with patch("backend.dispatcher.GRAPH.invoke", side_effect=fake_invoke):
+        await process_supervisor_call(repos, "call-1", "tool-1", "hi")
+
+    assert call_count["n"] == 1
+
+
+async def test_greeting_chain_not_triggered_when_explicit_request_escalates(repos):
+    # is_explicit_human_request forces stage to "escalation" before the
+    # graph ever sees "greeting" — the chain must not fire an extra invoke
+    # on top of that real escalation.
+    _seed_state("call-1", stage="greeting")
+    dispatcher.SPEAKING["call-1"] = False
+    call_count = {"n": 0}
+
+    def fake_invoke(state, config=None):
+        call_count["n"] += 1
+        return {**state, "stage": "ended", "pending_reply": "I've passed this to our team."}
+
+    with patch("backend.dispatcher.GRAPH.invoke", side_effect=fake_invoke):
+        await process_supervisor_call(repos, "call-1", "tool-1", "let me talk to a person")
+
+    assert call_count["n"] == 1
+
+
+async def test_faq_tangent_answered_even_when_turn_otherwise_succeeds(repos):
+    # Regression test: a caller utterance can carry BOTH real signal (that a
+    # node correctly acts on) AND an unrelated side-question in the same
+    # breath — e.g. "...my boss is trying to fire me... are you open
+    # weekends?" classifies fine as employment, but nothing node-specific
+    # ever looks at the weekends part. The FAQ check must run against the
+    # raw utterance regardless of whether the node's own logic succeeded.
+    _seed_state("call-1", stage="routing")
+    dispatcher.SPEAKING["call-1"] = False
+
+    with (
+        patch(
+            "backend.dispatcher.GRAPH.invoke",
+            return_value={**CALL_STATES["call-1"], "stage": "capture", "pending_reply": "Got it — employment law."},
+        ),
+        patch("backend.dispatcher.send_over_bridge") as spy,
+    ):
+        await process_supervisor_call(
+            repos, "call-1", "tool-1",
+            "My boss is trying to fire me. Also, are you open on weekends?",
+        )
+
+    spy.assert_called_once()
+    delivered_reply = spy.call_args.args[2]
+    assert "Monday to Friday" in delivered_reply
+    assert "Got it — employment law." in delivered_reply
+
+
+async def test_faq_not_triggered_for_unrelated_utterance(repos):
+    _seed_state("call-1", stage="routing")
+    dispatcher.SPEAKING["call-1"] = False
+
+    with (
+        patch(
+            "backend.dispatcher.GRAPH.invoke",
+            return_value={**CALL_STATES["call-1"], "stage": "capture", "pending_reply": "Got it — employment law."},
+        ),
+        patch("backend.dispatcher.send_over_bridge") as spy,
+    ):
+        await process_supervisor_call(repos, "call-1", "tool-1", "My boss is trying to fire me.")
+
+    spy.assert_called_once_with("call-1", "tool-1", "Got it — employment law.")
+
+
 async def test_deferred_result_delivered_on_speech_stopped(repos):
     _seed_state("call-1", stage="routing")
     dispatcher.DEFERRED["call-1"] = [("tool-1", "queued reply", "routing", time.monotonic())]

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
 from backend import dispatcher
@@ -25,6 +27,15 @@ def test_bridge_round_trip_and_disconnect_marks_call_abandoned():
     app.dependency_overrides[get_repos] = lambda: fake_repos
     client = TestClient(app)
 
+    # A fresh call now chains greeting straight into the (real, Claude-backed)
+    # routing node within the same dispatch — mock classification so this
+    # test stays deterministic and network-free like the rest of the suite.
+    classify_patch = patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "unclear", "confidence": 0.2},
+    )
+    classify_patch.start()
+
     try:
         with client.websocket_connect("/bridge?call_id=test-call") as ws:
             ws.send_json(
@@ -46,6 +57,7 @@ def test_bridge_round_trip_and_disconnect_marks_call_abandoned():
         assert CALL_STATES["test-call"]["stage"] == "ended"
         assert fake_repos.calls.get("test-call")["outcome"] == "abandoned"
     finally:
+        classify_patch.stop()
         app.dependency_overrides.pop(get_repos, None)
         _clear_dispatcher_state()
 
@@ -55,6 +67,17 @@ def test_bridge_relays_speech_started_and_stopped():
     fake_repos = _override_repos()
     app.dependency_overrides[get_repos] = lambda: fake_repos
     client = TestClient(app)
+
+    # This test is about the SPEAKING/DEFERRED plumbing, not classification —
+    # but a fresh call now chains greeting straight into the (real,
+    # Claude-backed) routing node within the same dispatch, so mock
+    # classify_practice_area to keep this test's timing assertion about
+    # dispatcher behavior, not live API latency.
+    classify_patch = patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "unclear", "confidence": 0.2},
+    )
+    classify_patch.start()
 
     try:
         with client.websocket_connect("/bridge?call_id=test-call-2") as ws:
@@ -78,5 +101,6 @@ def test_bridge_relays_speech_started_and_stopped():
             response = ws.receive_json()
             assert response["type"] == "supervisor_result"
     finally:
+        classify_patch.stop()
         app.dependency_overrides.pop(get_repos, None)
         _clear_dispatcher_state()
