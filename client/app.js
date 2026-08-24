@@ -1,5 +1,6 @@
-const BACKEND_URL = "http://localhost:8000";
-const BRIDGE_WS_URL = "ws://localhost:8000/bridge";
+const BACKEND_URL = window.JUPUS_BACKEND_URL;
+const BRIDGE_WS_URL = window.JUPUS_BRIDGE_WS_URL;
+const ACCESS_TOKEN = window.JUPUS_ACCESS_TOKEN || "";
 const REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
 const startBtn = document.getElementById("start-call");
@@ -395,18 +396,23 @@ async function startCall() {
     callId = crypto.randomUUID();
     showCallIdChip(callId);
 
-    const sessionResp = await fetch(`${BACKEND_URL}/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ call_id: callId }),
-    });
+    const sessionResp = await fetch(
+      `${BACKEND_URL}/session${ACCESS_TOKEN ? `?access_token=${ACCESS_TOKEN}` : ""}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ call_id: callId }),
+      }
+    );
     if (!sessionResp.ok) {
       const body = await sessionResp.json().catch(() => ({}));
       throw new Error(body.error || `session request failed (${sessionResp.status})`);
     }
     const { client_secret: clientSecret } = await sessionResp.json();
 
-    ws = new WebSocket(`${BRIDGE_WS_URL}?call_id=${callId}`);
+    ws = new WebSocket(
+      `${BRIDGE_WS_URL}?call_id=${callId}${ACCESS_TOKEN ? `&access_token=${ACCESS_TOKEN}` : ""}`
+    );
     ws.onmessage = (e) => {
       const parsed = JSON.parse(e.data);
       if (parsed.type === "call_state") {

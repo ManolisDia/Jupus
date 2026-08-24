@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     # local tool, not a real auth system; see docs/benevolent_dictator.md).
     annotator_name: str = "benevolent_dictator"
 
+    # Phase 9 (hosted deployment) — both Optional, both None for local dev
+    # (where the gate/CORS-tightening below simply don't apply).
+    jupus_access_token: Optional[str] = None
+    public_client_origin: Optional[str] = None  # e.g. "https://<project>.web.app"
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
