@@ -11,10 +11,6 @@ let dataChannel = null;
 let localStream = null;
 let ws = null;
 let lastVerbatimTranscript = null;
-let toolCalledThisResponse = false;
-let cancelledRetryCount = 0;
-let responseActive = false;
-const MAX_CANCELLED_RETRIES = 2;
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -134,7 +130,7 @@ function sendSessionUpdate() {
       instructions: SUPERVISOR_INSTRUCTIONS,
       tools: [ASK_SUPERVISOR_TOOL],
       audio: {
-        output: { voice: "marin" },
+        output: { voice: "marin", speed: 1.5 },
         input: {
           noise_reduction: { type: "near_field" },
           transcription: { model: "gpt-transcribe" },
@@ -238,8 +234,6 @@ async function startCall() {
         return;
       }
       if (parsed.type === "response.function_call_arguments.done") {
-        toolCalledThisResponse = true;
-        cancelledRetryCount = 0;
         const args = JSON.parse(parsed.arguments);
         ws.send(
           JSON.stringify({
@@ -249,35 +243,6 @@ async function startCall() {
             last_caller_utterance: lastVerbatimTranscript ?? args.last_caller_utterance,
           })
         );
-        return;
-      }
-      if (parsed.type === "response.created") {
-        toolCalledThisResponse = false;
-        responseActive = true;
-        return;
-      }
-      if (parsed.type === "response.done") {
-        responseActive = false;
-        // Known failure mode (docs/known-issues/2026-08-22-001.md): semantic_vad's
-        // interrupt_response can cancel a response mid-generation, after the model
-        // has started but before response.function_call_arguments.done fires. That
-        // can drop the turn with no recovery. BUT a cancellation is usually caused
-        // by the caller's own next utterance, which the API already auto-creates a
-        // new response for (create_response: true) — retrying on top of that would
-        // collide ("Conversation already has an active response in progress").
-        // Only retry when nothing else has already picked it up.
-        const status = parsed.response?.status;
-        if (
-          (status === "cancelled" || status === "incomplete") &&
-          !toolCalledThisResponse &&
-          !responseActive &&
-          cancelledRetryCount < MAX_CANCELLED_RETRIES
-        ) {
-          cancelledRetryCount += 1;
-          dataChannel.send(JSON.stringify({ type: "response.create" }));
-        } else {
-          cancelledRetryCount = 0;
-        }
         return;
       }
       console.log("oai event", parsed);

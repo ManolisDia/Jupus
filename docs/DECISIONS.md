@@ -92,14 +92,23 @@ an active response in progress") and the session errors out, tearing down the ca
 worse failure than the one being fixed, and directly breaks the scenario the async dispatcher
 exists to support.
 
-Kept `interrupt_response: true`. The actual fix is the `response.done` handler in
-`client/app.js`: on `status: "cancelled"`/`"incomplete"` with no completed function call, it
-retries via a bare `response.create` — but only when nothing else has already claimed the
-response slot (tracked via a `responseActive` flag, set on `response.created` and cleared on
-`response.done`). Since an interruption caused by the caller's own next utterance already gets a
-new response auto-created by the API, this guard makes the retry a no-op in that case (correct —
-nothing to recover) and only fires for a genuine spurious cancellation with no follow-up speech to
-pick it up.
+Kept `interrupt_response: true`. Second fix attempt added a `response.done` handler that retried
+via a bare `response.create` when a response ended `cancelled`/`incomplete` with no completed
+function call — guarded by a `responseActive` flag (set on `response.created`, cleared on
+`response.done`) meant to skip the retry when the caller's own next utterance had already gotten
+its own auto-created response. Also reverted: `responseActive` is a single shared boolean, not
+scoped per response ID. If the interrupting utterance's `response.created` arrives before the
+cancelled response's own `response.done` — plausible, event ordering isn't guaranteed — the `done`
+handler clears the flag to `false` even though a *different*, newer response is genuinely active,
+and the retry fires `response.create` on top of it, reproducing the exact same
+"already has an active response in progress" error live testing kept hitting.
+
+Removed the retry entirely rather than attempt per-response-ID tracking blind (this session has no
+way to observe the actual client-side event stream live, only reconstruct it after the fact from
+what the user reports and a manually-armed capture — not reliable enough to get a racy fix right).
+Net position: `interrupt_response: true` for real barge-in, no client-side retry-on-cancel at all.
+Losing an occasional turn to a rare spurious `semantic_vad` cancellation (caller has to repeat
+themselves) is a far smaller failure than the retry's own risk of crashing the whole call.
 
 ### No cap on session/call duration
 Considered a hard server-side timeout on call length (protects against a stuck loop or an abandoned tab with a live mic). Explicitly decided against — not part of this build. If cost or runaway-session risk becomes a real concern later (e.g. if a hosted demo is ever stood up), address it there specifically rather than constraining every local test call now.
