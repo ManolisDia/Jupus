@@ -47,6 +47,9 @@ def verify_access_token(access_token: Optional[str] = None) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing access token")
 
 
+ADMIN_TOKEN_COOKIE = "jupus_admin_token"
+
+
 @app.middleware("http")
 async def admin_access_gate(request: Request, call_next):
     # Gates /admin and /admin/annotate behind the same shared-secret query
@@ -54,10 +57,21 @@ async def admin_access_gate(request: Request, call_next):
     # jupus_access_token is unset. Scoped to a single middleware rather than
     # a per-route dependency since StaticFiles serves many files under the
     # /admin mount.
+    #
+    # The browser's own follow-up requests for /admin's JS/CSS assets never
+    # carry the ?access_token= query param (only the link a person is given
+    # does) — a query-param-only check 401s every one of those and the page
+    # never finishes loading. A cookie set on the first successful
+    # query-param request covers those same-origin asset requests too.
     if settings.jupus_access_token and request.url.path.startswith("/admin"):
         access_token = request.query_params.get("access_token")
-        if access_token != settings.jupus_access_token:
+        cookie_token = request.cookies.get(ADMIN_TOKEN_COOKIE)
+        if access_token != settings.jupus_access_token and cookie_token != settings.jupus_access_token:
             return PlainTextResponse("invalid or missing access token", status_code=401)
+        response = await call_next(request)
+        if access_token == settings.jupus_access_token and cookie_token != settings.jupus_access_token:
+            response.set_cookie(ADMIN_TOKEN_COOKIE, access_token, httponly=True, samesite="lax")
+        return response
     return await call_next(request)
 
 REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
@@ -117,6 +131,12 @@ class BridgeMessage(BaseModel):
     tool_call_id: Optional[str] = None
     reason: Optional[str] = None
     last_caller_utterance: Optional[str] = None
+    # Phase 11 (latency + cost instrumentation)
+    ms_since_reply_delivered: Optional[int] = None
+    input_audio_tokens: Optional[int] = None
+    output_audio_tokens: Optional[int] = None
+    input_text_tokens: Optional[int] = None
+    output_text_tokens: Optional[int] = None
 
 
 @app.websocket("/bridge")
@@ -264,6 +284,16 @@ async def api_call_detail(call_id: str, repos: Repositories = Depends(get_repos)
 @app.get("/api/calls/{call_id}/trace")
 async def api_call_trace(call_id: str, repos: Repositories = Depends(get_repos)):
     return repos.trace.get_trace(call_id)
+
+
+@app.get("/api/calls/{call_id}/latency")
+async def api_call_latency(call_id: str, repos: Repositories = Depends(get_repos)):
+    from eval.insights_agent import _cost_for_call, _stage_durations_for_call
+
+    events = repos.trace.get_trace(call_id)
+    if not events:
+        raise HTTPException(status_code=404, detail="call not found")
+    return {"stages": _stage_durations_for_call(events), "cost": _cost_for_call(events)}
 
 
 @app.get("/api/eval/summary")

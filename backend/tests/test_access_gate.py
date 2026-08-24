@@ -113,3 +113,21 @@ def test_admin_routes_gated_the_same_way(gated):
         assert client.get(f"/admin?access_token={gated}").status_code == 200
     finally:
         app.dependency_overrides.pop(get_repos, None)
+
+
+def test_admin_asset_requests_pass_via_cookie_after_the_first_query_param_hit(gated):
+    # The browser's own follow-up requests for /admin's JS/CSS never carry
+    # ?access_token= — only the link a person is given does. Without the
+    # cookie fallback these 401 and the page never finishes loading.
+    repos = _override_repos()
+    app.dependency_overrides[get_repos] = lambda: repos
+    client = TestClient(app)
+    try:
+        first = client.get(f"/admin?access_token={gated}")
+        assert first.status_code == 200
+        assert "jupus_admin_token" in client.cookies  # set via the redirect hop's Set-Cookie
+
+        asset = client.get("/admin/app.js")  # no query param, cookie only
+        assert asset.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_repos, None)
