@@ -79,4 +79,8 @@ CREATE TABLE trace_events (
     node TEXT,
     payload_json TEXT NOT NULL
 );
-CREATE INDEX idx_trace_events_call_seq ON trace_events(call_id, seq);
+-- UNIQUE, not just an index: a duplicate (call_id, seq) means the seq_lock
+-- in SQLiteTraceRepository.record_event was bypassed somehow — this turns
+-- that into a loud, immediate failure instead of silently corrupting trace
+-- ordering (docs/code-review-2026-08-24.md finding #2).
+CREATE UNIQUE INDEX idx_trace_events_call_seq ON trace_events(call_id, seq);

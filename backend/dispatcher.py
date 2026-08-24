@@ -220,12 +220,21 @@ def broadcast_call_state(call_id: str) -> None:
     asyncio.create_task(_send_json_safely(ws, call_state_snapshot(state), call_id))
 
 
-def mark_call_abandoned(repos: Repositories, call_id: str) -> None:
-    state = CALL_STATES.get(call_id)
-    if state and state["stage"] != "ended":
-        state["stage"] = "ended"
-        repos.calls.upsert(state, outcome_override="abandoned")
-    repos.trace.record_event(call_id, "call_abandoned")
-    CONNECTIONS.pop(call_id, None)
-    SPEAKING.pop(call_id, None)
-    DEFERRED.pop(call_id, None)
+async def mark_call_abandoned(repos: Repositories, call_id: str) -> None:
+    # Must hold the same per-call lock process_supervisor_call holds while
+    # mutating CALL_STATES/writing the outcome — otherwise a disconnect
+    # landing mid-turn (GRAPH.invoke can run for seconds) races the
+    # in-flight turn: whichever of the two writes CALL_STATES[call_id] and
+    # calls repos.calls.upsert() second silently wins, which can revert an
+    # abandoned call back to "in progress" or overwrite a real outcome with
+    # "abandoned" depending on timing. See docs/code-review-2026-08-24.md
+    # finding #1.
+    async with get_lock(call_id):
+        state = CALL_STATES.get(call_id)
+        if state and state["stage"] != "ended":
+            state["stage"] = "ended"
+            repos.calls.upsert(state, outcome_override="abandoned")
+        repos.trace.record_event(call_id, "call_abandoned")
+        CONNECTIONS.pop(call_id, None)
+        SPEAKING.pop(call_id, None)
+        DEFERRED.pop(call_id, None)
