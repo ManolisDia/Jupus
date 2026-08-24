@@ -13,6 +13,7 @@ let ws = null;
 let lastVerbatimTranscript = null;
 let toolCalledThisResponse = false;
 let cancelledRetryCount = 0;
+let responseActive = false;
 const MAX_CANCELLED_RETRIES = 2;
 
 function setStatus(message) {
@@ -141,7 +142,7 @@ function sendSessionUpdate() {
             type: "semantic_vad",
             eagerness: "low",
             create_response: true,
-            interrupt_response: false,
+            interrupt_response: true,
           },
         },
       },
@@ -252,19 +253,24 @@ async function startCall() {
       }
       if (parsed.type === "response.created") {
         toolCalledThisResponse = false;
+        responseActive = true;
         return;
       }
       if (parsed.type === "response.done") {
+        responseActive = false;
         // Known failure mode (docs/known-issues/2026-08-22-001.md): semantic_vad's
         // interrupt_response can cancel a response mid-generation, after the model
         // has started but before response.function_call_arguments.done fires. That
-        // silently drops the turn with no recovery. If the response was genuinely
-        // cancelled/incomplete and never got as far as calling ask_supervisor,
-        // nudge the model to retry rather than leaving the caller in dead air.
+        // can drop the turn with no recovery. BUT a cancellation is usually caused
+        // by the caller's own next utterance, which the API already auto-creates a
+        // new response for (create_response: true) — retrying on top of that would
+        // collide ("Conversation already has an active response in progress").
+        // Only retry when nothing else has already picked it up.
         const status = parsed.response?.status;
         if (
           (status === "cancelled" || status === "incomplete") &&
           !toolCalledThisResponse &&
+          !responseActive &&
           cancelledRetryCount < MAX_CANCELLED_RETRIES
         ) {
           cancelledRetryCount += 1;
