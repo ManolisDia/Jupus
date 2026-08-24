@@ -60,7 +60,20 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
                 state["stage"] = "escalation"
                 state["escalation_reason"] = "explicit_request"
             stage_before = state["stage"]
-            updated = GRAPH.invoke(state, config={"configurable": {"repos": repos}})
+            # GRAPH.invoke is synchronous and its node functions make real
+            # blocking Claude/Anthropic SDK calls with no internal await —
+            # run it off the event loop via asyncio.to_thread so the /bridge
+            # WebSocket can keep receiving speech_started/speech_stopped VAD
+            # events (and other calls' messages) while a tool call is in
+            # flight. Without this, the event loop is fully frozen for the
+            # duration of every real Claude call, and deliver_or_defer's
+            # SPEAKING check always sees stale state — the deferred-reply
+            # path (see deliver_or_defer/drain_deferred below) never
+            # actually triggers against real timing, only in tests that set
+            # SPEAKING directly.
+            updated = await asyncio.to_thread(
+                GRAPH.invoke, state, config={"configurable": {"repos": repos}}
+            )
             if stage_before == "greeting" and updated["stage"] not in ("ended", "escalation"):
                 # node_greeting is a silent, content-blind stub (it only bumps
                 # the stage) — the caller's first real utterance is already in
@@ -68,7 +81,9 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
                 # until the caller spoke again. Chain straight into the next
                 # node now, within the same dispatch, rather than treating the
                 # greeting stage-bump as a turn worth replying to on its own.
-                updated = GRAPH.invoke(updated, config={"configurable": {"repos": repos}})
+                updated = await asyncio.to_thread(
+                    GRAPH.invoke, updated, config={"configurable": {"repos": repos}}
+                )
             # Tag the deferred reply with the stage it resulted in, not the
             # stage it started from — a node that naturally advances the
             # stage (e.g. greeting -> routing) must not have its own reply
