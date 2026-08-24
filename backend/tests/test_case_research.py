@@ -97,6 +97,15 @@ def test_research_deliver_treats_unresolved_background_task_as_no_citation(repos
 # --- dispatcher._search_statutes_in_background ---------------------------
 
 
+async def test_search_statute_candidates_is_traced(repos):
+    with patch("backend.supervisor.tools.search_statute_candidates", return_value=[]):
+        await dispatcher._search_statutes_in_background(repos, "call-traced", "tenancy", "some utterance")
+    events = repos.trace.get_trace("call-traced")
+    event_types = [(e["event_type"], e["payload"].get("tool_name")) for e in events]
+    assert ("tool_call_start", "search_statute_candidates") in event_types
+    assert ("tool_call_end", "search_statute_candidates") in event_types
+
+
 async def test_search_statutes_in_background_rejects_id_not_in_candidates(repos):
     fake_candidates = [
         {"id": "tenancy-poe1977-s5", "citation": "c1", "text": "t1", "score": 5.0, "jurisdiction": "x", "topic_tags": []},
