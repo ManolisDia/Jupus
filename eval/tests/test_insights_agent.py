@@ -157,6 +157,29 @@ def test_run_classification_pass_writes_one_row_per_flag():
     assert len(repos.evals.get_error_flags("c2")) == 2
 
 
+def test_run_classification_pass_skips_failed_call_without_aborting_batch():
+    # A call whose judge call fails twice in a row (e.g. StopIteration from
+    # a malformed/empty Claude response - the exact failure hit live against
+    # a real call) must not abort the rest of the batch. Regression test for
+    # a real bug: run_eval.py's classification loop used to have zero
+    # per-call error handling, so one bad call crashed the whole script and
+    # silently skipped every call after it.
+    repos = _repos()
+    calls = [_call(outcome="booked", call_id="fails"), _call(outcome="booked", call_id="fine")]
+    with patch(
+        "backend.supervisor.tools.classify_call_errors",
+        side_effect=[StopIteration(), StopIteration(), {"flags": [{"error_class_id": "repetition", "confidence": 0.9, "evidence": "x"}]}],
+    ):
+        results = run_classification_pass(repos, calls, "label-a")
+
+    assert results == [
+        {"call_id": "fails", "flags": [], "classification_failed": True},
+        {"call_id": "fine", "flags": [{"error_class_id": "repetition", "confidence": 0.9, "evidence": "x"}]},
+    ]
+    assert repos.evals.get_error_flags("fails") == []
+    assert len(repos.evals.get_error_flags("fine")) == 1
+
+
 def test_compute_error_rates_includes_zero_rate_classes():
     repos = _repos()
     calls = [_call(outcome="booked", call_id="c1"), _call(outcome="escalated", call_id="c2")]

@@ -47,6 +47,9 @@ def run(repos: Repositories, label: str, calls_mode: str = "new") -> dict:
     print(json.dumps(deterministic, indent=2))
 
     batch_results = run_classification_pass(repos, calls, label)
+    failed = [r["call_id"] for r in batch_results if r.get("classification_failed")]
+    if failed:
+        print(f"\n{len(failed)} call(s) FAILED classification and were skipped (see logs): {failed}")
 
     error_rates = compute_error_rates(repos, label)
     print("\nError rates:")

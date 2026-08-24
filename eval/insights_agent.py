@@ -10,14 +10,17 @@ through the injected `Repositories` / `TraceRepository`.
 """
 
 import json
+import logging
 from datetime import datetime
 from typing import Optional
 
 from backend.db.repositories import Repositories
 from backend.db.repositories.base import TraceRepository
 from backend.supervisor import tools
-from backend.supervisor.llm_utils import call_claude_tool
+from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from eval.error_classes import get_active_error_classes
+
+logger = logging.getLogger(__name__)
 
 
 def booking_success_rate(calls: list[dict]) -> float:
@@ -120,10 +123,20 @@ def run_classification_pass(repos: Repositories, calls: list[dict], eval_run_lab
     for call in calls:
         call_id = call["call_id"]
         trace = repos.trace.get_trace(call_id)
-        classification = call_claude_tool(
-            repos.trace, call_id, "eval_judge", "classify_call_errors",
-            tools.classify_call_errors, call, trace, error_classes,
-        )
+        try:
+            classification = call_claude_tool(
+                repos.trace, call_id, "eval_judge", "classify_call_errors",
+                tools.classify_call_errors, call, trace, error_classes,
+            )
+        except LLMCallFailed as e:
+            # One call's judge call failing (e.g. a malformed/empty Claude
+            # response) must not abort the whole batch — every other call in
+            # this run still deserves its classification. llm_call_failed is
+            # already recorded in this call's own trace by call_claude_tool;
+            # just log and move on rather than losing the rest of the batch.
+            logger.warning("classify_call_errors failed for call_id=%s: %s — skipping", call_id, e)
+            results.append({"call_id": call_id, "flags": [], "classification_failed": True})
+            continue
         flags = classification.get("flags", [])
         if flags:
             repos.evals.add_error_flags(call_id, flags, eval_run_label)
