@@ -59,7 +59,13 @@ ERROR_CLASSES: list[dict] = [
             "without an actual read-back-and-assent turn in the transcript. This is a "
             "hard invariant the architecture cares about — the eval agent is the "
             "automated check that the invariant is actually holding in practice, not "
-            "just in the code review."
+            "just in the code review. Does NOT apply to \"name\"/\"preferred_time\" "
+            "auto-confirming at >=0.75 extraction confidence with no read-back turn — "
+            "that's the documented, deliberate design (docs/DECISIONS.md: a wrong name/time "
+            "is low-stakes, unlike email/phone), not a violation. Only flag: email/phone "
+            "treated as confirmed without an explicit read-back-and-assent turn (they must "
+            "always get one, regardless of confidence), or a booking/name/time field "
+            "auto-confirmed below the 0.75 threshold."
         ),
     },
 ]
