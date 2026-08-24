@@ -59,19 +59,22 @@ async def _turn(repos, call_id, tool_call_id, utterance):
 async def test_scenario_s1_info_only(repos):
     call_id = "scenario-s1"
 
-    # Turn 1: greeting -> routing (greeting node makes no Claude call itself)
-    await _turn(
-        repos, call_id, "tool-1",
-        "I got let go from my job last week and I'm not sure if that was legal.",
-    )
-    assert CALL_STATES[call_id]["stage"] == "routing"
-
-    # Turn 2: routing -> capture, classify_practice_area mocked per docs/scenarios.md
+    # Turn 1: greeting -> routing -> capture, chained into a single dispatch
+    # per docs/fixes/2026-08-22-001.md (node_greeting no longer stalls the
+    # caller's first real utterance) — classify_practice_area must be mocked
+    # from this first turn now, not the second.
     with patch(
         "backend.supervisor.tools.classify_practice_area",
         return_value={"area": "employment", "confidence": 0.9},
     ):
-        await _turn(repos, call_id, "tool-2", "Just info for now, thanks.")
+        await _turn(
+            repos, call_id, "tool-1",
+            "I got let go from my job last week and I'm not sure if that was legal.",
+        )
+    assert CALL_STATES[call_id]["stage"] == "capture"
+
+    # Turn 2: exercise capture with a non-informative reply
+    await _turn(repos, call_id, "tool-2", "Just info for now, thanks.")
 
     final = CALL_STATES[call_id]
     assert final["practice_area"] == "employment"
@@ -288,16 +291,16 @@ async def test_scenario_s4_low_confidence_capture(repos):
 async def test_scenario_s5_model_judged_escalation_multi_area(repos, tmp_path):
     call_id = "scenario-s5"
 
-    await _turn(repos, call_id, "tool-1", "I have an issue with my employer and my visa.")
-    assert CALL_STATES[call_id]["stage"] == "routing"
-
+    # Turn 1: greeting -> routing chained into one dispatch per
+    # docs/fixes/2026-08-22-001.md — classify_practice_area must be mocked
+    # from this first turn now. Exactly one classification call, no
+    # clarifying retry (unlike the "unclear" path), moves straight to the
+    # escalation stage within this same turn.
     with patch(
         "backend.supervisor.tools.classify_practice_area",
         return_value={"area": "multiple_areas", "confidence": 0.8},
     ):
-        # exactly one classification call, no clarifying retry (unlike the
-        # "unclear" path), moves straight to the escalation stage
-        await _turn(repos, call_id, "tool-2", "My employer fired me over my visa status.")
+        await _turn(repos, call_id, "tool-1", "I have an issue with my employer and my visa.")
 
     mid = CALL_STATES[call_id]
     assert mid["stage"] == "escalation"
@@ -315,7 +318,7 @@ async def test_scenario_s5_model_judged_escalation_multi_area(repos, tmp_path):
         patch.object(dispatcher.tools, "HANDOFFS_DIR", tmp_path),
         patch("backend.supervisor.tools.generate_call_summary", return_value="Multi-area issue, needs a human."),
     ):
-        await _turn(repos, call_id, "tool-3", "(silence)")
+        await _turn(repos, call_id, "tool-2", "(silence)")
 
     final = CALL_STATES[call_id]
     assert final["stage"] == "ended"
