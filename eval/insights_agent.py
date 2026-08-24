@@ -172,10 +172,20 @@ def run_taxonomy_critique(repos: Repositories, batch_results: list[dict], eval_r
                 "uncategorized_notes": [a["note"] for a in review["annotations"] if a["error_class_id"] is None],
             }
 
-    proposal = call_claude_tool(
-        repos.trace, "eval_run:" + eval_run_label, "eval_judge", "propose_taxonomy_updates",
-        tools.propose_taxonomy_updates, batch_results, human_annotations_by_call, get_active_error_classes(),
-    )
+    try:
+        proposal = call_claude_tool(
+            repos.trace, "eval_run:" + eval_run_label, "eval_judge", "propose_taxonomy_updates",
+            tools.propose_taxonomy_updates, batch_results, human_annotations_by_call, get_active_error_classes(),
+        )
+    except LLMCallFailed as e:
+        # This is a single call over the whole batch, not per-item like
+        # run_classification_pass above - there's nothing to "skip and
+        # continue" to. But the taxonomy critique is a nice-to-have on top
+        # of the classification pass that already ran and already persisted
+        # its own results; failing here must not throw away that real work
+        # or crash a script that's otherwise done everything it needed to.
+        logger.warning("propose_taxonomy_updates failed for eval_run_label=%s: %s — no suggestions this run", eval_run_label, e)
+        return []
     suggestions = proposal.get("suggestions", [])
     if suggestions:
         repos.evals.add_taxonomy_suggestions(suggestions, eval_run_label)

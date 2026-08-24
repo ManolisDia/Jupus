@@ -256,6 +256,24 @@ def test_propose_taxonomy_updates_mocked_returns_expected_shape():
     assert result == mocked["suggestions"]
 
 
+def test_run_taxonomy_critique_returns_empty_list_on_llm_failure_without_crashing():
+    # Same category of bug as run_classification_pass's fix above, but this
+    # is a single call over the whole batch (not per-item) - there's no
+    # "skip and continue", so failing here must degrade to no suggestions
+    # rather than crash a script that already did real, valuable work
+    # (the classification pass) before reaching this point.
+    repos = _repos()
+    batch_results = [{"call_id": "c1", "flags": []}]
+    with patch(
+        "backend.supervisor.tools.propose_taxonomy_updates",
+        side_effect=[StopIteration(), StopIteration()],
+    ):
+        result = run_taxonomy_critique(repos, batch_results, "label-a")
+
+    assert result == []
+    assert repos.evals.list_taxonomy_suggestions("label-a", "pending") == []
+
+
 def test_run_taxonomy_critique_writes_suggestion_rows():
     repos = _repos()
     batch_results = [{"call_id": "c1", "flags": []}]

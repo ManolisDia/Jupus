@@ -28,10 +28,10 @@ class LLMCallFailed(Exception):
     pass
 
 
-def call_claude_json(system: str, user_content: str, json_schema: dict) -> dict:
+def call_claude_json(system: str, user_content: str, json_schema: dict, max_tokens: int = 512) -> dict:
     response = _client.messages.create(
         model=MODEL_ID,
-        max_tokens=512,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user_content}],
         output_config={"format": {"type": "json_schema", "schema": json_schema}},
@@ -40,10 +40,10 @@ def call_claude_json(system: str, user_content: str, json_schema: dict) -> dict:
     return json.loads(text)
 
 
-def call_claude_text(system: str, user_content: str) -> str:
+def call_claude_text(system: str, user_content: str, max_tokens: int = 512) -> str:
     response = _client.messages.create(
         model=MODEL_ID,
-        max_tokens=512,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user_content}],
     )

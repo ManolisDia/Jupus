@@ -290,6 +290,14 @@ def classify_call_errors(call_row: dict, trace: list[dict], error_classes: list[
         ),
         user_content=user_content,
         json_schema=CLASSIFY_CALL_ERRORS_SCHEMA,
+        # Reasoning over a full call trace (not a single utterance) reliably
+        # uses well over the default 512-token budget on extended thinking
+        # alone before ever emitting an answer - confirmed live: a real
+        # trace consumed exactly 512 thinking tokens and got cut off with
+        # zero text output (stop_reason="max_tokens", no text content block
+        # at all). 4096 leaves comfortable headroom (~1000 tokens used on
+        # the same call once given room).
+        max_tokens=4096,
     )
 
 
@@ -314,4 +322,8 @@ def propose_taxonomy_updates(
         ),
         user_content=user_content,
         json_schema=PROPOSE_TAXONOMY_UPDATES_SCHEMA,
+        # Same reasoning-budget issue as classify_call_errors above — this
+        # reads an entire batch's worth of classification results at once,
+        # an even larger input.
+        max_tokens=4096,
     )
