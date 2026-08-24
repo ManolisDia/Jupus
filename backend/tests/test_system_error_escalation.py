@@ -47,6 +47,12 @@ def test_three_consecutive_failures_escalates_with_system_error_in_routing(repos
 def test_three_consecutive_failures_escalates_with_system_error_in_capture(repos):
     state = new_call_state("call-1")
     state["stage"] = "capture"
+    # Phase 7 split "capture" into a fast/confirm sub-phase — this test
+    # exercises node_capture's own extract_field retry/escalation logic
+    # directly, which now only runs unchanged in the "confirm" phase (the
+    # default "fast" phase would route to node_capture_fast instead, which
+    # never even calls extract_field when last_asked_field is None).
+    state["capture_phase"] = "confirm"
     state["practice_area"] = "employment"
     state["transcript"] = [{"role": "caller", "text": "some utterance", "ts": "t"}]
     with patch(

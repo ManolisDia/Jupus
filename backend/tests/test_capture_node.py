@@ -21,6 +21,13 @@ def _invoke(state, repos):
 def _capture_state(**caller_profile_overrides):
     state = new_call_state("call-1")
     state["stage"] = "capture"
+    # Phase 7 (optimistic capture) split "capture" into two sub-phases —
+    # this file tests node_capture's own extraction/confirm-back/escalation
+    # logic directly, which now only runs unchanged in the "confirm" phase
+    # (route_by_stage sends stage="capture" + capture_phase="fast" to the
+    # new node_capture_fast instead). "confirm" routes GRAPH.invoke straight
+    # to node_capture, same as every assertion in this file already expects.
+    state["capture_phase"] = "confirm"
     state["practice_area"] = "employment"
     state["transcript"] = [{"role": "caller", "text": "some utterance", "ts": "t"}]
     state["caller_profile"].update(caller_profile_overrides)

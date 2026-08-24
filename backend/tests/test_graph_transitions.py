@@ -53,7 +53,6 @@ def test_escalation_sets_stage_ended(repos, tmp_path):
     [
         ("greeting", "greeting"),
         ("routing", "routing"),
-        ("capture", "capture"),
         ("booking", "booking"),
         ("escalation", "escalation"),
     ],
@@ -61,6 +60,23 @@ def test_escalation_sets_stage_ended(repos, tmp_path):
 def test_router_dispatches_to_correct_node_for_each_stage(stage, expected_node):
     state = new_call_state("call-1")
     state["stage"] = stage
+    assert route_by_stage(state) == expected_node
+
+
+@pytest.mark.parametrize(
+    "capture_phase,expected_node",
+    [
+        # Phase 7 (optimistic capture) split "capture" into two sub-phases —
+        # route_by_stage now dispatches within stage=="capture" based on
+        # capture_phase, not straight to a single "capture" node.
+        ("fast", "capture_fast"),
+        ("confirm", "capture_confirm"),
+    ],
+)
+def test_router_dispatches_capture_stage_by_sub_phase(capture_phase, expected_node):
+    state = new_call_state("call-1")
+    state["stage"] = "capture"
+    state["capture_phase"] = capture_phase
     assert route_by_stage(state) == expected_node
 
 

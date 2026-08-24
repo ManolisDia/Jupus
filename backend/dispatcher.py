@@ -7,8 +7,9 @@ from fastapi import WebSocket
 from backend.db.repositories import Repositories
 from backend.supervisor import tools
 from backend.supervisor.faq import match_faq
-from backend.supervisor.graph import GRAPH
+from backend.supervisor.graph import GRAPH, apply_extraction
 from backend.supervisor.heuristics import is_explicit_human_request
+from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from backend.supervisor.state import CALL_STATES, CallState, get_or_create_state
 from backend.supervisor.tracing import traced_call
 from backend.utils import now_iso
@@ -19,6 +20,14 @@ LOCKS: dict[str, asyncio.Lock] = {}
 SPEAKING: dict[str, bool] = {}
 DEFERRED: dict[str, list[tuple[str, str, str, float]]] = {}
 CONNECTIONS: dict[str, WebSocket] = {}
+# Phase 7 (optimistic capture) — (call_id, field_name) -> the background
+# task doing that field's REAL extraction/validation while node_capture_fast
+# has already moved on. Deliberately a plain result-returning task, never
+# touching CALL_STATES/the per-call lock itself — see
+# _verify_field_in_background's docstring for why (avoiding a deadlock
+# against a turn that might be awaiting this same task while holding the
+# lock).
+FIELD_VERIFICATIONS: dict[tuple[str, str], asyncio.Task] = {}
 
 
 def get_lock(call_id: str) -> asyncio.Lock:
@@ -48,6 +57,100 @@ async def on_bridge_message(repos: Repositories, call_id: str, msg: dict) -> Non
         logger.warning("unknown /bridge message type=%r call_id=%s", msg_type, call_id)
 
 
+async def _verify_field_in_background(repos: Repositories, call_id: str, field: str, utterance: str) -> dict:
+    """Phase 7 (optimistic capture) — one field's real extraction/validation,
+    run fully in the background while node_capture_fast has already moved
+    on to asking about the next one. Mirrors node_capture's own "extract a
+    new field" branch (backend/supervisor/graph.py) but is kept as its own
+    copy rather than sharing code with it, to avoid touching that
+    well-tested, synchronous-path function's control flow for this.
+
+    Deliberately never touches CALL_STATES or acquires get_lock(call_id) —
+    process_supervisor_call may be AWAITING this very task while it already
+    holds that lock (see the blocking-wait case in process_supervisor_call
+    below); if this function also needed the lock to write its result,
+    that would deadlock. Instead it's a pure computation that returns its
+    result, and only the lock-holding turn processing (via
+    _reconcile_field_verifications) ever writes it into shared state.
+
+    On failure, deliberately does NOT replicate node_capture's attempts/
+    escalation bookkeeping — a background failure was never spoken to the
+    caller, so it isn't a real "attempt" in the sense retry_counts and the
+    3-strikes escalation care about. The real attempt only happens once the
+    foreground actually re-processes this field for real, via
+    node_capture_fast's urgent-reask fallback (_fallback_to_real_capture),
+    which reuses node_capture's existing, unchanged attempts/escalation
+    logic.
+    """
+    try:
+        extracted = await asyncio.to_thread(
+            call_claude_tool, repos.trace, call_id, "capture_fast_background", "extract_field",
+            tools.extract_field, utterance, field,
+        )
+    except LLMCallFailed:
+        return {"field": field, "success": False}
+
+    if field in ("email", "phone"):
+        candidate = extracted["value"] or None
+        validator = tools.validate_email if field == "email" else tools.validate_phone
+        valid = candidate is not None and await asyncio.to_thread(
+            traced_call, repos.trace, call_id, "capture_fast_background",
+            "validate_email" if field == "email" else "validate_phone", validator, candidate,
+        )
+        if not valid:
+            return {"field": field, "success": False}
+        return {
+            "field": field, "success": True,
+            "value": candidate, "confidence": extracted["confidence"], "status": "pending_confirm",
+        }
+
+    value, status = apply_extraction(field, extracted["value"], extracted["confidence"])
+    if status == "missing":
+        return {"field": field, "success": False}
+    return {"field": field, "success": True, "value": value, "confidence": extracted["confidence"], "status": status}
+
+
+def _reconcile_field_verifications(state: CallState, call_id: str) -> None:
+    """Non-blocking: merge any already-finished background verification
+    results into state['caller_profile'], and set/clear
+    state['verification_failed_field'] for whichever field just failed (if
+    any). Always safe to call while holding get_lock(call_id) — never
+    awaits anything, just inspects already-completed Task objects and pops
+    them out of FIELD_VERIFICATIONS."""
+    state["verification_failed_field"] = None
+    done_keys = [key for key in FIELD_VERIFICATIONS if key[0] == call_id and FIELD_VERIFICATIONS[key].done()]
+    for key in done_keys:
+        task = FIELD_VERIFICATIONS.pop(key)
+        field = key[1]
+        try:
+            result = task.result()
+        except Exception:
+            logger.exception("background field verification crashed call_id=%s field=%s", call_id, field)
+            result = {"field": field, "success": False}
+        if result["success"]:
+            profile = state["caller_profile"]
+            state["caller_profile"] = {
+                **profile,
+                field: {**profile[field], "value": result["value"], "status": result["status"]},
+            }
+        elif field == state.get("last_asked_field"):
+            state["verification_failed_field"] = field
+
+
+def _reconcile_before_capture_turn(state: CallState, call_id: str) -> None:
+    """Called immediately before invoking GRAPH.invoke for every turn
+    (cheap no-op — FIELD_VERIFICATIONS is empty — outside stage ==
+    "capture"). Always non-blocking: no field in FIELD_PRIORITY ever needs
+    a real wait here. Every field except the last one gets a genuine
+    background head start (spawned when node_capture_fast advances past
+    it, resolved well before drain time in practice); the last field never
+    gets a background task spawned for it at all — graph.py's
+    _finish_fast_pass processes it live instead, since there's no further
+    "ask the next field" turn to run concurrently with it. See
+    docs/phases/phase-7-optimistic-capture.md."""
+    _reconcile_field_verifications(state, call_id)
+
+
 async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_id: str, utterance: str) -> None:
     try:
         async with get_lock(call_id):
@@ -59,6 +162,13 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             if is_explicit_human_request(utterance):
                 state["stage"] = "escalation"
                 state["escalation_reason"] = "explicit_request"
+            # Phase 7 (optimistic capture): fold in any finished background
+            # field verification BEFORE the graph runs, so node_capture_fast/
+            # node_capture see real, up-to-date profile data rather than
+            # stale defaults. Always non-blocking — see
+            # _reconcile_before_capture_turn's docstring for why no field
+            # ever needs a real wait here.
+            _reconcile_before_capture_turn(state, call_id)
             stage_before = state["stage"]
             # GRAPH.invoke is synchronous and its node functions make real
             # blocking Claude/Anthropic SDK calls with no internal await —
@@ -84,6 +194,33 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
                 updated = await asyncio.to_thread(
                     GRAPH.invoke, updated, config={"configurable": {"repos": repos}}
                 )
+            # Phase 7 (optimistic capture): node_capture_fast's own "advance
+            # to the next field" branch is the ONLY place a background
+            # verification should be spawned — signaled explicitly via
+            # state["background_verify_field"], not inferred from a
+            # last_asked_field before/after diff. A diff-based check is a
+            # real trap here: _fallback_to_real_capture's paths ALSO change
+            # last_asked_field (e.g. resolving a pending confirmation and
+            # moving to the next already-known field), but that utterance
+            # was already fully, synchronously processed — spawning a
+            # redundant background task for it too would use THIS turn's
+            # utterance a second time, and its eventual result could land on
+            # a LATER turn and silently overwrite an already-correct value
+            # with something extracted from unrelated text (confirmed live:
+            # this happened — a stray "name" verification picked up email's
+            # mock on a later turn purely because both patch the same global
+            # tools.extract_field attribute; see docs/fixes/).
+            #
+            # Reset to None afterward rather than popped/deleted — this is a
+            # real declared CallState field (LangGraph silently drops keys
+            # outside its schema, and merge semantics for an entirely
+            # missing key vs. one explicitly reset to None aren't worth
+            # relying on).
+            if verify_field := updated.get("background_verify_field"):
+                FIELD_VERIFICATIONS[(call_id, verify_field)] = asyncio.create_task(
+                    _verify_field_in_background(repos, call_id, verify_field, utterance)
+                )
+                updated["background_verify_field"] = None
             # Tag the deferred reply with the stage it resulted in, not the
             # stage it started from — a node that naturally advances the
             # stage (e.g. greeting -> routing) must not have its own reply

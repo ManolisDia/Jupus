@@ -56,6 +56,24 @@ async def _turn(repos, call_id, tool_call_id, utterance):
         await process_supervisor_call(repos, call_id, tool_call_id, utterance)
 
 
+async def _await_background_verification(call_id, field):
+    # Phase 7 (optimistic capture): node_capture_fast advancing spawns a
+    # background asyncio.Task (dispatcher.FIELD_VERIFICATIONS) rather than
+    # calling extract_field synchronously — must be explicitly awaited
+    # (still inside whatever `patch(...)` block mocked the Claude call it
+    # depends on), since asyncio.create_task only schedules the task to
+    # start, it doesn't run it inline. Awaiting alone resolves the task but
+    # does NOT merge its result into CALL_STATES — that normally happens
+    # lazily, via dispatcher._reconcile_field_verifications at the START of
+    # the NEXT real turn (dispatcher._reconcile_before_capture_turn). Doing
+    # that reconcile here too lets tests assert on the merged profile state
+    # immediately, without needing a full extra turn just to observe it.
+    task = dispatcher.FIELD_VERIFICATIONS.get((call_id, field))
+    if task:
+        await task
+        dispatcher._reconcile_field_verifications(CALL_STATES[call_id], call_id)
+
+
 async def test_scenario_s1_info_only(repos):
     call_id = "scenario-s1"
 
@@ -99,32 +117,52 @@ async def test_scenario_s2_happy_path_booking(booking_repos):
         await _turn(repos, call_id, "tool-2", "It's about my flat.")
     assert CALL_STATES[call_id]["stage"] == "capture"
 
-    with (
-        patch("backend.supervisor.tools.extract_field", return_value={"value": "John Smith", "confidence": 0.9}),
-    ):
+    # Phase 7 (optimistic capture): name/email advance instantly — node_capture_fast
+    # asks the next field's question with zero Claude calls on the hot path;
+    # the real extraction runs in a background task, explicitly awaited here
+    # (still inside the patch) since the test can't otherwise observe when
+    # asyncio.create_task's scheduled work actually runs.
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "John Smith", "confidence": 0.9}):
         await _turn(repos, call_id, "tool-3", "John Smith")
+        await _await_background_verification(call_id, "name")
+    assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"  # 0.9 >= 0.75 auto-confirms
+    assert CALL_STATES[call_id]["last_asked_field"] == "email"
 
-    with (
-        patch("backend.supervisor.tools.extract_field", return_value={"value": "john@example.com", "confidence": 0.9}),
-        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say john@example.com?"),
-    ):
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "john@example.com", "confidence": 0.9}):
         await _turn(repos, call_id, "tool-4", "john at example dot com")
-    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
+        await _await_background_verification(call_id, "email")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"  # always needs read-back
+    assert CALL_STATES[call_id]["last_asked_field"] == "phone"
 
-    with patch(
-        "backend.supervisor.tools.confirm_field_answer",
-        return_value={"confirmed": True, "corrected_value": None},
-    ):
-        await _turn(repos, call_id, "tool-5", "Yes, that's right.")
-    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "confirmed"
-
-    # FIELD_PRIORITY also requires phone before capture hands off to booking
+    # phone is FIELD_PRIORITY's last field — no further fast-ask turn exists
+    # to run its background verification concurrently with, so this turn
+    # processes it live and transitions straight into the confirm/drain
+    # phase, batching a "let me just confirm a couple of things" preamble
+    # onto the FIRST pending field in canonical order (email, asked before
+    # phone) — see docs/phases/phase-7-optimistic-capture.md.
     with (
         patch("backend.supervisor.tools.extract_field", return_value={"value": "5551234567", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say john@example.com?"),
+    ):
+        await _turn(repos, call_id, "tool-5", "555-123-4567")
+    assert CALL_STATES[call_id]["caller_profile"]["phone"]["status"] == "pending_confirm"
+    assert CALL_STATES[call_id]["capture_phase"] == "confirm"
+
+    # Drain item 1: confirming email also immediately produces phone's
+    # confirm-back in the SAME turn — node_capture's bottom logic (fixed
+    # for Phase 7) sees phone is already "pending_confirm" and asks its
+    # confirm-back rather than a fresh "what's your phone number" (which
+    # would discard the value already captured for it), so this turn needs
+    # both tools mocked.
+    with (
+        patch("backend.supervisor.tools.confirm_field_answer", return_value={"confirmed": True, "corrected_value": None}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-123-4567?"),
     ):
-        await _turn(repos, call_id, "tool-6", "555-123-4567")
+        await _turn(repos, call_id, "tool-6", "Yes, that's right.")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "confirmed"
+    assert CALL_STATES[call_id]["caller_profile"]["phone"]["status"] == "pending_confirm"
 
+    # Drain item 2: confirm phone
     with patch(
         "backend.supervisor.tools.confirm_field_answer",
         return_value={"confirmed": True, "corrected_value": None},
@@ -178,26 +216,31 @@ async def test_scenario_s3_slot_conflict_booking(booking_repos):
 
     with patch("backend.supervisor.tools.extract_field", return_value={"value": "Jane Doe", "confidence": 0.9}):
         await _turn(repos, call_id, "tool-3", "Jane Doe")
+        await _await_background_verification(call_id, "name")
+    assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"
 
-    with (
-        patch("backend.supervisor.tools.extract_field", return_value={"value": "jane@example.com", "confidence": 0.9}),
-        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say jane@example.com?"),
-    ):
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "jane@example.com", "confidence": 0.9}):
         await _turn(repos, call_id, "tool-4", "jane at example dot com")
+        await _await_background_verification(call_id, "email")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
 
-    with patch(
-        "backend.supervisor.tools.confirm_field_answer",
-        return_value={"confirmed": True, "corrected_value": None},
-    ):
-        await _turn(repos, call_id, "tool-5", "Yes, that's right.")
-    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "confirmed"
-
-    # FIELD_PRIORITY also requires phone before capture hands off to booking
+    # phone is FIELD_PRIORITY's last field — processed live, transitioning
+    # straight into the confirm/drain phase with email's confirm-back first
+    # (canonical FIELD_PRIORITY order — see docs/phases/phase-7-optimistic-capture.md)
     with (
         patch("backend.supervisor.tools.extract_field", return_value={"value": "5559876543", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say jane@example.com?"),
+    ):
+        await _turn(repos, call_id, "tool-5", "555-987-6543")
+    assert CALL_STATES[call_id]["caller_profile"]["phone"]["status"] == "pending_confirm"
+    assert CALL_STATES[call_id]["capture_phase"] == "confirm"
+
+    with (
+        patch("backend.supervisor.tools.confirm_field_answer", return_value={"confirmed": True, "corrected_value": None}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-987-6543?"),
     ):
-        await _turn(repos, call_id, "tool-6", "555-987-6543")
+        await _turn(repos, call_id, "tool-6", "Yes, that's right.")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "confirmed"
 
     with patch(
         "backend.supervisor.tools.confirm_field_answer",
@@ -267,20 +310,34 @@ async def test_scenario_s4_low_confidence_capture(repos):
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"
 
     # garbled email -> always pending_confirm regardless of confidence (email/
-    # phone are never auto-trusted, per docs/DECISIONS.md)
+    # phone are never auto-trusted, per docs/DECISIONS.md). "email" isn't
+    # FIELD_PRIORITY's last field, so this advances optimistically —
+    # extract_field runs in the background, explicitly awaited here.
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "alex@example.com", "confidence": 0.6}):
+        await _turn(repos, call_id, "tool-5", "alex at example dot com")
+        await _await_background_verification(call_id, "email")
+    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
+    assert CALL_STATES[call_id]["last_asked_field"] == "phone"
+
+    # phone is FIELD_PRIORITY's last field — not part of docs/scenarios.md's
+    # original S4 transcript, but structurally required under Phase 7's
+    # design: email's confirm-back only happens once the drain/confirm
+    # phase starts, which only begins once every field has been fast-asked
+    # about, including phone.
     with (
-        patch("backend.supervisor.tools.extract_field", return_value={"value": "alex@example.com", "confidence": 0.6}),
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "5551234567", "confidence": 0.9}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say alex@example.com?"),
     ):
-        await _turn(repos, call_id, "tool-5", "alex at example dot com")
-    assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
+        await _turn(repos, call_id, "tool-6", "555-123-4567")
+    assert CALL_STATES[call_id]["caller_profile"]["phone"]["status"] == "pending_confirm"
+    assert CALL_STATES[call_id]["capture_phase"] == "confirm"
 
-    # "yes that's right"
-    with patch(
-        "backend.supervisor.tools.confirm_field_answer",
-        return_value={"confirmed": True, "corrected_value": None},
+    # Drain: confirm email ("yes that's right")
+    with (
+        patch("backend.supervisor.tools.confirm_field_answer", return_value={"confirmed": True, "corrected_value": None}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-123-4567?"),
     ):
-        await _turn(repos, call_id, "tool-6", "Yes, that's right.")
+        await _turn(repos, call_id, "tool-7", "Yes, that's right.")
 
     final_profile = CALL_STATES[call_id]["caller_profile"]
     assert final_profile["name"]["status"] == "confirmed"
