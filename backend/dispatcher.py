@@ -10,6 +10,7 @@ from backend.supervisor.faq import match_faq
 from backend.supervisor.graph import GRAPH
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.state import CALL_STATES, CallState, get_or_create_state
+from backend.supervisor.tracing import traced_call
 from backend.utils import now_iso
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,10 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
         state["escalation_reason"] = "system_error"
         CALL_STATES[call_id] = state
         repos.calls.upsert(state)
-        tools.write_minimal_handoff_note(call_id, state, reason=f"Unhandled error: {e}")
+        traced_call(
+            repos.trace, call_id, "dispatcher", "write_minimal_handoff_note",
+            tools.write_minimal_handoff_note, call_id, state, f"Unhandled error: {e}",
+        )
         deliver_or_defer(
             repos, call_id, tool_call_id,
             "Sorry, something went wrong on my end — let me get you to someone who can help.",
