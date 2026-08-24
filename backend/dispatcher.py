@@ -106,6 +106,7 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             repos.calls.upsert(updated)
             if updated["stage"] == "ended":
                 repos.trace.record_event(call_id, "call_ended", outcome=derive_outcome_label(updated))
+            broadcast_call_state(call_id)
     except Exception as e:
         logger.exception("unhandled error processing call_id=%s", call_id)
         repos.trace.record_event(call_id, "unhandled_error", error=str(e))
@@ -118,6 +119,7 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             repos.trace, call_id, "dispatcher", "write_minimal_handoff_note",
             tools.write_minimal_handoff_note, call_id, state, f"Unhandled error: {e}",
         )
+        broadcast_call_state(call_id)
         deliver_or_defer(
             repos, call_id, tool_call_id,
             "Sorry, something went wrong on my end — let me get you to someone who can help.",
@@ -171,6 +173,51 @@ def send_over_bridge(call_id: str, tool_call_id: str, reply: str) -> None:
     asyncio.create_task(
         _send_json_safely(ws, {"type": "supervisor_result", "tool_call_id": tool_call_id, "reply": reply}, call_id)
     )
+
+
+def call_state_snapshot(state: CallState) -> dict:
+    # A small, read-only projection of CallState — rendered by the
+    # caller-facing client's "captured details" panel AND by the admin
+    # Live Supervisor graph page's node sub-state badges (both Phase 7
+    # stretches). Neither consumer writes it back; it's display-only. The
+    # LangGraph node granularity itself doesn't change because of this —
+    # field-by-field capture and slot proposal/decline are, by design
+    # (CLAUDE.md rule #2), plain deterministic branches *inside* the single
+    # "capture"/"booking" nodes, not additional graph nodes. This snapshot
+    # just makes that already-existing internal state visible, it doesn't
+    # add new state.
+    profile = state["caller_profile"]
+    return {
+        "type": "call_state",
+        "stage": state["stage"],
+        "practice_area": state.get("practice_area"),
+        "escalation_reason": state.get("escalation_reason"),
+        "booking_confirmed": state.get("booking_confirmed", False),
+        "caller_profile": {
+            field: {
+                "value": profile[field]["value"],
+                "confidence": profile[field]["confidence"],
+                "status": profile[field]["status"],
+            }
+            for field in ("name", "email", "phone")
+        },
+        "booking": {
+            "proposed_slot_id": state.get("proposed_slot_id"),
+            "declined_count": len(state.get("declined_slot_ids") or []),
+            "requested_date": state.get("requested_date"),
+            "requested_window": state.get("requested_window"),
+        },
+    }
+
+
+def broadcast_call_state(call_id: str) -> None:
+    ws = CONNECTIONS.get(call_id)
+    if ws is None:
+        return
+    state = CALL_STATES.get(call_id)
+    if state is None:
+        return
+    asyncio.create_task(_send_json_safely(ws, call_state_snapshot(state), call_id))
 
 
 def mark_call_abandoned(repos: Repositories, call_id: str) -> None:

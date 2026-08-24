@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -112,6 +113,50 @@ async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depen
             break
 
         await dispatcher.on_bridge_message(repos, call_id, msg.model_dump(exclude_none=True))
+
+
+TRACE_STREAM_POLL_SECONDS = 0.4
+
+
+@app.websocket("/admin/trace/{call_id}")
+async def admin_trace_stream(websocket: WebSocket, call_id: str, repos: Repositories = Depends(get_repos)):
+    # Read-only spectator feed for the Phase 7 "live supervisor mind"
+    # stretch (admin/graph.html). Trace events read exclusively through
+    # TraceRepository (rule #9) — a rendering layer on top of
+    # instrumentation that already exists (traced_call/call_claude_tool,
+    # rule #8), not a new logging path. The call_state snapshot is read
+    # straight from dispatcher.CALL_STATES (in-memory, no repo involved —
+    # it's the same live-process state a *live* call already holds, not a
+    # database row), which is what lets the graph page show the field-by-
+    # field capture / slot-proposal sub-state that lives inside the
+    # "capture"/"booking" nodes but isn't its own trace event. Polls rather
+    # than pushes: simplest thing that works at this scale, and it never
+    # sends anything back into the call path — it has zero ability to
+    # affect a live call or add latency/risk to it.
+    await websocket.accept()
+    sent = 0
+    last_state_json: Optional[str] = None
+    try:
+        while True:
+            events = repos.trace.get_trace(call_id)
+            if len(events) > sent:
+                await websocket.send_json({"type": "trace_events", "events": events[sent:]})
+                sent = len(events)
+
+            state = dispatcher.CALL_STATES.get(call_id)
+            if state is not None:
+                snapshot = dispatcher.call_state_snapshot(state)
+                snapshot_json = json.dumps(snapshot, sort_keys=True)
+                if snapshot_json != last_state_json:
+                    await websocket.send_json(snapshot)
+                    last_state_json = snapshot_json
+
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=TRACE_STREAM_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        pass
 
 
 # ---------------------------------------------------------------------------

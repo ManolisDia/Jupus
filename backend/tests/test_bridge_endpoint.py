@@ -21,6 +21,17 @@ def _clear_dispatcher_state():
     dispatcher.CONNECTIONS.clear()
 
 
+def _receive_supervisor_result(ws):
+    # Every successful turn now also broadcasts a "call_state" message (Phase
+    # 7 caller-facing live-state stretch) alongside the reply — these tests
+    # care about the reply, not message ordering between the two, so skip
+    # past any other message type.
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] == "supervisor_result":
+            return msg
+
+
 def test_bridge_round_trip_and_disconnect_marks_call_abandoned():
     _clear_dispatcher_state()
     fake_repos = _override_repos()
@@ -48,8 +59,7 @@ def test_bridge_round_trip_and_disconnect_marks_call_abandoned():
             )
             # process_supervisor_call runs fire-and-forget on the server's
             # event loop — the result arrives asynchronously once it resolves.
-            response = ws.receive_json()
-            assert response["type"] == "supervisor_result"
+            response = _receive_supervisor_result(ws)
             assert response["tool_call_id"] == "tool-1"
             assert CALL_STATES["test-call"]["stage"] == "routing"
         # `with` block exit closes the socket — server should see
@@ -98,8 +108,7 @@ def test_bridge_relays_speech_started_and_stopped():
             assert "test-call-2" in dispatcher.DEFERRED
 
             ws.send_json({"type": "speech_stopped"})
-            response = ws.receive_json()
-            assert response["type"] == "supervisor_result"
+            _receive_supervisor_result(ws)
     finally:
         classify_patch.stop()
         app.dependency_overrides.pop(get_repos, None)

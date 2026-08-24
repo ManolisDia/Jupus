@@ -17,7 +17,12 @@ KEY_PATTERNS = [
 
 def main() -> int:
     diff = subprocess.run(
-        ["git", "diff", "--cached"], capture_output=True, text=True, check=True,
+        ["git", "diff", "--cached"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
     ).stdout
 
     hits = [p.pattern for p in KEY_PATTERNS if p.search(diff)]

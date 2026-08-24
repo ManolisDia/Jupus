@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jupus — Live Supervisor</title>
+<style>
+  :root {
+    --bg: #0a0c10;
+    --panel: #12151c;
+    --panel-2: #171b23;
+    --border: #262b35;
+    --text: #e7eaf0;
+    --text-dim: #8891a0;
+    --text-faint: #565f6e;
+    --accent: #6366f1;
+    --accent-glow: #818cf8;
+    --cyan: #22d3ee;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --purple: #c084fc;
+    --radius-lg: 14px;
+    --radius-md: 10px;
+    --radius-sm: 7px;
+    font-variant-numeric: tabular-nums;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 12px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  header .brand { display: flex; align-items: center; gap: 10px; margin-right: 8px; }
+  header .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, var(--cyan), var(--accent));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #05070a; flex-shrink: 0;
+  }
+  header h1 { margin: 0; font-size: 14.5px; font-weight: 650; }
+  header .subtitle { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+  header a.back {
+    color: var(--text-dim); font-size: 12.5px; text-decoration: none;
+    padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border);
+    margin-left: auto;
+  }
+  header a.back:hover { color: var(--text); border-color: #3a4150; }
+
+  .picker { display: flex; align-items: center; gap: 8px; }
+  .picker label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+  select, input[type=text] {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px 10px; font-size: 12.5px; font-family: inherit;
+  }
+  select { min-width: 220px; }
+  input[type=text] { width: 160px; font-family: ui-monospace, monospace; }
+  select:focus, input:focus { outline: none; border-color: var(--accent); }
+  button.watch {
+    background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 6px 14px; font-size: 12.5px; font-weight: 650; cursor: pointer;
+  }
+  button.watch:hover { background: #5457e0; }
+
+  #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+  #conn-dot.live { background: var(--green); box-shadow: 0 0 0 3px rgba(52,211,153,0.18); }
+  #conn-status { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 7px; }
+
+  main { flex: 1; min-height: 0; display: flex; padding: 18px 24px; gap: 18px; }
+
+  #graph-col { flex: 1.5; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+  #feed-col { flex: 1; min-width: 340px; max-width: 440px; display: flex; flex-direction: column; gap: 14px; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 16px 18px;
+  }
+  .panel .panel-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-faint); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+  }
+
+  #status-banner {
+    display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius-md);
+    background: var(--panel-2); border: 1px solid var(--border); font-size: 13px; color: var(--text-dim);
+  }
+  #status-banner .stage-pill {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 3px 10px; border-radius: 999px; background: #1b2030; color: var(--cyan); border: 1px solid #29344a;
+  }
+  #status-banner.ended-booked { border-color: #245a45; background: #0e1f18; }
+  #status-banner.ended-booked .stage-pill { background: #123424; color: var(--green); border-color: #1f5a3d; }
+  #status-banner.ended-escalated { border-color: #5a3a1f; background: #241608; }
+  #status-banner.ended-escalated .stage-pill { background: #34220c; color: var(--amber); border-color: #5a3a1f; }
+  #status-banner.ended-abandoned { border-color: #3a2a4a; background: #180f22; }
+
+  svg#graph-svg { width: 100%; height: 380px; display: block; }
+  .node-box rect {
+    fill: var(--panel-2); stroke: var(--border); stroke-width: 1.5; transition: fill 0.25s ease, stroke 0.25s ease, filter 0.25s ease;
+    rx: 12;
+  }
+  .node-box text { fill: var(--text-dim); font-size: 15px; font-weight: 650; font-family: inherit; transition: fill 0.25s ease; }
+  .node-box .node-sub { fill: var(--text-faint); font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+  .node-box.active rect { fill: #1a1740; stroke: var(--accent-glow); filter: drop-shadow(0 0 10px rgba(129,140,248,0.65)); }
+  .node-box.active text { fill: #fff; }
+  .node-box.visited rect { stroke: #3a4150; }
+  .node-box.visited text { fill: var(--text); }
+  .node-box.escalation-active rect { fill: #3a1c14; stroke: var(--red); filter: drop-shadow(0 0 10px rgba(248,113,113,0.55)); }
+
+  path.edge { fill: none; stroke: #2b3140; stroke-width: 1.6; marker-end: url(#arrow); transition: stroke 0.3s ease, stroke-width 0.3s ease; }
+  path.edge.any-edge { stroke: #262b35; stroke-width: 1.2; stroke-dasharray: 4 4; }
+  path.edge.fired { stroke: var(--cyan); stroke-width: 2.6; filter: drop-shadow(0 0 5px rgba(34,211,238,0.6)); }
+  path.edge.fired.escalation-edge { stroke: var(--red); filter: drop-shadow(0 0 5px rgba(248,113,113,0.6)); }
+  text.edge-label { fill: var(--text-dim); font-size: 10.5px; font-family: ui-monospace, monospace; }
+  text.edge-label.fired { fill: var(--cyan); font-weight: 600; }
+
+  #condition-line {
+    margin-top: 2px; font-family: ui-monospace, "SF Mono", monospace; font-size: 12.5px; color: var(--cyan);
+    min-height: 18px; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+
+  .hud-row { display: flex; gap: 10px; }
+  .hud-tile { flex: 1; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 14px; }
+  .hud-tile .label { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+  .hud-tile .value { font-size: 20px; font-weight: 650; margin-top: 2px; }
+  .hud-tile .value .unit { font-size: 11px; color: var(--text-dim); font-weight: 500; }
+
+  #async-badge {
+    margin-top: 10px; padding: 10px 14px; border-radius: var(--radius-md); font-size: 12.5px; font-weight: 600;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text-faint); transition: all 0.25s ease;
+  }
+  #async-badge.deferred { background: #2a2109; border-color: #5a4a10; color: var(--amber); animation: pulse-amber 1s ease infinite; }
+  #async-badge.delivered { background: #0e1f18; border-color: #1f5a3d; color: var(--green); }
+  @keyframes pulse-amber { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+  #feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-family: ui-monospace, "SF Mono", monospace; font-size: 11.5px; }
+  .feed-row { padding: 6px 9px; border-radius: 6px; border-left: 3px solid var(--border); background: var(--panel-2); line-height: 1.45; }
+  .feed-row .ftype { font-weight: 700; margin-right: 6px; }
+  .feed-row .fnode { color: var(--purple); margin-right: 6px; }
+  .feed-row .fdetail { color: var(--text-dim); word-break: break-word; }
+  .feed-row.t-node_entered { border-left-color: var(--cyan); }
+  .feed-row.t-node_entered .ftype { color: var(--cyan); }
+  .feed-row.t-node_exited { border-left-color: var(--accent-glow); }
+  .feed-row.t-node_exited .ftype { color: var(--accent-glow); }
+  .feed-row.t-tool_call_start { border-left-color: #3a4150; }
+  .feed-row.t-tool_call_start .ftype { color: var(--text-dim); }
+  .feed-row.t-tool_call_end { border-left-color: #3a4150; }
+  .feed-row.t-tool_call_end .ftype { color: var(--text-dim); }
+  .feed-row.t-tool_call_end.fail { border-left-color: var(--red); }
+  .feed-row.t-tool_call_end.fail .ftype { color: var(--red); }
+  .feed-row.t-reply_deferred { border-left-color: var(--amber); }
+  .feed-row.t-reply_deferred .ftype { color: var(--amber); }
+  .feed-row.t-reply_delivered { border-left-color: var(--green); }
+  .feed-row.t-reply_delivered .ftype { color: var(--green); }
+  .feed-row.t-reply_dropped_stale { border-left-color: var(--red); }
+  .feed-row.t-reply_dropped_stale .ftype { color: var(--red); }
+  .feed-row.t-call_ended { border-left-color: var(--green); font-weight: 650; }
+  .feed-row.t-call_abandoned { border-left-color: var(--purple); }
+  .feed-row.t-unhandled_error { border-left-color: var(--red); }
+  .feed-row.t-unhandled_error .ftype { color: var(--red); }
+
+  #feed::-webkit-scrollbar { width: 8px; }
+  #feed::-webkit-scrollbar-thumb { background: #2b3140; border-radius: 4px; }
+
+  .empty-state { color: var(--text-faint); text-align: center; padding: 40px 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark">J</div>
+    <div>
+      <h1>Live Supervisor</h1>
+      <div class="subtitle">CallState graph, executing in real time</div>
+    </div>
+  </div>
+  <div class="picker">
+    <label>Watch call</label>
+    <select id="call-select"><option value="">— recent calls —</option></select>
+  </div>
+  <div class="picker">
+    <input type="text" id="call-id-input" placeholder="or paste a call_id">
+    <button class="watch" id="watch-btn">Watch</button>
+  </div>
+  <div id="conn-status"><span id="conn-dot"></span><span id="conn-text">not watching</span></div>
+  <a class="back" href="/admin">← Admin panel</a>
+</header>
+<main>
+  <div id="graph-col">
+    <div id="status-banner">
+      <span class="stage-pill" id="stage-pill">idle</span>
+      <span id="status-text">Pick a call above to watch it live.</span>
+    </div>
+    <div class="panel" style="flex:1;">
+      <div class="panel-title">CallState machine</div>
+      <svg id="graph-svg" viewBox="0 0 1120 380" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#2b3140"></path>
+          </marker>
+        </defs>
+        <g id="edges-any"></g>
+        <g id="edges-main"></g>
+        <g id="edges-loop"></g>
+        <g id="nodes"></g>
+      </svg>
+      <div id="condition-line">waiting for the next transition…</div>
+    </div>
+  </div>
+  <div id="feed-col">
+    <div class="panel">
+      <div class="panel-title">Async / latency HUD</div>
+      <div class="hud-row">
+        <div class="hud-tile"><div class="label">Tool calls</div><div class="value" id="hud-tool-count">0</div></div>
+        <div class="hud-tile"><div class="label">Avg duration</div><div class="value" id="hud-avg-duration">—<span class="unit">ms</span></div></div>
+        <div class="hud-tile"><div class="label">Deferred</div><div class="value" id="hud-deferred-count">0</div></div>
+      </div>
+      <div id="async-badge">No async activity yet — replies deliver as soon as the caller stops talking.</div>
+    </div>
+    <div class="panel" style="flex:1; min-height:0; display:flex; flex-direction:column;">
+      <div class="panel-title">Raw trace feed</div>
+      <div id="feed"><div class="empty-state">Nothing streamed yet.</div></div>
+    </div>
+  </div>
+</main>
+<script src="/admin/graph.js"></script>
+</body>
+</html>

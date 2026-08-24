@@ -60,6 +60,62 @@ async def test_on_bridge_message_returns_without_awaiting_graph(repos):
     assert elapsed < 0.05
 
 
+async def test_call_state_broadcast_after_successful_turn(repos):
+    _seed_state("call-1")
+    dispatcher.SPEAKING["call-1"] = False
+    dispatcher.CONNECTIONS["call-1"] = object()
+
+    with (
+        patch(
+            "backend.dispatcher.GRAPH.invoke",
+            return_value={**CALL_STATES["call-1"], "stage": "capture", "practice_area": "employment", "pending_reply": "ok"},
+        ),
+        patch("backend.dispatcher.send_over_bridge"),
+        patch("backend.dispatcher._send_json_safely") as send_spy,
+    ):
+        await process_supervisor_call(repos, "call-1", "tool-1", "hi")
+
+    send_spy.assert_called_once()
+    payload = send_spy.call_args.args[1]
+    assert payload["type"] == "call_state"
+    assert payload["stage"] == "capture"
+    assert payload["practice_area"] == "employment"
+    assert set(payload["caller_profile"]) == {"name", "email", "phone"}
+
+
+async def test_call_state_broadcast_skipped_when_no_connection(repos):
+    _seed_state("call-1")
+    dispatcher.SPEAKING["call-1"] = False
+    # No dispatcher.CONNECTIONS entry for call-1 — must not raise.
+
+    with (
+        patch("backend.dispatcher.GRAPH.invoke", return_value={**CALL_STATES["call-1"], "pending_reply": "ok"}),
+        patch("backend.dispatcher.send_over_bridge"),
+        patch("backend.dispatcher._send_json_safely") as send_spy,
+    ):
+        await process_supervisor_call(repos, "call-1", "tool-1", "hi")
+
+    send_spy.assert_not_called()
+
+
+async def test_call_state_broadcast_after_unhandled_exception(repos):
+    _seed_state("call-1")
+    dispatcher.CONNECTIONS["call-1"] = object()
+
+    with (
+        patch("backend.dispatcher.GRAPH.invoke", side_effect=RuntimeError("boom")),
+        patch("backend.dispatcher.send_over_bridge"),
+        patch("backend.dispatcher.tools.write_minimal_handoff_note"),
+        patch("backend.dispatcher._send_json_safely") as send_spy,
+    ):
+        await process_supervisor_call(repos, "call-1", "tool-1", "hi")
+
+    send_spy.assert_called_once()
+    payload = send_spy.call_args.args[1]
+    assert payload["type"] == "call_state"
+    assert payload["escalation_reason"] == "system_error"
+
+
 async def test_result_delivered_immediately_when_not_speaking(repos):
     _seed_state("call-1")
     dispatcher.SPEAKING["call-1"] = False

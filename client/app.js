@@ -4,7 +4,12 @@ const REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
 const startBtn = document.getElementById("start-call");
 const endBtn = document.getElementById("end-call");
-const statusEl = document.getElementById("status");
+const statusTextEl = document.getElementById("status-text");
+const statusDotEl = document.getElementById("status-dot");
+const orbIconEl = document.getElementById("orb-icon");
+const orbCanvas = document.getElementById("orb");
+const callIdChipEl = document.getElementById("call-id-chip");
+const transcriptEl = document.getElementById("transcript");
 
 let pc = null;
 let dataChannel = null;
@@ -12,9 +17,208 @@ let localStream = null;
 let ws = null;
 let lastVerbatimTranscript = null;
 
+// ---------------------------------------------------------------------------
+// Presentational-only state (Phase 7 caller-facing visual polish stretch).
+// Nothing in this section reads from or writes to pc/ws/dataChannel — it
+// only renders from state the call logic below already produces, or from
+// the new read-only "call_state" bridge message (see docs/phases/
+// phase-7-polish-submission.md). No WebRTC/data-channel/bridge signaling
+// logic is changed by any of it.
+// ---------------------------------------------------------------------------
+
+let callId = null;
+let audioCtx = null;
+let localAnalyser = null;
+let remoteAnalyser = null;
+let vizRafId = null;
+let callerSpeaking = false; // driven by the real VAD events, not amplitude guessing
+let thinkingBubbleEl = null;
+
 function setStatus(message) {
-  statusEl.textContent = message;
+  statusTextEl.textContent = message;
+
+  let key = "idle";
+  if (message.startsWith("error")) key = "error";
+  else if (message === "connecting") key = "connecting";
+  else if (message === "connected") key = "connected";
+  else if (message === "idle") key = "idle";
+
+  statusDotEl.className = key === "connecting" ? "connecting pulsing" : key;
+  orbIconEl.className = key === "connecting" ? "state-connecting" : "";
+  if (key === "idle") {
+    orbIconEl.textContent = "Press start\nto begin";
+  } else if (key === "connecting") {
+    orbIconEl.textContent = "Connecting…";
+  } else if (key === "connected") {
+    orbIconEl.textContent = "Listening…";
+  } else if (key === "error") {
+    orbIconEl.textContent = "Call ended";
+  }
 }
+
+function setSpeakerState(who) {
+  // who: "caller" | "agent" | null
+  orbIconEl.classList.remove("state-caller", "state-agent");
+  if (who === "caller") {
+    orbIconEl.classList.add("state-caller");
+    orbIconEl.textContent = "Listening to you…";
+  } else if (who === "agent") {
+    orbIconEl.classList.add("state-agent");
+    orbIconEl.textContent = "Agent speaking…";
+  } else if (pc && pc.connectionState === "connected") {
+    orbIconEl.textContent = "Listening…";
+  }
+}
+
+function resetLiveUi() {
+  transcriptEl.innerHTML = '<div class="empty-transcript">Nothing said yet.</div>';
+  for (const tile of document.querySelectorAll(".field-tile")) {
+    tile.className = "field-tile";
+    tile.querySelector(".field-value").textContent = "—";
+  }
+  thinkingBubbleEl = null;
+}
+
+function showCallIdChip(id) {
+  callIdChipEl.textContent = `call_id: ${id}`;
+  callIdChipEl.classList.remove("hidden");
+  callIdChipEl.onclick = () => {
+    navigator.clipboard?.writeText(id).catch(() => {});
+    const original = callIdChipEl.textContent;
+    callIdChipEl.textContent = "copied!";
+    setTimeout(() => (callIdChipEl.textContent = original), 900);
+  };
+}
+
+function appendTranscriptTurn(role, text) {
+  if (!text) return;
+  const empty = transcriptEl.querySelector(".empty-transcript");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = `transcript-turn ${role}`;
+  div.textContent = text;
+  transcriptEl.appendChild(div);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function showThinkingBubble() {
+  const empty = transcriptEl.querySelector(".empty-transcript");
+  if (empty) empty.remove();
+  thinkingBubbleEl = document.createElement("div");
+  thinkingBubbleEl.className = "transcript-turn thinking";
+  thinkingBubbleEl.textContent = "…";
+  transcriptEl.appendChild(thinkingBubbleEl);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function removeThinkingBubble() {
+  if (thinkingBubbleEl) {
+    thinkingBubbleEl.remove();
+    thinkingBubbleEl = null;
+  }
+}
+
+function renderCallState(snapshot) {
+  const profile = snapshot.caller_profile || {};
+  for (const [field, data] of Object.entries(profile)) {
+    const tile = document.querySelector(`.field-tile[data-field="${field}"]`);
+    if (!tile) continue;
+    tile.className = `field-tile status-${data.status}`;
+    tile.querySelector(".field-value").textContent =
+      data.status === "missing" ? "—" : data.value || "—";
+  }
+}
+
+function setupVisualizer() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx.resume?.().catch(() => {});
+
+  const localSource = audioCtx.createMediaStreamSource(localStream);
+  localAnalyser = audioCtx.createAnalyser();
+  localAnalyser.fftSize = 256;
+  localAnalyser.smoothingTimeConstant = 0.75;
+  localSource.connect(localAnalyser);
+
+  drawOrb();
+}
+
+function attachRemoteAnalyser(remoteStream) {
+  if (!audioCtx) return;
+  const remoteSource = audioCtx.createMediaStreamSource(remoteStream);
+  remoteAnalyser = audioCtx.createAnalyser();
+  remoteAnalyser.fftSize = 256;
+  remoteAnalyser.smoothingTimeConstant = 0.75;
+  remoteSource.connect(remoteAnalyser);
+}
+
+function averageAmplitude(analyser) {
+  if (!analyser) return 0;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  let sum = 0;
+  for (const v of data) sum += v;
+  return sum / data.length / 255; // 0..1
+}
+
+function drawOrb() {
+  const ctx = orbCanvas.getContext("2d");
+  const w = orbCanvas.width;
+  const h = orbCanvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const baseRadius = 46;
+
+  function frame() {
+    vizRafId = requestAnimationFrame(frame);
+    ctx.clearRect(0, 0, w, h);
+
+    const localAmp = averageAmplitude(localAnalyser);
+    const remoteAmp = averageAmplitude(remoteAnalyser);
+    const agentSpeaking = remoteAmp > 0.05;
+
+    setSpeakerState(callerSpeaking ? "caller" : agentSpeaking ? "agent" : null);
+
+    // base circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, baseRadius, 0, Math.PI * 2);
+    ctx.fillStyle = "#171b23";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#262b35";
+    ctx.stroke();
+
+    // caller ring (cyan) — driven mostly by real VAD state, amplitude for size
+    const callerRadius = baseRadius + 8 + (callerSpeaking ? localAmp * 55 + 6 : localAmp * 10);
+    ctx.beginPath();
+    ctx.arc(cx, cy, callerRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = callerSpeaking ? "rgba(34, 211, 238, 0.9)" : "rgba(34, 211, 238, 0.25)";
+    ctx.lineWidth = callerSpeaking ? 3 : 1.5;
+    ctx.stroke();
+
+    // agent ring (indigo)
+    const agentRadius = baseRadius + 20 + remoteAmp * 60;
+    ctx.beginPath();
+    ctx.arc(cx, cy, agentRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = agentSpeaking ? "rgba(129, 140, 248, 0.9)" : "rgba(129, 140, 248, 0.18)";
+    ctx.lineWidth = agentSpeaking ? 3 : 1.5;
+    ctx.stroke();
+  }
+  frame();
+}
+
+function teardownVisualizer() {
+  if (vizRafId) cancelAnimationFrame(vizRafId);
+  vizRafId = null;
+  localAnalyser = null;
+  remoteAnalyser = null;
+  if (audioCtx) {
+    audioCtx.close().catch(() => {});
+    audioCtx = null;
+  }
+  orbIconEl.classList.remove("state-caller", "state-agent");
+}
+
+// ---------------------------------------------------------------------------
 
 // The ONE path every failure and the normal "End Call" click both go
 // through — nothing else may close pc/ws directly.
@@ -35,6 +239,8 @@ function teardown(statusMessage) {
     ws.close();
     ws = null;
   }
+  teardownVisualizer();
+  callerSpeaking = false;
   startBtn.disabled = false;
   endBtn.disabled = true;
   setStatus(statusMessage);
@@ -150,9 +356,11 @@ function sendSessionUpdate() {
 async function startCall() {
   startBtn.disabled = true;
   setStatus("connecting");
+  resetLiveUi();
 
   try {
-    const callId = crypto.randomUUID();
+    callId = crypto.randomUUID();
+    showCallIdChip(callId);
 
     const sessionResp = await fetch(`${BACKEND_URL}/session`, {
       method: "POST",
@@ -168,7 +376,18 @@ async function startCall() {
     ws = new WebSocket(`${BRIDGE_WS_URL}?call_id=${callId}`);
     ws.onmessage = (e) => {
       const parsed = JSON.parse(e.data);
+      if (parsed.type === "call_state") {
+        // Read-only projection for the "captured details" panel — see
+        // dispatcher.broadcast_call_state / docs/phases/
+        // phase-7-polish-submission.md. Never fed back into the call.
+        renderCallState(parsed);
+        return;
+      }
       if (parsed.type !== "supervisor_result") return;
+      // Rendered once the agent actually speaks it (response.audio_transcript.done
+      // below) rather than here — Realtime speaks this exact reply (see rule 5
+      // in SUPERVISOR_INSTRUCTIONS), so appending it at both points doubled
+      // every agent line in the transcript.
       dataChannel.send(
         JSON.stringify({
           type: "conversation.item.create",
@@ -203,10 +422,12 @@ async function startCall() {
     const remoteAudioEl = document.getElementById("remote-audio");
     pc.ontrack = (e) => {
       remoteAudioEl.srcObject = e.streams[0];
+      attachRemoteAnalyser(e.streams[0]);
     };
 
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     pc.addTrack(localStream.getAudioTracks()[0], localStream);
+    setupVisualizer();
 
     dataChannel = pc.createDataChannel("oai-events");
     dataChannel.onopen = () => sendSessionUpdate();
@@ -223,18 +444,22 @@ async function startCall() {
         // malformed input (e.g. inventing an "@domain.com" the caller
         // never said). See docs/DECISIONS.md.
         lastVerbatimTranscript = parsed.transcript;
+        appendTranscriptTurn("caller", parsed.transcript);
         return;
       }
       if (parsed.type === "input_audio_buffer.speech_started") {
+        callerSpeaking = true;
         ws.send(JSON.stringify({ type: "speech_started" }));
         return;
       }
       if (parsed.type === "input_audio_buffer.speech_stopped") {
+        callerSpeaking = false;
         ws.send(JSON.stringify({ type: "speech_stopped" }));
         return;
       }
       if (parsed.type === "response.function_call_arguments.done") {
         const args = JSON.parse(parsed.arguments);
+        showThinkingBubble();
         ws.send(
           JSON.stringify({
             type: "ask_supervisor",
@@ -243,6 +468,20 @@ async function startCall() {
             last_caller_utterance: lastVerbatimTranscript ?? args.last_caller_utterance,
           })
         );
+        return;
+      }
+      if (
+        parsed.type === "response.audio_transcript.done" ||
+        parsed.type === "response.output_audio_transcript.done"
+      ) {
+        // The single source of truth for agent lines in the transcript —
+        // covers both ask_supervisor turns and small-talk turns the
+        // Realtime model handles itself without ever calling ask_supervisor
+        // (rule 1 above). Clears the thinking bubble here too, once the
+        // agent actually has something to say, rather than the instant
+        // ask_supervisor resolves.
+        removeThinkingBubble();
+        appendTranscriptTurn("agent", parsed.transcript);
         return;
       }
       console.log("oai event", parsed);
