@@ -90,14 +90,22 @@ def route_by_stage(state: CallState) -> str:
 
 
 def node_greeting(state: CallState, config: RunnableConfig) -> dict:
+    # No spoken reply of its own: the Realtime client already delivers the
+    # actual verbal greeting itself (per its own instructions), without ever
+    # calling ask_supervisor for it. This node's only job is the one-time
+    # stage bump so the caller's first real utterance — already sitting in
+    # this same invocation's transcript — gets classified by node_routing
+    # right away instead of being silently discarded for a turn. See
+    # dispatcher.process_supervisor_call, which chains straight into the
+    # next node when a call starts from "greeting" rather than treating
+    # this stage bump as a turn worth replying to on its own.
     repos = _repos(config)
     repos.trace.record_event(state["call_id"], "node_entered", node="greeting")
-    reply = "Thanks for calling — let me get you sorted."
     repos.trace.record_event(
         state["call_id"], "node_exited", node="greeting",
-        stage_from="greeting", stage_to="routing", pending_reply=reply,
+        stage_from="greeting", stage_to="routing", pending_reply=None,
     )
-    return {"stage": "routing", "consecutive_llm_failures": 0, **_agent_turn(reply)}
+    return {"stage": "routing", "consecutive_llm_failures": 0}
 
 
 def node_routing(state: CallState, config: RunnableConfig) -> dict:
@@ -112,6 +120,22 @@ def node_routing(state: CallState, config: RunnableConfig) -> dict:
         )
     except LLMCallFailed:
         return _llm_failure_fallback(repos, state, "routing")
+
+    if result["area"] == "multiple_areas":
+        reply = (
+            "It sounds like this touches more than one area — let me get you to someone "
+            "who can help directly."
+        )
+        repos.trace.record_event(
+            call_id, "node_exited", node="routing",
+            stage_from="routing", stage_to="escalation", pending_reply=reply,
+        )
+        return {
+            "stage": "escalation",
+            "escalation_reason": "out_of_scope_multi_area",
+            "consecutive_llm_failures": 0,
+            **_agent_turn(reply),
+        }
 
     if result["area"] == "unclear":
         attempts = state["retry_counts"].get("classification", 0) + 1
@@ -467,10 +491,27 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
 
 def node_escalation(state: CallState, config: RunnableConfig) -> dict:
     repos = _repos(config)
-    repos.trace.record_event(state["call_id"], "node_entered", node="escalation")
-    reply = "Let me get you to a person. (stub)"
+    call_id = state["call_id"]
+    repos.trace.record_event(call_id, "node_entered", node="escalation")
+
+    try:
+        summary = call_claude_tool(
+            repos.trace, call_id, "escalation", "generate_call_summary",
+            tools.generate_call_summary, state,
+        )
+        traced_call(repos.trace, call_id, "escalation", "write_handoff_note", tools.write_handoff_note, call_id, state, summary)
+    except LLMCallFailed:
+        # Don't trust another Claude call to succeed right after one just
+        # failed unexpectedly — fall back to a deterministic note.
+        traced_call(
+            repos.trace, call_id, "escalation", "write_minimal_handoff_note",
+            tools.write_minimal_handoff_note, call_id, state,
+            f"escalation_reason={state.get('escalation_reason')} (call summary unavailable)",
+        )
+
+    reply = "I've passed this to our team, someone will follow up shortly."
     repos.trace.record_event(
-        state["call_id"], "node_exited", node="escalation",
+        call_id, "node_exited", node="escalation",
         stage_from=state["stage"], stage_to="ended", pending_reply=reply,
     )
     return {"stage": "ended", "consecutive_llm_failures": 0, **_agent_turn(reply)}

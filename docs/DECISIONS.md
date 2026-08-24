@@ -69,6 +69,67 @@ Drafted explicitly in Phase 2 (not left as a vague "be helpful" prompt) because 
 ### No filler acknowledgment ("let me check that" / "one moment") while waiting on `ask_supervisor` — reversed after live testing
 Originally the instructions allowed a short filler ("let me check that for you") while waiting on the supervisor, and Phase 2's DoD confirmed the Realtime model genuinely could speak that acknowledgment and call the tool in the same turn — so this wasn't a technical limitation. It was removed anyway: the actual caller experience of a spoken promise ("one moment") followed by dead air until the real reply eventually lands reads as *more* broken than a brief, unannounced pause. The fix isn't a better filler phrase, it's not narrating the wait at all — when the supervisor's reply arrives, it's delivered as the agent's next natural conversational turn, not as the payoff to an earlier promise. `semantic_vad` (Phase 1) and the non-blocking dispatcher (Phase 5) are what keep the actual gap feeling human-paced; the instructions no longer try to paper over it verbally.
 
+### `interrupt_response: true` kept — a guarded retry, not disabling interruption, fixes dropped tool calls
+The Phase 1 fix for `semantic_vad` misdetecting background noise as speech (see the flagship-model
+entry below) lowered `eagerness` and added `near_field` noise reduction, but kept
+`interrupt_response: true` for barge-in. During live Phase 5 testing, the same false-trigger
+pattern resurfaced with a worse consequence: `interrupt_response: true` cancels the in-flight
+response the instant any further speech is detected — and when that response was mid-way through
+building an `ask_supervisor` function call, the cancellation silently dropped the tool call
+entirely (confirmed via captured `response.function_call_arguments.delta` events that never
+reached a `.done`, and zero corresponding backend/Claude activity in `backend.log`). This read to
+the caller as the agent saying its canned line, then going dead — nothing said, nothing asked
+again, no recovery.
+
+First fix attempt was `interrupt_response: false`, on the reasoning that the Phase 5 async
+requirement doesn't need mid-response interruption anyway (by the time the caller speaks a
+follow-up, the agent has usually finished talking and is idle waiting on the backend). Reverted
+almost immediately: with interruption disabled, a genuine overlapping utterance (caller starts
+talking again before the previous response has technically reached `response.done`) still gets
+its own auto-created response from `create_response: true`, but nothing cancels the old one to
+make room — the Realtime API hard-rejects the second `response.create` ("Conversation already has
+an active response in progress") and the session errors out, tearing down the call. That's a
+worse failure than the one being fixed, and directly breaks the scenario the async dispatcher
+exists to support.
+
+Kept `interrupt_response: true`. Second fix attempt added a `response.done` handler that retried
+via a bare `response.create` when a response ended `cancelled`/`incomplete` with no completed
+function call — guarded by a `responseActive` flag (set on `response.created`, cleared on
+`response.done`) meant to skip the retry when the caller's own next utterance had already gotten
+its own auto-created response. Also reverted: `responseActive` is a single shared boolean, not
+scoped per response ID. If the interrupting utterance's `response.created` arrives before the
+cancelled response's own `response.done` — plausible, event ordering isn't guaranteed — the `done`
+handler clears the flag to `false` even though a *different*, newer response is genuinely active,
+and the retry fires `response.create` on top of it, reproducing the exact same
+"already has an active response in progress" error live testing kept hitting.
+
+Removed the retry entirely rather than attempt per-response-ID tracking blind (this session has no
+way to observe the actual client-side event stream live, only reconstruct it after the fact from
+what the user reports and a manually-armed capture — not reliable enough to get a racy fix right).
+Net position: `interrupt_response: true` for real barge-in, no client-side retry-on-cancel at all.
+Losing an occasional turn to a rare spurious `semantic_vad` cancellation (caller has to repeat
+themselves) is a far smaller failure than the retry's own risk of crashing the whole call.
+
+### Small static FAQ knowledge base — a deliberate scope addition beyond the original Phase 5 spec
+Live testing surfaced a real usability problem the original design didn't account for: a caller
+side-question that doesn't extract to whatever field/classification is currently pending (e.g.
+"are you open on weekends?" asked mid-booking) was silently discarded — the relevant node just
+re-asked its own question verbatim, reading as the agent ignoring the caller outright. Two scope
+options were considered: (a) a small hand-authored FAQ list with deterministic keyword matching, or
+(b) a much larger rearchitecture toward free-flowing conversation (an LLM deciding how to handle
+arbitrary tangents). Option (b) was explicitly rejected — it conflicts with this project's core
+architecture doctrine (deterministic graph edges, no LLM picking what happens next) and is a much
+bigger change than a take-home warrants. Went with (a): `backend/supervisor/faq.py`, a handful of
+static entries (hours, address, fees, consultation length) matched via plain keyword substring
+checks — no Claude call, same reasoning as `heuristics.py`'s `is_explicit_human_request`. Checked
+centrally in `dispatcher.process_supervisor_call` against every caller utterance, regardless of
+whether the node's own logic succeeded or failed that turn — a caller can tack a genuine aside onto
+an otherwise-answerable utterance in the same breath, and nothing node-specific (`extract_field`,
+`classify_practice_area`, etc.) ever looks at anything but the part it's asking about. Explicitly a
+narrow deflect-and-return mechanism, not general Q&A — anything outside the fixed list still falls
+back to the original (silent) reprompt behavior, which is a documented, accepted limitation, not
+something this change attempts to solve.
+
 ### No cap on session/call duration
 Considered a hard server-side timeout on call length (protects against a stuck loop or an abandoned tab with a live mic). Explicitly decided against — not part of this build. If cost or runaway-session risk becomes a real concern later (e.g. if a hosted demo is ever stood up), address it there specifically rather than constraining every local test call now.
 
