@@ -1,13 +1,13 @@
-# Phase 8 — Polish + Submission
+# Phase 9 — Polish + Submission
 
 ## Goal
 
-Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–7, and a recorded walkthrough. This phase has no new application code — it's verification, documentation, and (only if time allows) the Railway stretch.
+Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–8, and a recorded walkthrough. This phase has no new application code — it's verification, documentation, and (only if time allows) the Railway stretch.
 
 ## Prerequisite
-Phase 7 (optimistic capture) DoD met, on top of Phase 6a/6b/6c.
+Phase 8 (case research / statute citation) DoD met, on top of Phase 7 (optimistic capture) and Phase 6a/6b/6c.
 
-**Renumbered from Phase 7** on 2026-08-24 to make room for `phase-7-optimistic-capture.md` — final submission has to stay the last phase regardless of number; this doc's content is unchanged, only its number and self-references moved.
+**Renumbered from Phase 8** on 2026-08-24 to make room for `phase-8-legal-research.md` — final submission has to stay the last phase regardless of number; this doc's content is unchanged (beyond this note and the superseded stretch below), only its number and self-references moved. (This is the second such renumbering — see the phase-7 insertion note this doc used to carry.)
 
 ---
 
@@ -32,14 +32,15 @@ One section per question, each referencing actual file paths and specific behavi
 
 ## Final regression pass
 
-1. `pytest` (the **entire** suite, all phases) — must pass with zero failures. This is the single command that proves the whole backend still works after Phase 8's inevitable small tweaks (README-driven fixes, tightened prompts, etc.).
-2. Re-run **all 6 scripted scenarios live**, fresh, in one sitting, after everything else is finalized (catches regressions introduced while polishing):
+1. `pytest` (the **entire** suite, all phases) — must pass with zero failures. This is the single command that proves the whole backend still works after Phase 9's inevitable small tweaks (README-driven fixes, tightened prompts, etc.).
+2. Re-run **all 7 scripted scenarios live**, fresh, in one sitting, after everything else is finalized (catches regressions introduced while polishing):
    - Info-only, no booking (routing story, declines to book)
    - Happy-path booking, full confirm-back
    - Slot-conflict booking (pre-seeded taken slot → alternative offered and accepted)
    - Low-confidence capture (mumbled email → confirm-back → corrected)
    - Model-judged escalation (multi-area issue → `out_of_scope_multi_area`)
    - Explicit-request escalation ("get me a person" → immediate handoff)
+   - Case research / statute citation (tenancy eviction-without-notice, added Phase 8 — see `docs/scenarios.md` S7)
 3. **Clean-checkout dry run**: in a separate temp directory, `git clone` the repo fresh, copy `.env.example` → `.env`, fill in keys, follow the README exactly as written, nothing else. If anything doesn't work or isn't documented, fix the README (or the code) before submitting — this is exactly what the evaluator will do.
 
 ## Video (Loom) checklist
@@ -61,14 +62,14 @@ One section per question, each referencing actual file paths and specific behavi
 **Approach**: a dedicated read-only WS (e.g. `WS /admin/trace/{call_id}`) streams each `trace_events` row to the browser as it's written, so a panel can render nodes lighting up *during* the call rather than only in a post-hoc replay.
 
 **Visual — make it sick, not just functional**:
-- The `CallState` machine (Greeting → Routing → Capture → Booking → Escalation, per `docs/architecture.md`/`docs/diagrams.md`) rendered as an animated node graph on a dark canvas.
+- The `CallState` machine (Greeting → Routing → Capture → Research → Booking → Escalation, per `docs/architecture.md`/`docs/diagrams.md`) rendered as an animated node graph on a dark canvas.
 - The active node pulses/glows while the supervisor is working it; edges light up on the specific deterministic conditional that fired — e.g. show "confidence 0.62 < 0.75 → re-prompt" as the literal condition evaluated, not a vague "thinking" spinner. This directly demonstrates rule #2 (no LLM ever picks the next node) instead of just asserting it in the README.
 - A side panel streams the raw reasoning / tool-call args + result for the current node live, monospace, like a real-time trace of the graph's internal state — distinct from the caller-facing transcript the admin panel already shows.
 - Think "live brain scan of the agent," not a static architecture diagram with an arrow that moves.
 
 **Placement**: a separate spectator page (e.g. `admin/graph.html` or a new admin tab), never folded into the caller-facing `client/index.html` — it's read-only, driven off the trace stream, and must have zero ability to affect the live call or add latency/risk to the hot path.
 
-**Scope guard**: attempt only after every required Phase 8 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
+**Scope guard**: attempt only after every required Phase 9 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
 
 ## Optional stretch — Caller-facing visual polish
 
@@ -83,7 +84,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: this is `client/index.html` + its CSS/JS only — no backend changes, no new endpoints.
 
-**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 8 DoD is met, and cut first if time runs short.
+**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 9 DoD is met, and cut first if time runs short.
 
 ## Optional stretch — Admin panel UI/UX polish
 
@@ -101,21 +102,11 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: `admin/index.html`, `admin/app.js`, `admin/annotate.html`, `admin/annotate.js` — no backend changes.
 
-**Scope guard**: same as the other optional stretches — attempt only once the required Phase 8 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
+**Scope guard**: same as the other optional stretches — attempt only once the required Phase 9 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
 
-## Optional stretch — Real statute citation (tenancy)
+## Superseded — Real statute citation (tenancy)
 
-**Goal**: give the tenancy path a small, real, curated knowledge base of actual eviction-law text, so when a caller describes their situation the agent can retrieve and cite the specific provision that applies — a concrete, checkable answer instead of a generic "that sounds like it could be tenancy law." For a test project only, not for real callers to rely on; always spoken with a "general information, not legal advice" disclaimer, and scoped to one practice area rather than all three.
-
-**Corpus**: 10–20 real, verbatim statute/regulation excerpts on eviction (e.g. required notice periods, valid grounds for eviction, tenant response rights) for a single, clearly-stated jurisdiction. Stored as plain data — `backend/supervisor/knowledge/tenancy_statutes.json` (or similar), each entry `{id, citation, jurisdiction, text}` — sourced and reviewed by hand, not scraped or generated at runtime.
-
-**Retrieval — local and free, no new paid dependency.** Given the corpus is only 10–20 short entries, keyword/BM25 match over the entries is enough; a local sentence-transformer embedding + cosine search is a fine upgrade if keyword match proves too brittle, but skip a vector DB — total overkill at this corpus size.
-
-**Wiring — fits the existing tool-scoping rule, doesn't widen it.** A new tool, e.g. `cite_law_provision(query: str) -> {citation, text} | None`, added to `tools.py`, bound only to the tenancy node's tool subset (rule #5) — the employment/immigration nodes never see it, and Realtime still only ever sees `ask_supervisor` (rule #1). Deterministic retrieval, not an LLM call, so it goes through `traced_call` directly rather than `call_claude_tool` (rule #8) — no reason to route a keyword/embedding lookup through Claude.
-
-**Disclaimer is not optional.** Whenever this tool fires, the node's reply must include a spoken "this is general information, not legal advice — worth confirming with the attorney" line — bake this into the tenancy node's prompt template, not left to the model's discretion.
-
-**Jurisdiction caveat**: pick one real jurisdiction, state it explicitly in the corpus and in `docs/DECISIONS.md`, and don't imply the agent covers anywhere else.
+This stretch (originally: a small tenancy-only knowledge base, keyword-matched, cited via a `cite_law_provision` tool bound to the tenancy node) was promoted out of "optional stretch" and built for real as **Phase 8** (`docs/phases/phase-8-legal-research.md`) — expanded to all three practice areas, its own dedicated graph stage (not folded into an existing node's tool subset), and a background-search mechanism that hides the retrieval latency behind a follow-up question rather than adding a synchronous pause. See that doc for the actual design; nothing below this note describes what got built.
 
 ## Optional stretch — Follow-up call
 
