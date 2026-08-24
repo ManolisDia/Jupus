@@ -1,13 +1,13 @@
-# Phase 9 — Polish + Submission
+# Phase 13 — Polish + Submission
 
 ## Goal
 
-Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–8, and a recorded walkthrough. This phase has no new application code — it's verification, documentation, and (only if time allows) the Railway stretch.
+Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–12, and a recorded walkthrough. This phase has no new application code — it's verification and documentation.
 
 ## Prerequisite
-Phase 8 (case research / statute citation) DoD met, on top of Phase 7 (optimistic capture) and Phase 6a/6b/6c.
+Phases 8–12 DoD met (legal research, hosted deployment, telephony, latency/cost instrumentation, concurrency stress test), on top of Phase 7 (optimistic capture) and Phase 6a/6b/6c — or, for whichever of 8/10/11/12 didn't end up getting built, documented plainly as an intentional scope cut rather than silently absent (see the "Known limitations" README section below).
 
-**Renumbered from Phase 8** on 2026-08-24 to make room for `phase-8-legal-research.md` — final submission has to stay the last phase regardless of number; this doc's content is unchanged (beyond this note and the superseded stretch below), only its number and self-references moved. (This is the second such renumbering — see the phase-7 insertion note this doc used to carry.)
+**Renumbered twice.** First from Phase 8 to Phase 9 on 2026-08-24 to make room for `phase-8-legal-research.md`. Renumbered again, from Phase 9 to Phase 13, to make room for `phase-9-hosted-deployment.md`, `phase-10-telephony.md`, `phase-11-latency-observability.md`, and `phase-12-concurrency-stress-test.md`, once those were scoped and the intended build order settled on hosting → telephony → latency/cost → concurrency, all after legal research and all before this phase. Final submission has to stay the last phase regardless of number, same rule both times; this doc's content is otherwise unchanged, only its number, self-references, and the two superseded-stretch notes below moved.
 
 ---
 
@@ -25,15 +25,15 @@ Phase 8 (case research / statute citation) DoD met, on top of Phase 7 (optimisti
 
 One section per question, each referencing actual file paths and specific behavior, not abstract description:
 
-- **Q1 (latency/pipeline)** — reference `backend/dispatcher.py`'s fire-and-forget design and the `Phase 5` async tests; reference that Realtime handles STT+dialogue+TTS in one hop and only the supervisor detour adds a second hop, deliberately kept off the hot path.
+- **Q1 (latency/pipeline)** — if Phase 11 was built: reference its actual measured per-turn stage breakdown and a real observed p50/p95 pair, not a description of the architecture in the abstract (`phase-11-latency-observability.md`'s DoD requires exactly this rewrite). Otherwise, fall back to referencing `backend/dispatcher.py`'s fire-and-forget design and the `Phase 5` async tests; reference that Realtime handles STT+dialogue+TTS in one hop and only the supervisor detour adds a second hop, deliberately kept off the hot path.
 - **Q2 (turn-taking/interruptions)** — reference reliance on OpenAI Realtime's built-in VAD/truncation (`docs/DECISIONS.md`'s entry on this), the `SPEAKING` flag mechanism in `dispatcher.py`, and the `heuristics.py` explicit-request short-circuit as a form of "the caller can interrupt the whole flow, not just a sentence."
-- **Q3 (iteration/scaling/health)** — reference `eval/insights_agent.py` and the `/admin` panel directly — this is the one question where you can show, not just tell: pull up the admin panel in the video and point at a flagged call.
-- **Q4 (telephony/warm transfer)** — this was explicitly out of scope for the build, so this answer is design-only. Sketch: SIP trunk (e.g. Twilio/Telnyx) bridging into the same `ask_supervisor`-gated architecture, a warm transfer as a second outbound leg dialed by the backend once `escalate_to_human` fires, briefing the human via a short synthesized/text summary (reuse `generate_call_summary`) before bridging the caller in. Cover failure modes explicitly: no answer (fall back to the existing handoff-note + voicemail-style message), busy (same fallback, maybe queue/retry once), line drops mid-bridge (detect via SIP BYE/hangup event, agent re-engages the caller rather than silently dropping them — "it looks like we got disconnected from our team, let me try again" — with a cap on retry attempts before falling back to a callback promise). Note detection at the SIP/signaling layer (486 Busy, no-answer timeout, BYE) versus the application layer (your own timeout on the bridge attempt) as two distinct places errors can surface, and that both need explicit handling, not just one.
+- **Q3 (iteration/scaling/health)** — reference `eval/insights_agent.py` and the `/admin` panel directly — this is the one question where you can show, not just tell: pull up the admin panel in the video and point at a flagged call. If Phase 12 (concurrency stress test) was built, also cite its real N-vs-latency numbers here directly (`phase-12-concurrency-stress-test.md`'s DoD requires this) — "tested up to N concurrent calls, held up through X" is a much stronger scaling answer than describing the async architecture alone.
+- **Q4 (telephony/warm transfer)** — if Phase 10 was built: this answer references real code, not a design sketch — `backend/telephony/transfer.py`'s actual state machine, the Twilio-status-callback-values-vs-application-layer-reconnect-counter distinction, all grounded in what's actually running (`phase-10-telephony.md`'s DoD requires this rewrite). Otherwise, this was explicitly out of scope for the build, so the answer stays design-only. Sketch: SIP trunk (e.g. Twilio/Telnyx) bridging into the same `ask_supervisor`-gated architecture, a warm transfer as a second outbound leg dialed by the backend once `escalate_to_human` fires, briefing the human via a short synthesized/text summary (reuse `generate_call_summary`) before bridging the caller in. Cover failure modes explicitly: no answer (fall back to the existing handoff-note + voicemail-style message), busy (same fallback, maybe queue/retry once), line drops mid-bridge (detect via SIP BYE/hangup event, agent re-engages the caller rather than silently dropping them — "it looks like we got disconnected from our team, let me try again" — with a cap on retry attempts before falling back to a callback promise). Note detection at the SIP/signaling layer (486 Busy, no-answer timeout, BYE) versus the application layer (your own timeout on the bridge attempt) as two distinct places errors can surface, and that both need explicit handling, not just one.
 
 ## Final regression pass
 
-1. `pytest` (the **entire** suite, all phases) — must pass with zero failures. This is the single command that proves the whole backend still works after Phase 9's inevitable small tweaks (README-driven fixes, tightened prompts, etc.).
-2. Re-run **all 7 scripted scenarios live**, fresh, in one sitting, after everything else is finalized (catches regressions introduced while polishing):
+1. `pytest` (the **entire** suite, all phases) — must pass with zero failures. This is the single command that proves the whole backend still works after this phase's inevitable small tweaks (README-driven fixes, tightened prompts, etc.).
+2. Re-run **all 7 scripted browser/WebRTC scenarios live**, fresh, in one sitting, after everything else is finalized (catches regressions introduced while polishing):
    - Info-only, no booking (routing story, declines to book)
    - Happy-path booking, full confirm-back
    - Slot-conflict booking (pre-seeded taken slot → alternative offered and accepted)
@@ -41,17 +41,18 @@ One section per question, each referencing actual file paths and specific behavi
    - Model-judged escalation (multi-area issue → `out_of_scope_multi_area`)
    - Explicit-request escalation ("get me a person" → immediate handoff)
    - Case research / statute citation (tenancy eviction-without-notice, added Phase 8 — see `docs/scenarios.md` S7)
-3. **Clean-checkout dry run**: in a separate temp directory, `git clone` the repo fresh, copy `.env.example` → `.env`, fill in keys, follow the README exactly as written, nothing else. If anything doesn't work or isn't documented, fix the README (or the code) before submitting — this is exactly what the evaluator will do.
+   If Phase 10 (telephony) was built, also re-run **S8 — telephony warm transfer** live over a real phone call (manual-only per `docs/scenarios.md` and `phase-10-telephony.md`'s own DoD — it doesn't run through this mocked regression suite).
+3. **Clean-checkout dry run**: in a separate temp directory, `git clone` the repo fresh, copy `.env.example` → `.env`, fill in keys, follow the README exactly as written, nothing else. If anything doesn't work or isn't documented, fix the README (or the code) before submitting — this is exactly what the evaluator will do. If Phase 9 (hosted deployment) was built, separately confirm the hosted Firebase/Railway deployment still works end-to-end too — a clean local checkout passing doesn't guarantee the hosted config (env vars, CORS origin, access token) hasn't drifted.
 
 ## Video (Loom) checklist
-- [ ] Live demo: at least 2 of the 6 scenarios run for real on camera, including the async "caller keeps talking mid tool-call" one from Phase 5 — this is the differentiator, don't skip it.
+- [ ] Live demo: at least 2 of the 7 scenarios run for real on camera, including the async "caller keeps talking mid tool-call" one from Phase 5 — this is the differentiator, don't skip it.
 - [ ] Architecture walkthrough: the thin-Realtime/supervisor split, why (`docs/DECISIONS.md`), the tool catalog, the confidence-threshold capture flow.
 - [ ] Admin panel walkthrough for Q3, pointing at a real flagged call.
 - [ ] All 4 written questions answered on camera (or read from `docs/answers.md`), referencing the actual files shown on screen.
 - [ ] Honest limitations section — say what was cut and why, out loud, not just in the README.
 
-## Optional stretch — Railway hosting
-**Only attempt this if every item above is already done and there's genuinely time left.** Per `docs/DECISIONS.md`: gate the deployed endpoint behind a shared-secret token (not committed to the repo), set a hard OpenAI spend cap/alert on the account first, and keep the local path as the primary, always-working submission — the hosted version is a convenience add-on mentioned in the README, never a dependency.
+## Superseded — Railway hosting
+This stretch (originally: gate a deployed endpoint behind a shared-secret token, set a spend cap, keep the local path primary) was promoted out of "optional stretch" and built for real as **Phase 9** (`docs/phases/phase-9-hosted-deployment.md`) — expanded to a full Railway (backend, with a persistent Volume for SQLite) + Firebase Hosting (client) deployment, once telephony (Phase 10) made a public webhook URL a hard requirement rather than a nice-to-have. See that doc for the actual design; nothing below this note describes what got built.
 
 ## Optional stretch — Live "supervisor mind" visualization
 
@@ -69,7 +70,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: a separate spectator page (e.g. `admin/graph.html` or a new admin tab), never folded into the caller-facing `client/index.html` — it's read-only, driven off the trace stream, and must have zero ability to affect the live call or add latency/risk to the hot path.
 
-**Scope guard**: attempt only after every required Phase 9 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
+**Scope guard**: attempt only after every required Phase 13 DoD item is met, and after the hosted-deployment phase (Phase 9) if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
 
 ## Optional stretch — Caller-facing visual polish
 
@@ -84,7 +85,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: this is `client/index.html` + its CSS/JS only — no backend changes, no new endpoints.
 
-**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 9 DoD is met, and cut first if time runs short.
+**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 13 DoD is met, and cut first if time runs short.
 
 ## Optional stretch — Admin panel UI/UX polish
 
@@ -102,7 +103,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: `admin/index.html`, `admin/app.js`, `admin/annotate.html`, `admin/annotate.js` — no backend changes.
 
-**Scope guard**: same as the other optional stretches — attempt only once the required Phase 9 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
+**Scope guard**: same as the other optional stretches — attempt only once the required Phase 13 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
 
 ## Superseded — Real statute citation (tenancy)
 
@@ -151,7 +152,7 @@ This stretch (originally: a small tenancy-only knowledge base, keyword-matched, 
 
 ## Definition of Done
 - [ ] `pytest` (full suite) passes with zero failures.
-- [ ] All 6 scenarios re-run live, fresh, and pass.
+- [ ] All 7 scenarios re-run live, fresh, and pass (plus S8, telephony warm transfer, if Phase 10 was built).
 - [ ] Clean-checkout dry run succeeds following only the README.
 - [ ] `docs/answers.md` complete, all 4 answers reference real files/behavior.
 - [ ] README complete per the sections above.

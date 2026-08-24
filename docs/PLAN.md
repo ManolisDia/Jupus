@@ -276,7 +276,7 @@ Jupus/
     handoffs/                         # one .md per escalated call
     phases/
       cross-cutting.md
-      phase-1-raw-voice-loop.md ... phase-9-polish-submission.md
+      phase-1-raw-voice-loop.md ... phase-13-polish-submission.md
     fixes/
       INDEX.md
     known-issues/
@@ -304,8 +304,14 @@ Work in order. Do not start a phase until the previous one's DoD is verified —
 | 6c | [`phases/phase-6c-benevolent-dictator.md`](phases/phase-6c-benevolent-dictator.md) | BD annotation page, taxonomy critique + approval, judge calibration, live-Claude regression harness. Depends on 6a and 6b. |
 | 7 | [`phases/phase-7-optimistic-capture.md`](phases/phase-7-optimistic-capture.md) | Decouple field-capture latency from Claude round-trips: a fast deterministic sequencer asks the next field instantly, real verification runs in the background, corrections drain in a batched confirm phase |
 | 8 | [`phases/phase-8-legal-research.md`](phases/phase-8-legal-research.md) | New `research` stage between capture and booking: a real follow-up question, a BM25-searched per-area statute corpus, and a closed-set-grounded citation — retrieval latency hidden behind a filler follow-up, same pattern as Phase 7 |
-| 9 | [`phases/phase-9-polish-submission.md`](phases/phase-9-polish-submission.md) | README, written answers, full regression pass, video |
+| 9 | [`phases/phase-9-hosted-deployment.md`](phases/phase-9-hosted-deployment.md) | Public deployment: Railway (backend, persistent Volume for SQLite) + Firebase Hosting (client), access-token gate, spend caps. Prerequisite for Phase 10's public webhooks. |
+| 10 | [`phases/phase-10-telephony.md`](phases/phase-10-telephony.md) | Real telephony via OpenAI Realtime's native SIP + Twilio, and warm transfer to a human on escalation — a Twilio Conference from call-start, a human added as a third participant, the AI leg dropped once briefed |
+| 11 | [`phases/phase-11-latency-observability.md`](phases/phase-11-latency-observability.md) | Real per-turn latency stage breakdown (STT/dialogue-decision, supervisor round-trip, deferred-wait, TTS-first-audio) plus estimated cost-per-call, both as p50/p95 in the admin panel |
+| 12 | [`phases/phase-12-concurrency-stress-test.md`](phases/phase-12-concurrency-stress-test.md) | Scripted proof that N concurrent, distinct calls don't block each other or leak state — direct evidence for the "production volume/concurrency management" claim |
+| 13 | [`phases/phase-13-polish-submission.md`](phases/phase-13-polish-submission.md) | README, written answers, full regression pass, video |
 
 Phase 6 was originally one phase but split into 6a/6b/6c — by far the largest single phase otherwise, and several of its pieces don't actually depend on each other (you can see call traces in the admin panel long before the taxonomy/judge machinery exists). The dependency order is strictly forward: 6b depends on 6a, 6c depends on 6a+6b, and neither 6a nor 6b ever depends on something built later.
+
+Phases 9–12 are stretches beyond the original brief's four required user stories, scoped and ordered deliberately: 9 (hosting) before 10 (telephony) because 10's Twilio webhooks need a public URL; 11 (latency/cost) and 12 (concurrency) have no hard dependency on 9/10 and could in principle move earlier, but are sequenced after telephony so the riskiest, highest-payoff piece gets tackled while the most build-time runway remains — see each phase doc's own "Why this exists"/prerequisite notes for the full reasoning. Phase 13 (submission) stays numerically last regardless of how many stretches precede it, and its own DoD explicitly accounts for any of 9–12 not getting built (documented as an intentional scope cut, not a silent gap).
 
 `docs/phases/cross-cutting.md` also applies retroactively from Phase 3 onward (every Claude-backed tool function must use its `call_claude_tool` wrapper from the moment it's written) even though its own Definition of Done is verified at Phase 6a — read it before Phase 3, not after. `docs/scenarios.md` defines the 6 canonical test scenarios used by both manual DoD checks, Phase 6a's automated mocked-regression suite, and Phase 6c's live-pipeline regression harness.
