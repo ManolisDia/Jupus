@@ -173,6 +173,12 @@
   .feed-row.t-call_abandoned { border-left-color: var(--purple); }
   .feed-row.t-unhandled_error { border-left-color: var(--red); }
   .feed-row.t-unhandled_error .ftype { color: var(--red); }
+  .feed-row.t-capture_fast_gate_fallback,
+  .feed-row.t-capture_fast_urgent_reask,
+  .feed-row.t-capture_fast_pending_confirm_fallback { border-left-color: var(--purple); }
+  .feed-row.t-capture_fast_gate_fallback .ftype,
+  .feed-row.t-capture_fast_urgent_reask .ftype,
+  .feed-row.t-capture_fast_pending_confirm_fallback .ftype { color: var(--purple); }
 
   #feed::-webkit-scrollbar { width: 8px; }
   #feed::-webkit-scrollbar-thumb { background: #2b3140; border-radius: 4px; }
@@ -208,7 +214,7 @@
     </div>
     <div class="panel" style="flex:1;">
       <div class="panel-title">CallState machine</div>
-      <svg id="graph-svg" viewBox="0 0 1120 380" preserveAspectRatio="xMidYMid meet">
+      <svg id="graph-svg" viewBox="0 0 1030 380" preserveAspectRatio="xMidYMid meet">
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="#2b3140"></path>

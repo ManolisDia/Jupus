@@ -1,30 +1,40 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// Phase 7 (optimistic capture) added node_capture_fast in front of the
+// original capture node — "capture" here is still exactly node_capture,
+// unchanged, reached both by the confirm/drain phase AND by
+// node_capture_fast's own fallback paths (gate/urgent/pending-confirm),
+// which is why its own trace events are always node="capture", never a
+// separate "capture_confirm" label — there isn't one in real trace data.
 const NODES = [
-  { id: "greeting", label: "Greeting", x: 20, y: 70, w: 190, h: 68 },
-  { id: "routing", label: "Routing", x: 280, y: 70, w: 190, h: 68 },
-  { id: "capture", label: "Capture", x: 540, y: 70, w: 190, h: 68 },
-  { id: "booking", label: "Booking", x: 800, y: 70, w: 190, h: 68 },
-  { id: "escalation", label: "Escalation", x: 540, y: 280, w: 190, h: 68 },
+  { id: "greeting", label: "Greeting", x: 20, y: 70, w: 165, h: 68 },
+  { id: "routing", label: "Routing", x: 220, y: 70, w: 165, h: 68 },
+  { id: "capture_fast", label: "Capture (fast)", x: 420, y: 70, w: 165, h: 68 },
+  { id: "capture", label: "Capture (confirm)", x: 620, y: 70, w: 165, h: 68 },
+  { id: "booking", label: "Booking", x: 820, y: 70, w: 165, h: 68 },
+  { id: "escalation", label: "Escalation", x: 520, y: 280, w: 165, h: 68 },
 ];
 
 const MAIN_EDGES = [
-  { key: "greeting-routing", d: "M210,104 L280,104", labelPos: [245, 96] },
-  { key: "routing-capture", d: "M470,104 L540,104", labelPos: [505, 96] },
-  { key: "capture-booking", d: "M730,104 L800,104", labelPos: [765, 96] },
+  { key: "greeting-routing", d: "M185,104 L220,104", labelPos: [202, 96] },
+  { key: "routing-capture_fast", d: "M385,104 L420,104", labelPos: [402, 96] },
+  { key: "capture_fast-capture", d: "M585,104 L620,104", labelPos: [602, 96] },
+  { key: "capture-booking", d: "M785,104 L820,104", labelPos: [802, 96] },
 ];
 
 const LOOP_EDGES = [
-  { key: "routing-routing", d: "M340,70 C340,14 410,14 410,70", labelPos: [375, 26] },
-  { key: "capture-capture", d: "M600,70 C600,14 670,14 670,70", labelPos: [635, 26] },
-  { key: "booking-booking", d: "M860,70 C860,14 930,14 930,70", labelPos: [895, 26] },
+  { key: "routing-routing", d: "M273,70 C273,14 332,14 332,70", labelPos: [302, 26] },
+  { key: "capture_fast-capture_fast", d: "M473,70 C473,14 532,14 532,70", labelPos: [502, 26] },
+  { key: "capture-capture", d: "M673,70 C673,14 732,14 732,70", labelPos: [702, 26] },
+  { key: "booking-booking", d: "M873,70 C873,14 932,14 932,70", labelPos: [902, 26] },
 ];
 
 const ANY_EDGES = [
-  { key: "greeting-escalation", d: "M115,138 C115,220 400,262 560,280" },
-  { key: "routing-escalation", d: "M375,138 C375,200 500,252 605,280" },
-  { key: "capture-escalation", d: "M635,138 L635,280" },
-  { key: "booking-escalation", d: "M895,138 C895,200 780,252 675,280" },
+  { key: "greeting-escalation", d: "M102,138 C102,220 400,262 545,280" },
+  { key: "routing-escalation", d: "M302,138 C302,200 460,252 565,280" },
+  { key: "capture_fast-escalation", d: "M502,138 C502,210 545,250 585,280" },
+  { key: "capture-escalation", d: "M702,138 C702,210 670,250 630,280" },
+  { key: "booking-escalation", d: "M902,138 C902,200 750,252 660,280" },
 ];
 
 const nodeEls = {};
@@ -80,7 +90,7 @@ function buildGraph() {
 
   // small "any stage, any time" marker near the escalation node
   const anyLabel = document.createElementNS(SVG_NS, "text");
-  anyLabel.setAttribute("x", 405);
+  anyLabel.setAttribute("x", 300);
   anyLabel.setAttribute("y", 224);
   anyLabel.setAttribute("text-anchor", "middle");
   anyLabel.setAttribute("class", "edge-label");
@@ -92,11 +102,23 @@ function buildGraph() {
     g.setAttribute("class", "node-box");
     g.setAttribute("data-node", n.id);
 
+    if (n.id === "capture_fast") {
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent =
+        "Phase 7: asks through name/email/phone optimistically with zero Claude calls on the " +
+        "hot path, while the real extraction/validation for each field runs in a background " +
+        "task. Falls back to the Capture (confirm) node whenever there's real doubt it's safe " +
+        "to guess (an off-topic aside, a field that doesn't look right, a field already " +
+        "mid-confirmation, or a background check that already failed).";
+      g.appendChild(title);
+    }
     if (n.id === "capture") {
       const title = document.createElementNS(SVG_NS, "title");
       title.textContent =
-        "Field-by-field capture (name/email/phone) is plain deterministic branching inside " +
-        "this one node, not separate graph nodes — N/E/P below show each field's live status.";
+        "This is node_capture, unchanged — reused both as the batched confirm/drain phase " +
+        "(reading back email/phone once every field's been fast-asked) AND as Capture (fast)'s " +
+        "own fallback path, which is why its trace events are always labeled \"capture\", never " +
+        "a separate confirm label. N/E/P below show each field's live status.";
       g.appendChild(title);
     }
     if (n.id === "booking") {
@@ -135,10 +157,10 @@ function buildGraph() {
   }
 }
 
-// Capture and booking render their own richer sub-state (see
+// Capture (both nodes) and booking render their own richer sub-state (see
 // renderCallStateBadges below) driven by real CallState, not the generic
 // idle/working/done label — don't let node_entered/node_exited stomp it.
-const RICH_SUBSTATE_NODES = new Set(["capture", "booking"]);
+const RICH_SUBSTATE_NODES = new Set(["capture_fast", "capture", "booking"]);
 
 function setNodeState(nodeId, cls, subText) {
   const el = nodeEls[nodeId];
@@ -157,13 +179,18 @@ function fieldPillMarkup(letter, status) {
 
 function renderCallStateBadges(msg) {
   const profile = msg.caller_profile || {};
-  const captureNode = nodeEls.capture;
-  if (captureNode && profile.name && profile.email && profile.phone) {
-    captureNode._sub.innerHTML = [
+  if (profile.name && profile.email && profile.phone) {
+    const pills = [
       fieldPillMarkup("N", profile.name.status),
       fieldPillMarkup("E", profile.email.status),
       fieldPillMarkup("P", profile.phone.status),
     ].join("   ");
+    // Both capture nodes show the same live field-status pills — whichever
+    // one is actually active at a given moment, the pills tell the same
+    // story (real CallState, not per-node display state).
+    for (const nodeId of ["capture_fast", "capture"]) {
+      if (nodeEls[nodeId]) nodeEls[nodeId]._sub.innerHTML = pills;
+    }
   }
 
   const bookingNode = nodeEls.booking;
@@ -228,7 +255,7 @@ function describeTransition(node, stageFrom, stageTo, pendingReply) {
   if (node === "routing" && stageTo === "capture") {
     const areaMatch = /falls under (\w+) law/.exec(reply);
     const area = areaMatch ? areaMatch[1] : "an";
-    return { edge: "routing-capture", text: `classify_practice_area → "${area}" → entering capture` };
+    return { edge: "routing-capture_fast", text: `classify_practice_area → "${area}" → entering capture (fast)` };
   }
   if (node === "routing" && stageTo === "escalation") {
     if (reply.includes("more than one area")) {
@@ -236,13 +263,33 @@ function describeTransition(node, stageFrom, stageTo, pendingReply) {
     }
     return { edge: "routing-escalation", text: "2nd unclear classification → escalate (unable_to_classify)" };
   }
+  // Phase 7: node_capture_fast's own trace events (node="capture_fast")
+  // never distinguish "advanced to the next field" from "handed off to the
+  // confirm/drain phase" via stage_from/stage_to alone — both are
+  // stage="capture" the whole time, since fast/confirm are sub-phases of
+  // the one "capture" stage, not separate stages. The reply text is the
+  // only signal (same text-sniffing style already used above for routing/
+  // booking) — _finish_fast_pass's handoff reply always starts with the
+  // "let me just quickly confirm" preamble.
+  if (node === "capture_fast" && stageTo === "capture") {
+    if (reply.startsWith("Great, let me just quickly confirm")) {
+      return { edge: "capture_fast-capture", text: "every field fast-asked → entering confirm/drain phase" };
+    }
+    return { edge: "capture_fast-capture_fast", text: "plausible direct answer → advance to next field, verifying in background" };
+  }
+  if (node === "capture_fast" && stageTo === "booking") {
+    return { edge: null, text: "every field already confirmed → skipping straight to booking" };
+  }
+  if (node === "capture_fast" && stageTo === "escalation") {
+    return { edge: "capture_fast-escalation", text: "attempts ≥ 3 on the last field, live → escalate (capture_failed)" };
+  }
   if (node === "capture" && stageTo === "capture") {
     const conf = extractConfidence("capture");
     if (conf !== null) {
       if (conf < 0.4) return { edge: "capture-capture", text: `confidence ${conf} < 0.4 → discard, re-ask field` };
       if (conf < 0.75) return { edge: "capture-capture", text: `confidence ${conf} in [0.4, 0.75) → confirm-back` };
     }
-    return { edge: "capture-capture", text: "field not yet confirmed → re-prompt" };
+    return { edge: "capture-capture", text: "field not yet confirmed → re-prompt or confirm-back" };
   }
   if (node === "capture" && stageTo === "booking") {
     return { edge: "capture-booking", text: "name + email + phone all status=confirmed → entering booking" };
@@ -300,6 +347,26 @@ function handleTraceEvent(e) {
   }
 
   if (e.event_type === "tool_call_start") {
+    return;
+  }
+
+  // Phase 7: the three reasons node_capture_fast declines to guess and
+  // falls back to the real Capture (confirm) node — surfaced in the
+  // condition line too, not just the raw feed, since they're the whole
+  // point of the fast path's safety net.
+  if (e.event_type === "capture_fast_gate_fallback") {
+    document.getElementById("condition-line").textContent =
+      `"${payload.utterance || ""}" doesn't look like a direct answer for ${payload.field} → falling back to real check`;
+    return;
+  }
+  if (e.event_type === "capture_fast_urgent_reask") {
+    document.getElementById("condition-line").textContent =
+      `${payload.field}'s background check already failed → re-asking now instead of advancing`;
+    return;
+  }
+  if (e.event_type === "capture_fast_pending_confirm_fallback") {
+    document.getElementById("condition-line").textContent =
+      `${payload.field} is already mid-confirmation → treating this as its answer, not a new field`;
     return;
   }
 
@@ -387,6 +454,9 @@ function appendFeedRow(e, payload) {
   else if (e.event_type === "reply_dropped_stale") detail = `dispatch_stage=${payload.dispatch_stage}, now=${payload.current_stage}`;
   else if (e.event_type === "call_ended") detail = `outcome=${payload.outcome}`;
   else if (e.event_type === "unhandled_error") detail = payload.error || "";
+  else if (e.event_type === "capture_fast_gate_fallback") detail = `field=${payload.field}, utterance="${payload.utterance || ""}"`;
+  else if (e.event_type === "capture_fast_urgent_reask" || e.event_type === "capture_fast_pending_confirm_fallback")
+    detail = `field=${payload.field}`;
 
   row.innerHTML =
     `<span class="ftype">${e.event_type}</span>` +
@@ -403,7 +473,10 @@ function resetGraphState() {
   toolDurationSum = 0;
   deferredCount = 0;
   for (const nodeId of Object.keys(nodeEls)) setNodeState(nodeId, null, "idle");
-  if (nodeEls.capture) nodeEls.capture._sub.innerHTML = [fieldPillMarkup("N", "missing"), fieldPillMarkup("E", "missing"), fieldPillMarkup("P", "missing")].join("   ");
+  const idlePills = [fieldPillMarkup("N", "missing"), fieldPillMarkup("E", "missing"), fieldPillMarkup("P", "missing")].join("   ");
+  for (const nodeId of ["capture_fast", "capture"]) {
+    if (nodeEls[nodeId]) nodeEls[nodeId]._sub.innerHTML = idlePills;
+  }
   if (nodeEls.booking) nodeEls.booking._sub.textContent = "no slot proposed yet";
   for (const el of Object.values(edgeEls)) el.classList.remove("fired", "escalation-edge");
   for (const el of Object.values(labelEls)) el.classList.remove("fired");
