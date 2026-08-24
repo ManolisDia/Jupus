@@ -83,6 +83,24 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 7 DoD is met, and cut first if time runs short.
 
+## Optional stretch — Admin panel UI/UX polish
+
+**Goal**: `admin/index.html` is currently a plain, functional dashboard — dense HTML tables, minimal inline CSS, no visual hierarchy beyond a few pastel status badges (see current state: flat `#f6f7f9`/white panels, a bare `<table>` for the calls list, unstyled buttons in the taxonomy-suggestions row). It works, but it's also the surface the video spends real time on for Q3 (pointing at a flagged call) and the taxonomy/annotation walkthrough, so it's worth a real visual pass, not just the functional layer it has now.
+
+**Scope — presentational and structural, but this one *can* touch layout/interaction, not just paint.** Unlike the caller-facing client stretch below (zero call-path risk because it's live-call-adjacent), the admin panel has no live-call risk at all — it's a read-only reporting surface hitting `/api/*` GET routes — so there's more room here to also improve information architecture, not just restyle what exists:
+
+- **Visual system**: a real dark or light design language (pick one, consistent with whatever direction the graph-viz/client stretches go for a unified product feel) — proper spacing/typography scale, not system-default table styling.
+- **Calls list**: better scannability than a dense table — status badges are already there conceptually (booked/escalated/info_only/abandoned), give them a stronger visual treatment; consider filtering/sorting (by outcome, by error class, by reviewed/unreviewed) since this list will only grow.
+- **Trace viewer**: currently a flat monospace event log (`.trace-event`) — this is the "show me exactly what happened" view for the video, worth a real timeline treatment (indent by node, visually distinguish `tool_call_start`/`tool_call_end` pairs, highlight `reply_deferred`/`reply_delivered`/`wait_ms` events since those are the async-story payoff).
+- **Taxonomy-suggestions panel + annotation queue** (`admin/annotate.html`/`annotate.js`): currently bare rows with inline buttons — give approve/reject clearer visual weight (this is a human-in-the-loop decision, it should look like one), and the annotation form itself (class checkboxes, gold flag, notes) more clearly a distinct "you are reviewing" mode.
+- **Empty/loading states**: currently a single generic `.empty-state` div — differentiate "nothing selected yet" from "no calls at all" from "loading."
+
+**Constraint**: no changes to what data is fetched or how (`admin/app.js`'s `fetch(...)` calls against `/api/*` stay as-is) — this is HTML/CSS/JS rendering polish over the existing API surface, not new backend routes or data.
+
+**Placement**: `admin/index.html`, `admin/app.js`, `admin/annotate.html`, `admin/annotate.js` — no backend changes.
+
+**Scope guard**: same as the other optional stretches — attempt only once the required Phase 7 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
+
 ## Optional stretch — Real statute citation (tenancy)
 
 **Goal**: give the tenancy path a small, real, curated knowledge base of actual eviction-law text, so when a caller describes their situation the agent can retrieve and cite the specific provision that applies — a concrete, checkable answer instead of a generic "that sounds like it could be tenancy law." For a test project only, not for real callers to rely on; always spoken with a "general information, not legal advice" disclaimer, and scoped to one practice area rather than all three.
