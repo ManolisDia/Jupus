@@ -1,24 +1,65 @@
 const callsTbody = document.getElementById("calls-tbody");
+const callsCountEl = document.getElementById("calls-count");
 const detailPanel = document.getElementById("detail-panel");
 const summaryEl = document.getElementById("summary");
 const taxonomyPanel = document.getElementById("taxonomy-panel");
+const insightsBadge = document.getElementById("insights-badge");
 
 let selectedCallId = null;
+
+for (const tabBtn of document.querySelectorAll("#tabnav button")) {
+  tabBtn.addEventListener("click", () => switchView(tabBtn.dataset.view));
+}
+
+function switchView(view) {
+  for (const tabBtn of document.querySelectorAll("#tabnav button")) {
+    tabBtn.classList.toggle("active", tabBtn.dataset.view === view);
+  }
+  document.getElementById("view-calls").classList.toggle("hidden", view !== "calls");
+  document.getElementById("view-insights").classList.toggle("hidden", view !== "insights");
+}
+
+function chipRow(entries, formatValue) {
+  if (!entries.length) {
+    return `<div class="chip-row"><span class="chip empty">none recorded</span></div>`;
+  }
+  return `<div class="chip-row">${entries
+    .map(([k, v]) => `<span class="chip">${escapeHtml(k)} <span class="n">${formatValue(v)}</span></span>`)
+    .join("")}</div>`;
+}
 
 async function loadSummary() {
   const res = await fetch("/api/eval/summary");
   const summary = await res.json();
-  const errorRatesHtml = summary.error_rates
-    ? Object.entries(summary.error_rates).map(([k, v]) => `${k}: ${(v * 100).toFixed(0)}%`).join(", ")
-    : "n/a";
+
+  const escalationEntries = Object.entries(summary.escalation_reason_histogram || {});
+  const errorRateEntries = Object.entries(summary.error_rates || {});
+
   summaryEl.innerHTML = `
-    <div class="stat"><span class="label">Booking success rate</span><span class="value">${(summary.booking_success_rate * 100).toFixed(0)}%</span></div>
-    <div class="stat"><span class="label">Avg turns / call</span><span class="value">${summary.average_turns_per_call.toFixed(1)}</span></div>
-    <div class="stat"><span class="label">Latency p50 / p95</span><span class="value">${summary.latency.p50.toFixed(0)}ms / ${summary.latency.p95.toFixed(0)}ms</span></div>
-    <div class="stat"><span class="label">Escalation reasons</span><span class="value">${
-      Object.entries(summary.escalation_reason_histogram).map(([k, v]) => `${k}: ${v}`).join(", ") || "none"
-    }</span></div>
-    <div class="stat"><span class="label">Error rates (all runs)</span><span class="value" style="font-size:12px;">${errorRatesHtml}</span></div>
+    <div class="stat-card accent-good">
+      <span class="label">Booking success</span>
+      <span class="value">${(summary.booking_success_rate * 100).toFixed(0)}<span class="unit">%</span></span>
+    </div>
+    <div class="stat-card">
+      <span class="label">Avg turns / call</span>
+      <span class="value">${summary.average_turns_per_call.toFixed(1)}</span>
+    </div>
+    <div class="stat-card">
+      <span class="label">Latency p50</span>
+      <span class="value">${summary.latency.p50.toFixed(0)}<span class="unit">ms</span></span>
+    </div>
+    <div class="stat-card">
+      <span class="label">Latency p95</span>
+      <span class="value">${summary.latency.p95.toFixed(0)}<span class="unit">ms</span></span>
+    </div>
+    <div class="breakdown-card">
+      <span class="label">Escalation reasons</span>
+      ${chipRow(escalationEntries, (v) => v)}
+    </div>
+    <div class="breakdown-card">
+      <span class="label">Error rates (all runs)</span>
+      ${chipRow(errorRateEntries, (v) => `${(v * 100).toFixed(0)}%`)}
+    </div>
   `;
 }
 
@@ -27,20 +68,29 @@ async function loadTaxonomySuggestions() {
   const suggestions = await res.json();
   if (suggestions.length === 0) {
     taxonomyPanel.innerHTML = "";
+    insightsBadge.classList.add("hidden");
     return;
   }
-  taxonomyPanel.innerHTML = `<h3>Pending taxonomy suggestions (${suggestions.length})</h3>` +
-    suggestions
-      .map(
-        (s) => `<div class="suggestion-row" data-id="${s.id}">
-          <span><strong>${s.suggestion_type}</strong>${s.suggested_name ? ` — ${s.suggested_name}` : ""}${s.related_error_class_id ? ` (${s.related_error_class_id})` : ""}: ${escapeHtml(s.rationale)}</span>
-          <span>
-            <button class="approve-suggestion" data-id="${s.id}">Approve</button>
-            <button class="reject-suggestion" data-id="${s.id}">Reject</button>
-          </span>
-        </div>`
-      )
-      .join("");
+  insightsBadge.textContent = suggestions.length;
+  insightsBadge.classList.remove("hidden");
+  taxonomyPanel.innerHTML = `
+    <div class="taxonomy-card">
+      <div class="taxonomy-head"><span class="dot"></span>Pending taxonomy suggestions (${suggestions.length})</div>
+      <div class="taxonomy-list">
+        ${suggestions
+          .map(
+            (s) => `<div class="suggestion-row" data-id="${s.id}">
+              <span class="suggestion-text"><span class="tag">${s.suggestion_type}</span>${s.suggested_name ? `${s.suggested_name} — ` : ""}${s.related_error_class_id ? `(${s.related_error_class_id}) ` : ""}${escapeHtml(s.rationale)}</span>
+              <span class="actions">
+                <button class="approve-suggestion" data-id="${s.id}">Approve</button>
+                <button class="reject-suggestion" data-id="${s.id}">Reject</button>
+              </span>
+            </div>`
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
 
   for (const btn of taxonomyPanel.querySelectorAll(".approve-suggestion")) {
     btn.addEventListener("click", () => resolveSuggestion(btn.dataset.id, "approve"));
@@ -58,6 +108,7 @@ async function resolveSuggestion(id, action) {
 async function loadCalls() {
   const res = await fetch("/api/calls");
   const calls = await res.json();
+  callsCountEl.textContent = calls.length;
   callsTbody.innerHTML = "";
   for (const call of calls) {
     const tr = document.createElement("tr");
@@ -65,7 +116,7 @@ async function loadCalls() {
     tr.dataset.callId = call.call_id;
     const errorBadges = (call.error_classes || [])
       .map((c) => `<span class="error-badge">${c}</span>`)
-      .join("") || "—";
+      .join("") || `<span class="no-errors">—</span>`;
     tr.innerHTML = `
       <td>${call.call_id}</td>
       <td>${call.practice_area ?? "—"}</td>
@@ -102,31 +153,32 @@ async function selectCall(callId) {
 
   const errorFlagsHtml = (detail.call_error_flags || [])
     .map(
-      (f) => `<li><strong>${f.error_class_id}</strong> (confidence ${f.confidence}, run ${f.eval_run_label}): ${escapeHtml(f.evidence ?? "")}</li>`
+      (f) => `<li><strong>${f.error_class_id}</strong> <span class="meta">— confidence ${f.confidence}, run ${f.eval_run_label}</span><br>${escapeHtml(f.evidence ?? "")}</li>`
     )
     .join("");
 
   const humanReviewHtml = detail.human_review
-    ? `<p><strong>BD review${detail.human_review.is_gold ? " (gold)" : ""}:</strong> ${escapeHtml(detail.human_review.overall_note ?? "")}</p>
-       <ul>${(detail.human_review.annotations || [])
-         .map((a) => `<li>${a.error_class_id ? a.error_class_id : "uncategorized"}: ${escapeHtml(a.note ?? "")}</li>`)
-         .join("")}</ul>`
-    : `<p><em>Not yet reviewed by the Benevolent Dictator.</em></p>`;
+    ? `<div class="review-card">
+         <strong>BD review${detail.human_review.is_gold ? `<span class="gold-tag">Gold</span>` : ""}</strong>
+         <p style="margin:6px 0 0;">${escapeHtml(detail.human_review.overall_note ?? "")}</p>
+         <ul>${(detail.human_review.annotations || [])
+           .map((a) => `<li>${a.error_class_id ? a.error_class_id : "uncategorized"}: ${escapeHtml(a.note ?? "")}</li>`)
+           .join("")}</ul>
+       </div>`
+    : `<div class="review-card empty">Not yet reviewed by the Benevolent Dictator.</div>`;
 
   detailPanel.innerHTML = `
     <h2>${detail.call_id}</h2>
-    <p>
-      <strong>Area:</strong> ${detail.practice_area ?? "—"} &nbsp;
-      <strong>Outcome:</strong> ${detail.outcome ?? "in progress"} &nbsp;
-      ${detail.escalation_reason ? `<strong>Reason:</strong> ${detail.escalation_reason}` : ""}
-    </p>
-    <p>
-      <strong>Name:</strong> ${detail.caller_name ?? "—"} &nbsp;
-      <strong>Email:</strong> ${detail.caller_email ?? "—"} &nbsp;
-      <strong>Phone:</strong> ${detail.caller_phone ?? "—"}
-    </p>
+    <div class="meta-card">
+      <div class="meta-item"><span class="k">Area</span><span class="v">${detail.practice_area ?? "—"}</span></div>
+      <div class="meta-item"><span class="k">Outcome</span><span class="v">${detail.outcome ?? "in progress"}</span></div>
+      ${detail.escalation_reason ? `<div class="meta-item"><span class="k">Reason</span><span class="v">${detail.escalation_reason}</span></div>` : ""}
+      <div class="meta-item"><span class="k">Name</span><span class="v">${detail.caller_name ?? "—"}</span></div>
+      <div class="meta-item"><span class="k">Email</span><span class="v">${detail.caller_email ?? "—"}</span></div>
+      <div class="meta-item"><span class="k">Phone</span><span class="v">${detail.caller_phone ?? "—"}</span></div>
+    </div>
     <h3>Error-class flags</h3>
-    <ul>${errorFlagsHtml || "<li><em>None flagged.</em></li>"}</ul>
+    ${errorFlagsHtml ? `<ul class="flag-list">${errorFlagsHtml}</ul>` : `<div class="flag-list none-flagged">None flagged.</div>`}
     <h3>Human review</h3>
     ${humanReviewHtml}
     <h3>Transcript</h3>

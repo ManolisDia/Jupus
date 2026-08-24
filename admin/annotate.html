@@ -4,28 +4,137 @@
 <meta charset="UTF-8">
 <title>Jupus — Annotate</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1a1d21; }
-  header { padding: 16px 24px; background: #1a1d21; color: #fff; display: flex; justify-content: space-between; align-items: center; }
-  header h1 { margin: 0; font-size: 18px; }
-  #queue-count { font-size: 13px; color: #ccc; }
-  main { max-width: 760px; margin: 24px auto; padding: 0 16px; }
-  .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-  .transcript-turn { margin-bottom: 6px; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
-  .transcript-turn.caller { background: #eef2ff; }
-  .transcript-turn.agent { background: #f4f4f4; }
-  .checklist label { display: block; margin: 6px 0; font-size: 14px; }
-  textarea, input[type=text] { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; font-family: inherit; }
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --border: #e6e8ec;
+    --text: #14171c;
+    --text-dim: #6b7280;
+    --text-faint: #9aa1ab;
+    --accent: #4338ca;
+    --accent-soft: #eef0ff;
+    --header-bg: #101216;
+    --radius-lg: 14px;
+    --radius-md: 10px;
+    --radius-sm: 7px;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+    --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+  }
+  header {
+    padding: 13px 28px;
+    background: var(--header-bg);
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  header .brand { display: flex; align-items: center; gap: 10px; }
+  header .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, #6366f1, #4338ca);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #fff;
+    flex-shrink: 0;
+  }
+  header h1 { margin: 0; font-size: 14.5px; font-weight: 600; }
+  header .subtitle { font-size: 11.5px; color: #9299a6; font-weight: 400; margin-top: 1px; }
+  #queue-count {
+    font-size: 12px;
+    font-weight: 650;
+    color: #d7dbfa;
+    background: rgba(255,255,255,0.09);
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 5px 12px;
+    border-radius: 999px;
+  }
+
+  main { max-width: 760px; margin: 32px auto 60px; padding: 0 16px; }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 26px 28px; box-shadow: var(--shadow-md); }
+  .card h2 { margin: 0; font-size: 18px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-weight: 650; }
+  .card .subline { font-size: 13px; color: var(--text-dim); margin: 4px 0 18px; }
+  .card .subline .badge {
+    display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 650; background: var(--bg); border: 1px solid var(--border); color: var(--text); margin-right: 4px;
+  }
+
+  .card h3 { margin: 24px 0 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.045em; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+  .card h3::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  #transcript-block { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px; background: var(--bg); max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 7px; }
+  .transcript-turn { padding: 9px 13px; border-radius: 11px; font-size: 13px; line-height: 1.5; max-width: 86%; }
+  .transcript-turn.caller { background: var(--accent-soft); margin-right: auto; border-bottom-left-radius: 4px; }
+  .transcript-turn.agent { background: #eceef2; margin-left: auto; border-bottom-right-radius: 4px; }
+
+  .checklist { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+  .checklist label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0;
+    padding: 10px 12px;
+    font-size: 13.5px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+  }
+  .checklist label:last-child { border-bottom: none; }
+  .checklist label:hover { background: var(--bg); }
+  .checklist label input { flex-shrink: 0; margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; }
+  .checklist label .name { font-weight: 600; }
+  .checklist label span.desc { color: var(--text-faint); font-size: 12.5px; display: block; margin-top: 1px; }
+
+  textarea, input[type=text] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    margin-top: 4px;
+    font-family: inherit;
+    font-size: 13.5px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+  }
+  textarea:focus, input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
   .note-row { margin-bottom: 8px; display: flex; gap: 6px; }
-  .note-row input { flex: 1; }
-  button { padding: 8px 16px; cursor: pointer; }
-  .primary { background: #1a1d21; color: #fff; border: none; border-radius: 4px; }
-  .empty-state { text-align: center; color: #888; padding: 60px 0; }
-  .llm-reference { font-size: 12px; color: #666; margin-top: 12px; padding: 8px; background: #fafafa; border-radius: 6px; }
+  .note-row input { flex: 1; margin-top: 0; }
+
+  button { padding: 9px 16px; cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); font-size: 13px; font-weight: 600; color: var(--text); transition: background 0.12s ease; }
+  button:hover { background: var(--bg); }
+  #add-note { font-size: 12.5px; padding: 6px 13px; color: var(--accent); border-color: #ccd2f8; background: var(--accent-soft); }
+  #add-note:hover { background: #e2e5fd; }
+  .primary { background: var(--header-bg); color: #fff; border: none; font-weight: 650; padding: 11px 24px; margin-top: 24px; box-shadow: var(--shadow-sm); }
+  .primary:hover { background: #24272c; }
+
+  .gold-row { display: flex; align-items: center; gap: 8px; margin-top: 18px; font-size: 13.5px; padding: 10px 14px; background: var(--bg); border-radius: var(--radius-sm); }
+  .gold-row input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+  .empty-state { text-align: center; color: var(--text-faint); padding: 90px 0; font-size: 15px; }
+  .empty-state .big { font-size: 34px; margin-bottom: 10px; }
+
+  .llm-reference { font-size: 12px; color: var(--text-dim); margin-top: 16px; padding: 10px 13px; background: #fffdf7; border: 1px solid #f0dfa8; border-radius: var(--radius-sm); }
+  .llm-reference strong { color: #8a6400; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Benevolent Dictator — Annotate</h1>
+  <div class="brand">
+    <div class="mark">J</div>
+    <div>
+      <h1>Benevolent Dictator</h1>
+      <div class="subtitle">Human annotation queue</div>
+    </div>
+  </div>
   <span id="queue-count"></span>
 </header>
 <main id="app"><div class="empty-state">Loading…</div></main>

@@ -13,12 +13,13 @@ async function loadQueue() {
   const res = await fetch("/api/calls/unreviewed");
   queue = await res.json();
   queueCountEl.textContent = `${queue.length} unreviewed`;
+  queueCountEl.style.display = queue.length ? "" : "none";
 }
 
 async function renderNext() {
   await loadQueue();
   if (queue.length === 0) {
-    app.innerHTML = `<div class="empty-state">Nothing left to review. 🎉</div>`;
+    app.innerHTML = `<div class="empty-state"><div class="big">✓</div>Nothing left to review.</div>`;
     return;
   }
   const call = queue[0];
@@ -32,8 +33,8 @@ async function renderNext() {
 
   const checklistHtml = errorClasses
     .map(
-      (c) => `<label><input type="checkbox" name="error_class" value="${c.id}"> ${c.name}
-        <span style="color:#999">— ${escapeHtml(c.description).slice(0, 90)}...</span></label>`
+      (c) => `<label><input type="checkbox" name="error_class" value="${c.id}">
+        <span><span class="name">${c.name}</span><span class="desc">${escapeHtml(c.description).slice(0, 90)}...</span></span></label>`
     )
     .join("");
 
@@ -44,9 +45,8 @@ async function renderNext() {
   app.innerHTML = `
     <div class="card">
       <h2>${call.call_id}</h2>
-      <p><strong>Outcome:</strong> ${call.outcome ?? "in progress"} &nbsp;
-         <strong>Area:</strong> ${call.practice_area ?? "—"}</p>
-      <div>${transcriptHtml || "<em>No transcript.</em>"}</div>
+      <p class="subline"><span class="badge">${call.outcome ?? "in progress"}</span><span class="badge">${call.practice_area ?? "—"}</span></p>
+      <div id="transcript-block">${transcriptHtml || "<em>No transcript.</em>"}</div>
       <div class="llm-reference"><strong>LLM judge flags (reference, not constraint):</strong> ${llmFlagsHtml}</div>
 
       <h3>Which error classes apply?</h3>
@@ -59,7 +59,7 @@ async function renderNext() {
       <h3>Overall note</h3>
       <textarea id="overall-note" rows="3"></textarea>
 
-      <p><label><input type="checkbox" id="is-gold"> Mark as gold example</label></p>
+      <div class="gold-row"><label><input type="checkbox" id="is-gold"> Mark as gold example</label></div>
 
       <button class="primary" id="submit-review">Submit &amp; next</button>
     </div>
