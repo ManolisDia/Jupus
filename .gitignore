@@ -9,3 +9,4 @@ backend.log
 venv/
 docs/.obsidian/
 .claude/settings.local.json
+.coverage

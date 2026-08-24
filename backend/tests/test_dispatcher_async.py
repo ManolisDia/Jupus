@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from unittest.mock import patch
 
@@ -416,10 +417,10 @@ async def test_exception_during_lock_hold_still_releases_lock(repos):
 
 # --- cross-cutting.md section 2: WebSocket disconnect cleanup ---
 
-def test_disconnect_marks_call_abandoned(repos):
+async def test_disconnect_marks_call_abandoned(repos):
     _seed_state("call-1", stage="capture")
 
-    mark_call_abandoned(repos, "call-1")
+    await mark_call_abandoned(repos, "call-1")
 
     assert CALL_STATES["call-1"]["stage"] == "ended"
     row = repos.calls.get("call-1")
@@ -427,23 +428,64 @@ def test_disconnect_marks_call_abandoned(repos):
     assert row["ended_at"] is not None
 
 
-def test_disconnect_does_not_override_already_ended_call(repos):
+async def test_disconnect_does_not_override_already_ended_call(repos):
     state = _seed_state("call-1", stage="ended")
     repos.calls.upsert(state, outcome_override="booked")
 
-    mark_call_abandoned(repos, "call-1")
+    await mark_call_abandoned(repos, "call-1")
 
     assert repos.calls.get("call-1")["outcome"] == "booked"
 
 
-def test_disconnect_clears_registries(repos):
+async def test_disconnect_clears_registries(repos):
     _seed_state("call-1", stage="capture")
     dispatcher.CONNECTIONS["call-1"] = object()
     dispatcher.SPEAKING["call-1"] = True
     dispatcher.DEFERRED["call-1"] = [("t", "r", "capture", time.monotonic())]
 
-    mark_call_abandoned(repos, "call-1")
+    await mark_call_abandoned(repos, "call-1")
 
     assert "call-1" not in dispatcher.CONNECTIONS
     assert "call-1" not in dispatcher.SPEAKING
     assert "call-1" not in dispatcher.DEFERRED
+
+
+async def test_disconnect_waits_for_in_flight_turn_before_marking_abandoned(repos):
+    # Regression test for docs/code-review-2026-08-24.md finding #1: a
+    # disconnect landing mid-turn must not race the in-flight
+    # process_supervisor_call — it must wait for that turn to finish (via
+    # the same per-call lock) so whichever outcome is actually correct wins
+    # deterministically, not whichever write happens to land last.
+    #
+    # GRAPH.invoke runs on a worker thread via asyncio.to_thread (see
+    # process_supervisor_call), so the mock below is a plain synchronous
+    # function coordinating with the test via threading.Event, not
+    # asyncio.Event — an asyncio primitive created on the event-loop thread
+    # isn't safely awaitable from a different OS thread.
+    _seed_state("call-1", stage="capture")
+    started = threading.Event()
+    finish_turn = threading.Event()
+
+    def slow_invoke(state, config=None):
+        started.set()
+        finish_turn.wait(timeout=5)
+        return {**state, "stage": "ended", "booking_confirmed": True, "pending_reply": "done"}
+
+    with (
+        patch("backend.dispatcher.GRAPH.invoke", side_effect=slow_invoke),
+        patch("backend.dispatcher.send_over_bridge"),
+    ):
+        turn_task = asyncio.create_task(process_supervisor_call(repos, "call-1", "tool-1", "hi"))
+        await asyncio.get_event_loop().run_in_executor(None, started.wait, 5)
+
+        abandon_task = asyncio.create_task(mark_call_abandoned(repos, "call-1"))
+        await asyncio.sleep(0.05)
+        assert not abandon_task.done()  # blocked behind the lock, not racing in
+
+        finish_turn.set()
+        await turn_task
+        await abandon_task
+
+    # The in-flight turn finished with stage="ended" (a real booking) before
+    # mark_call_abandoned got the lock, so it correctly did NOT overwrite it.
+    assert repos.calls.get("call-1")["outcome"] != "abandoned"

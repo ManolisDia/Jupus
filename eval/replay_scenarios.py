@@ -41,24 +41,42 @@ SCENARIOS: dict[str, list[str]] = {
         "Just info for now, thanks.",
     ],
     "S2": [
+        # NB: this already names "tenancy" explicitly, unlike S4's
+        # deliberately vague opener — the real classify_practice_area call
+        # confidently resolves it on this first turn alone (0.95+ confidence,
+        # confirmed live), so no separate clarifying utterance is scripted
+        # here. One WAS previously scripted ("It's about my flat.") but that
+        # became actively harmful once Phase 7 (optimistic capture) started
+        # asking about "name" within the same turn: with no shape-check gate
+        # for "name", that utterance got optimistically accepted as a name
+        # answer instead of being caught immediately the way the old
+        # synchronous node_capture always did — see docs/fixes/2026-08-24-005.md.
+        #
+        # Utterance order also rewritten for Phase 7's actual shape: name,
+        # email, and phone are now asked back-to-back with no confirm-back
+        # in between (that's the whole point — see docs/phases/
+        # phase-7-optimistic-capture.md) — email/phone's mandatory
+        # confirmations are both deferred to the batched drain phase after
+        # phone, not interleaved one field at a time the way the pre-Phase-7
+        # script assumed. Matches backend/tests/test_scenarios.py's S2.
         "I need some help with my tenancy.",
-        "It's about my flat.",
         "Alex Smith",
         "alex.smith@example.com",
-        "Yes, that's right.",
         "5551234567",
-        "Yes.",
+        "Yes, that's right.",  # drain item 1: confirm email
+        "Yes.",  # drain item 2: confirm phone
         "Thursday afternoon",
         "Yes, that works.",
     ],
     "S3": [
+        # See S2's comment above — same reasoning for both the dropped
+        # clarifying utterance and the reordered fast-pass-then-drain shape.
         "I need some help with my tenancy.",
-        "It's about my flat.",
         "Alex Smith",
         "alex.smith@example.com",
-        "Yes, that's right.",
         "5551234567",
-        "Yes.",
+        "Yes, that's right.",  # drain item 1: confirm email
+        "Yes.",  # drain item 2: confirm phone
         # backend/db/repositories/sqlite_slots.py pre-books 10am and 2pm on
         # the first seeded business day for every area — this deterministically
         # collides so the alternative-slot branch of node_booking fires for real
@@ -74,7 +92,13 @@ SCENARIOS: dict[str, list[str]] = {
         "uh, Alesh, maybe",
         "No, it's Alex Smith.",
         "alex at example dot com",
-        "Yes, that's right.",
+        # phone isn't part of docs/scenarios.md's original S4 transcript,
+        # but is structurally required under Phase 7: email's confirm-back
+        # only happens once the drain phase starts, which only begins once
+        # every field (including phone) has been fast-asked about — see
+        # test_scenarios.py's S4 for the identical restructuring.
+        "555-123-4567",
+        "Yes, that's right.",  # drain item: confirm email
     ],
     "S5": [
         "I have an issue that's both about my job and my immigration status.",
