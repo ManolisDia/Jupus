@@ -110,6 +110,26 @@ Net position: `interrupt_response: true` for real barge-in, no client-side retry
 Losing an occasional turn to a rare spurious `semantic_vad` cancellation (caller has to repeat
 themselves) is a far smaller failure than the retry's own risk of crashing the whole call.
 
+### Small static FAQ knowledge base — a deliberate scope addition beyond the original Phase 5 spec
+Live testing surfaced a real usability problem the original design didn't account for: a caller
+side-question that doesn't extract to whatever field/classification is currently pending (e.g.
+"are you open on weekends?" asked mid-booking) was silently discarded — the relevant node just
+re-asked its own question verbatim, reading as the agent ignoring the caller outright. Two scope
+options were considered: (a) a small hand-authored FAQ list with deterministic keyword matching, or
+(b) a much larger rearchitecture toward free-flowing conversation (an LLM deciding how to handle
+arbitrary tangents). Option (b) was explicitly rejected — it conflicts with this project's core
+architecture doctrine (deterministic graph edges, no LLM picking what happens next) and is a much
+bigger change than a take-home warrants. Went with (a): `backend/supervisor/faq.py`, a handful of
+static entries (hours, address, fees, consultation length) matched via plain keyword substring
+checks — no Claude call, same reasoning as `heuristics.py`'s `is_explicit_human_request`. Checked
+centrally in `dispatcher.process_supervisor_call` against every caller utterance, regardless of
+whether the node's own logic succeeded or failed that turn — a caller can tack a genuine aside onto
+an otherwise-answerable utterance in the same breath, and nothing node-specific (`extract_field`,
+`classify_practice_area`, etc.) ever looks at anything but the part it's asking about. Explicitly a
+narrow deflect-and-return mechanism, not general Q&A — anything outside the fixed list still falls
+back to the original (silent) reprompt behavior, which is a documented, accepted limitation, not
+something this change attempts to solve.
+
 ### No cap on session/call duration
 Considered a hard server-side timeout on call length (protects against a stuck loop or an abandoned tab with a live mic). Explicitly decided against — not part of this build. If cost or runaway-session risk becomes a real concern later (e.g. if a hosted demo is ever stood up), address it there specifically rather than constraining every local test call now.
 
