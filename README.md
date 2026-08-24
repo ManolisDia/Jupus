@@ -78,6 +78,18 @@ Then:
 - **Call it:** open [`client/index.html`](client/index.html) in a browser and talk.
 - **Watch it:** open `http://localhost:8000/admin`.
 
+## Try it live
+
+A real, publicly reachable deployment exists so you don't have to clone anything for a first
+look: **https://jupus-5661c.web.app** (client, on Firebase Hosting) talking to a FastAPI backend
+on Railway. It's gated behind an access token — ask the project owner for it, then open the URL
+and use the page normally.
+
+This is additive, not a replacement: the local setup above stays the primary, always-works path,
+and is what a full evaluation should still use. The hosted deployment is single-instance, has no
+autoscaling, and its access token is a casual-discovery deterrent (see
+[`docs/DECISIONS.md`](docs/DECISIONS.md)'s Phase 9 entries), not a production auth boundary.
+
 ## Try it without talking
 
 Want to see the eval tooling and admin panel without a live mic session?

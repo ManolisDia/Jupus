@@ -151,14 +151,14 @@ Nothing here needs new automated tests beyond what already exists — this phase
 
 ## Definition of Done
 
-- [ ] `pytest backend/tests/test_access_gate.py` and full suite pass, zero regressions (local dev's unset-token behavior is the thing most likely to accidentally regress — verify explicitly).
-- [ ] Live: deployed Firebase client successfully completes a full real call against the deployed Railway backend — booking, escalation, and low-confidence-capture all re-verified against the *hosted* deployment, not assumed to work just because they work locally (network/CORS/mixed-content issues are exactly the class of bug that only shows up once actually deployed).
-- [ ] Live: hitting the Railway `/session` URL directly with no `access_token` returns 401; with the wrong token, 401; confirms the gate is actually live, not just present in code.
-- [ ] Live: restart/redeploy the Railway service; confirm previously-booked slots and call history in `/admin` survive the redeploy (proves the Volume is actually mounted and used, not just configured).
-- [ ] OpenAI and Anthropic spend caps/alerts confirmed set, screenshotted or otherwise recorded for your own records (not something to just remember doing).
-- [ ] `docs/DECISIONS.md` updated: the SQLite-on-a-Volume-not-Postgres call (Decision 1, this is where the earlier conversation's reasoning gets formally recorded), and the access-gate threat model (Decision 3 — explicitly "deters casual discovery/abuse of a time-boxed demo URL," not "production auth").
-- [ ] README gets a short "Try it live" section with the Firebase URL and a plain note that the access token is required and where to get it (i.e. ask the project owner) — the hosted deployment is an addition to the existing local-setup instructions, which stay unchanged and remain the primary path per this doc's Goal.
-- [ ] `client/config.example.js` committed, `client/config.js` confirmed git-ignored (a real access token accidentally committed is the one genuinely bad outcome to guard against here).
+- [x] `pytest backend/tests/test_access_gate.py` and full suite pass, zero regressions (local dev's unset-token behavior is the thing most likely to accidentally regress — verify explicitly).
+- [x] Live: deployed Firebase client successfully completes a full real call against the deployed Railway backend — booking, escalation, and low-confidence-capture all re-verified against the *hosted* deployment, not assumed to work just because they work locally (network/CORS/mixed-content issues are exactly the class of bug that only shows up once actually deployed).
+- [x] Live: hitting the Railway `/session` URL directly with no `access_token` returns 401; with the wrong token, 401; confirms the gate is actually live, not just present in code.
+- [x] Live: restart/redeploy the Railway service; confirm previously-booked slots and call history in `/admin` survive the redeploy (proves the Volume is actually mounted and used, not just configured).
+- [x] OpenAI and Anthropic spend caps/alerts confirmed set, screenshotted or otherwise recorded for your own records (not something to just remember doing).
+- [x] `docs/DECISIONS.md` updated: the SQLite-on-a-Volume-not-Postgres call (Decision 1, this is where the earlier conversation's reasoning gets formally recorded), and the access-gate threat model (Decision 3 — explicitly "deters casual discovery/abuse of a time-boxed demo URL," not "production auth").
+- [x] README gets a short "Try it live" section with the Firebase URL and a plain note that the access token is required and where to get it (i.e. ask the project owner) — the hosted deployment is an addition to the existing local-setup instructions, which stay unchanged and remain the primary path per this doc's Goal.
+- [x] `client/config.example.js` committed, `client/config.js` confirmed git-ignored (a real access token accidentally committed is the one genuinely bad outcome to guard against here).
 
 ---
 

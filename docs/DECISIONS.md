@@ -198,5 +198,37 @@ match starts missing paraphrased situations, a local sentence-transformer
 embedding + cosine search is the natural next step; still no vector DB
 needed until the corpus is far larger than "a few dozen entries per area."
 
+### Phase 9 hosted deployment: SQLite on a Railway Volume, not a Postgres migration
+Restated in full here per that phase's own instruction, since this is where the earlier design
+conversation's reasoning gets formally recorded (`docs/phases/phase-9-hosted-deployment.md`'s
+Decision 1). `backend/db/repositories/__init__.py` documents the `db_backend: Literal["sqlite",
+"postgres"]` seam but never implements the Postgres branch — a Railway Volume mounted at the same
+path `JUPUS_DB_PATH` already points to (`/data/calendar.db` in the live deployment) needed zero
+repository-layer code changes; `connect(settings.db_path)` behaves identically whether that path
+is ephemeral local disk or a persistent Volume. Postgres would only pay off once the in-memory
+dispatcher state (`CALL_STATES`/`LOCKS`/`SPEAKING`/`DEFERRED`/`CONNECTIONS`) is also externalized
+for horizontal scaling — deliberately out of scope, since this deployment is explicitly
+single-instance (see the next entry). Verified live: booked slots and call history survived a
+`railway redeploy`, confirming the Volume — not the container's ephemeral disk — is what's
+actually being read and written.
+
+### Phase 9 hosted deployment: shared-secret access gate — deters casual discovery, not a real auth boundary
+A deployed `/session` endpoint mints real, paid OpenAI Realtime ephemeral tokens on request — the
+moment its URL is known, it's a direct spend/abuse vector. `JUPUS_ACCESS_TOKEN` (a plain string
+env var) is checked as a `?access_token=` query param on `/session`, `/bridge`, and every route
+under `/admin`/`/admin/annotate` (a path-prefix middleware, since `/admin` is served via
+`StaticFiles` and can't take a per-route dependency the same way) — no-op when unset, so local dev
+is completely unaffected. This is explicitly **not** a production authentication system: the token
+is embedded in the deployed client's `config.js` and is trivially visible to anyone who inspects
+page source. The actual threat model this closes is a URL getting crawled or casually shared and
+racking up spend from strangers who were never given the link — not a determined attacker. The
+real backstop against that residual risk is billing spend caps/alerts on both the OpenAI and
+Anthropic accounts, confirmed set before the first live deploy (this phase's Decision 4) — the
+access gate raises the bar, the spend cap is what actually limits the damage if it's ever cleared.
+Also carries `PUBLIC_CLIENT_ORIGIN`-scoped CORS (locked to the real Firebase origin instead of
+`"*"` once one exists) and Railway configured for exactly one instance, no autoscaling — the
+in-memory dispatcher state (previous entry) is a hard single-instance constraint this deployment
+makes load-bearing rather than theoretical.
+
 ### Realtime (OpenAI) + Supervisor (Claude) — two vendors, deliberately
 OpenAI Realtime has the most mature WebRTC/tool-calling/interrupt handling of the available realtime voice APIs. Claude powers the supervisor's reasoning (extraction, classification, summarization). Two API keys is an accepted tradeoff, documented clearly in the README since the brief requires documenting exactly what's needed to run the project.
