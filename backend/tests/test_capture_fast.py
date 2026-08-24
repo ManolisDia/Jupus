@@ -106,6 +106,39 @@ def test_fast_pass_gate_falls_back_on_explicit_human_request(repos):
     assert result["last_asked_field"] != "email"
 
 
+def test_gate_fallback_does_not_confirm_an_unrelated_earlier_pending_field(repos):
+    # Regression for a real, live-reproduced bug: email was already
+    # pending_confirm (via background verification, its confirm-back not
+    # yet spoken — that's batched for the later drain phase), and the
+    # caller, right after being asked for their phone number, repeated
+    # their email instead (plausible human mistake: they kept talking
+    # about email a beat after the fast pass had already moved on).
+    # "email at ... dot com" doesn't look like a phone number, so the gate
+    # correctly falls back to real node_capture — but the OLD behavior
+    # let node_capture pick up email (the ONLY pending_confirm field, in
+    # FIELD_PRIORITY order) as if IT were what this utterance answered,
+    # silently marking email "confirmed" via confirm_field_answer without
+    # ever having spoken its confirm-back question aloud, and discarding
+    # the caller's actual (non-)answer to phone entirely. Must instead
+    # treat this as a (failed) attempt at "phone" — email stays untouched,
+    # to be asked about for real later.
+    state = _fast_state(
+        "phone",
+        email={"value": "manos@gmail.com", "confidence": 0.9, "status": "pending_confirm", "attempts": 0, "validated": True},
+    )
+    state["transcript"][-1]["text"] = "Manos at gmail dot com."
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "", "confidence": 0.0}) as mock_extract,
+        patch("backend.supervisor.tools.confirm_field_answer") as mock_confirm,
+    ):
+        result = _invoke(state, repos)
+    mock_confirm.assert_not_called()
+    mock_extract.assert_called_once_with("Manos at gmail dot com.", "phone")
+    assert result["caller_profile"]["email"]["status"] == "pending_confirm"  # untouched, not silently confirmed
+    assert result["caller_profile"]["email"]["value"] == "manos@gmail.com"
+    assert "one digit at a time" in result["pending_reply"].lower()  # phone re-ask (SPELL_OUT_REPLIES)
+
+
 def test_delayed_failure_interrupts_and_reasks_without_touching_current_utterance(repos):
     # Regression test for a real, live-reproduced bug: a background
     # verification failure is NEVER for the currently-asked field, by

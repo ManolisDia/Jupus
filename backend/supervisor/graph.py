@@ -248,7 +248,31 @@ def node_routing(state: CallState, config: RunnableConfig) -> dict:
     }
 
 
-def node_capture(state: CallState, config: RunnableConfig) -> dict:
+def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field: str = None) -> dict:
+    """`allowed_pending_field` restricts which field this call may treat the
+    current utterance as a confirm-back answer for. None (the default, used
+    by node_capture_confirm's drain phase) means "any field currently
+    pending_confirm, in FIELD_PRIORITY order" — safe there because the
+    drain phase asks about pending fields strictly in that order, so
+    whichever one is pending genuinely was just asked about out loud.
+
+    That assumption is UNSAFE when node_capture is reached via
+    _fallback_to_real_capture mid-fast-pass (capture_phase == "fast"):
+    Phase 7's background verification can mark an EARLIER field
+    pending_confirm before its own confirm-back has ever been spoken —
+    only the currently fast-asked field (last_asked_field) has actually
+    been put to the caller this turn. Without this restriction, an
+    unrelated utterance that merely happens to restate an earlier field's
+    value (e.g. the caller repeating their email right as the fast pass
+    had already moved on to asking for their phone number) gets
+    interpreted by confirm_field_answer as answering THAT earlier field's
+    (never-spoken) confirm-back and silently marks it "confirmed" — no
+    confirm-back was ever heard, and the caller's actual answer to the
+    field really asked about is discarded. Confirmed live, see
+    docs/fixes/ for the write-up. When set, only that one field is ever
+    treated as "currently pending confirmation" for this call; any other
+    pending field is left untouched, to be asked about for real later.
+    """
     repos = _repos(config)
     call_id = state["call_id"]
     repos.trace.record_event(call_id, "node_entered", node="capture")
@@ -298,7 +322,10 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
         return f"That doesn't look like a valid {FIELD_LABELS[field_name]} — could you say it again?"
 
     try:
-        pending_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
+        if allowed_pending_field is not None:
+            pending_field = allowed_pending_field if profile[allowed_pending_field]["status"] == "pending_confirm" else None
+        else:
+            pending_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
 
         if pending_field:
             answer = call_claude_tool(
@@ -458,7 +485,10 @@ def _sync_last_asked_field(result: dict, current_asked_field):
 
 
 def _fallback_to_real_capture(state: CallState, config: RunnableConfig) -> dict:
-    result = node_capture(state, config)
+    # Restricted to last_asked_field — see node_capture's allowed_pending_field
+    # docstring for why an earlier, not-yet-spoken-about pending field must
+    # never be treated as what this utterance is answering.
+    result = node_capture(state, config, allowed_pending_field=state["last_asked_field"])
     result["last_asked_field"] = _sync_last_asked_field(result, state["last_asked_field"])
     return result
 
