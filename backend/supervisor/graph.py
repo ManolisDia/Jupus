@@ -358,11 +358,22 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
     return {"caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
 
 
-def _next_fast_field(asked_field):
-    if asked_field is None:
-        return FIELD_PRIORITY[0]
-    idx = FIELD_PRIORITY.index(asked_field)
-    return FIELD_PRIORITY[idx + 1] if idx + 1 < len(FIELD_PRIORITY) else None
+def _next_fast_field(profile, asked_field):
+    # Profile-aware, not purely positional: after a delayed-failure
+    # interrupt (see node_capture_fast's handling of
+    # verification_failed_field) resumes the fast pass on an earlier field,
+    # the immediately-following field may already be resolved (its own
+    # background check succeeded while the interrupt was being handled) —
+    # skip anything already confirmed/pending_confirm rather than
+    # re-asking a field already captured. In the ordinary, no-interrupt
+    # case this returns exactly the same field the old purely-positional
+    # version did, since every field after asked_field is still "missing"
+    # by simple virtue of never having been asked yet.
+    start_idx = FIELD_PRIORITY.index(asked_field) + 1 if asked_field is not None else 0
+    for f in FIELD_PRIORITY[start_idx:]:
+        if profile[f]["status"] == "missing":
+            return f
+    return None
 
 
 def _sync_last_asked_field(result: dict, current_asked_field):
@@ -430,11 +441,21 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
         )
         return _fallback_to_real_capture(state, config)
 
-    if asked_field and state.get("verification_failed_field") == asked_field:
-        repos.trace.record_event(
-            call_id, "capture_fast_urgent_reask", node="capture_fast", field=asked_field
-        )
-        return _fallback_to_real_capture(state, config)
+    failed_field = state.get("verification_failed_field")
+    if failed_field:
+        # A background verification failed for some earlier field — NOT
+        # necessarily asked_field itself. By construction it never can be:
+        # a field only gets a background check once node_capture_fast has
+        # already advanced last_asked_field past it (the check is spawned
+        # in the same turn that returns the NEXT field's question), so by
+        # the time that check can possibly have resolved, asked_field is
+        # always a later field. This turn's utterance is answering THAT
+        # later field, not the one that failed — reusing it to re-extract
+        # the failed field (as an earlier version of this branch did, via
+        # _fallback_to_real_capture) would silently attribute unrelated
+        # text to the wrong field. See docs/fixes/ for the real,
+        # live-reproduced case this replaces.
+        return _delayed_failure_reask(repos, call_id, failed_field, "capture_fast")
 
     if asked_field and (
         heuristics.is_explicit_human_request(utterance)
@@ -446,7 +467,7 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
         )
         return _fallback_to_real_capture(state, config)
 
-    next_field = _next_fast_field(asked_field)
+    next_field = _next_fast_field(profile, asked_field)
     if next_field:
         reply = f"Great — and what's your {FIELD_LABELS[next_field]}?"
         repos.trace.record_event(
@@ -777,18 +798,66 @@ def node_escalation(state: CallState, config: RunnableConfig) -> dict:
     return {"stage": "ended", "consecutive_llm_failures": 0, **_agent_turn(reply)}
 
 
+def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: str) -> dict:
+    """Shared by node_capture_fast and node_capture_confirm: a background
+    verification resolved to a genuine failure for `failed_field`, whose
+    own turn has already passed — the utterance that would have answered
+    it is gone, already consumed by the (failed) background attempt.
+    Reusing THIS turn's utterance to re-extract it (an earlier version of
+    this code did, via a since-removed urgent-reask fallback) would
+    silently attribute unrelated text to the wrong field — confirmed live,
+    see docs/fixes/.
+
+    Correct handling: interrupt explicitly. Re-ask the failed field by
+    name, and deliberately do NOT process this turn's utterance as an
+    answer to anything — the caller will need to repeat whatever they
+    just said too, once we're back on track. last_asked_field moves to
+    the failed field so the caller's NEXT utterance is correctly
+    attributed to it; capture_phase is force-reset to "fast" so that next
+    utterance re-enters node_capture_fast's own gate/advance logic
+    (relevant when called from node_capture_confirm — the fast pass isn't
+    "done" again until this field is actually resolved).
+    """
+    reply = f"Sorry, I need to double check something — what's your {FIELD_LABELS[failed_field]} again?"
+    repos.trace.record_event(call_id, "capture_fast_delayed_failure_reask", node=node_name, field=failed_field)
+    repos.trace.record_event(
+        call_id, "node_exited", node=node_name,
+        stage_from="capture", stage_to="capture", pending_reply=reply,
+    )
+    return {
+        "last_asked_field": failed_field,
+        "capture_phase": "fast",
+        "consecutive_llm_failures": 0,
+        **_agent_turn(reply),
+    }
+
+
+def node_capture_confirm(state: CallState, config: RunnableConfig) -> dict:
+    """Phase 7 (optimistic capture) — the confirm/drain phase's entry
+    point. A thin wrapper around the original node_capture (unchanged):
+    checks for a background verification failure first, since node_capture
+    itself has no concept of the fast pass's background checks and would
+    otherwise silently misattribute whatever utterance is current to the
+    wrong field if it ever encountered a field left "missing" by a check
+    that failed after the confirm phase had already started (the analogous
+    in-fast-pass case is node_capture_fast's own identical check). Once
+    there's no outstanding failure, delegates straight through — the drain
+    phase's actual behavior (reading back pending confirmations, escalating
+    on repeated failure) is exactly today's node_capture logic, no changes.
+    """
+    failed_field = state.get("verification_failed_field")
+    if failed_field:
+        return _delayed_failure_reask(_repos(config), state["call_id"], failed_field, "capture_confirm")
+    return node_capture(state, config)
+
+
 def build_graph():
     g = StateGraph(CallState)
     for name, fn in [
         ("greeting", node_greeting),
         ("routing", node_routing),
         ("capture_fast", node_capture_fast),
-        # "capture_confirm" reuses node_capture unchanged — the drain phase
-        # is fully synchronous and behaves exactly like today's capture
-        # node (Decision 2, docs/phases/phase-7-optimistic-capture.md): it
-        # already correctly handles a pending confirm-back answer and a
-        # genuinely-failed field's re-ask, no new logic needed there.
-        ("capture_confirm", node_capture),
+        ("capture_confirm", node_capture_confirm),
         ("booking", node_booking),
         ("escalation", node_escalation),
     ]:

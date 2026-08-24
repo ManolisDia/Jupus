@@ -10,7 +10,7 @@ from backend.supervisor.faq import match_faq
 from backend.supervisor.graph import GRAPH, apply_extraction
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
-from backend.supervisor.state import CALL_STATES, CallState, get_or_create_state
+from backend.supervisor.state import CALL_STATES, FIELD_PRIORITY, CallState, get_or_create_state
 from backend.supervisor.tracing import traced_call
 from backend.utils import now_iso
 
@@ -116,9 +116,25 @@ def _reconcile_field_verifications(state: CallState, call_id: str) -> None:
     state['verification_failed_field'] for whichever field just failed (if
     any). Always safe to call while holding get_lock(call_id) — never
     awaits anything, just inspects already-completed Task objects and pops
-    them out of FIELD_VERIFICATIONS."""
+    them out of FIELD_VERIFICATIONS.
+
+    A failure is flagged regardless of whether the failed field is the
+    CURRENT last_asked_field — by construction it never can be. A field
+    only gets a background check once node_capture_fast has already
+    advanced last_asked_field past it (the check is spawned in the same
+    return that produces the NEXT field's question), so by the time that
+    check can possibly resolve, last_asked_field always already points at
+    a later field. Gating this on field == last_asked_field (an earlier
+    version of this function did) meant the signal could effectively never
+    fire for real — confirmed live: a caller's later utterance got silently
+    misattributed to re-extract an unrelated, already-passed field once
+    node_capture's generic "first missing field" logic eventually reached
+    it. See docs/fixes/ for the write-up and node_capture_fast's handling
+    of this field for the corrected interrupt-and-reask behavior.
+    """
     state["verification_failed_field"] = None
     done_keys = [key for key in FIELD_VERIFICATIONS if key[0] == call_id and FIELD_VERIFICATIONS[key].done()]
+    failed_fields = []
     for key in done_keys:
         task = FIELD_VERIFICATIONS.pop(key)
         field = key[1]
@@ -133,8 +149,14 @@ def _reconcile_field_verifications(state: CallState, call_id: str) -> None:
                 **profile,
                 field: {**profile[field], "value": result["value"], "status": result["status"]},
             }
-        elif field == state.get("last_asked_field"):
-            state["verification_failed_field"] = field
+        else:
+            failed_fields.append(field)
+    if failed_fields:
+        # Deterministic if more than one resolved to failure in the same
+        # reconcile pass (rare) — always surface the earliest in
+        # FIELD_PRIORITY order first, matching the canonical drain order
+        # used everywhere else in this design.
+        state["verification_failed_field"] = min(failed_fields, key=FIELD_PRIORITY.index)
 
 
 def _reconcile_before_capture_turn(state: CallState, call_id: str) -> None:

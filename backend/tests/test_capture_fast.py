@@ -8,6 +8,7 @@ import pytest
 
 from backend import dispatcher
 from backend.db.repositories import Repositories
+from backend.supervisor import graph
 from backend.supervisor.graph import GRAPH
 from backend.supervisor.state import CALL_STATES, FIELD_PRIORITY, new_call_state
 from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
@@ -105,16 +106,46 @@ def test_fast_pass_gate_falls_back_on_explicit_human_request(repos):
     assert result["last_asked_field"] != "email"
 
 
-def test_urgent_reask_falls_back_instead_of_advancing(repos):
-    state = _fast_state("email", email={"value": None, "confidence": 0.0, "status": "missing", "attempts": 1, "validated": True})
+def test_delayed_failure_interrupts_and_reasks_without_touching_current_utterance(repos):
+    # Regression test for a real, live-reproduced bug: a background
+    # verification failure is NEVER for the currently-asked field, by
+    # construction — a field only gets a background check once
+    # node_capture_fast has already advanced last_asked_field past it (the
+    # check is spawned in the same return that produces the NEXT field's
+    # question). So by the time "email" fails in the background, we've
+    # already moved on to asking about "phone" — this utterance answers
+    # "phone", not "email". The old behavior (falling back to real
+    # node_capture, treating this utterance as email's re-extraction
+    # attempt) silently misattributed unrelated text to the wrong field.
+    state = _fast_state(
+        "phone",  # already past "email" — override _fast_state's auto-confirm default for it
+        email={"value": None, "confidence": 0.0, "status": "missing", "attempts": 0, "validated": True},
+    )
     state["verification_failed_field"] = "email"
-    state["transcript"][-1]["text"] = "manos at gmail dot com"
-    with patch("backend.supervisor.tools.extract_field", return_value={"value": "manos@gmail.com", "confidence": 0.9}):
+    state["transcript"][-1]["text"] = "555-123-4567"  # answering "phone", NOT "email"
+    with patch("backend.supervisor.tools.extract_field") as mock_extract:
         result = _invoke(state, repos)
-    # fell back to real node_capture (which re-extracts email for real) —
-    # never advanced straight to "phone" despite the utterance passing the
-    # shape gate
-    assert result["last_asked_field"] != "phone"
+    # extract_field must never be called with "555-123-4567" against
+    # "email" — the utterance is never touched at all this turn
+    mock_extract.assert_not_called()
+    assert result["last_asked_field"] == "email"
+    assert "email" in result["pending_reply"].lower()
+    assert result["caller_profile"]["email"]["status"] == "missing"  # untouched, not corrupted with phone's answer
+
+
+def test_next_fast_field_skips_already_resolved_fields_not_just_positional():
+    # After a delayed-failure interrupt (see above) resumes the fast pass
+    # on an earlier field, the immediately-following FIELD_PRIORITY
+    # position may already be resolved (its own background check
+    # succeeded while the interrupt was being handled) — must be skipped,
+    # not re-asked. E.g. "name" was being re-asked after a delayed
+    # failure; "email" already resolved in the meantime; "phone" is next.
+    profile = {
+        "name": {"value": None, "confidence": 0.0, "status": "missing", "attempts": 0, "validated": True},
+        "email": {"value": "manos@gmail.com", "confidence": 0.9, "status": "pending_confirm", "attempts": 0, "validated": True},
+        "phone": {"value": None, "confidence": 0.0, "status": "missing", "attempts": 0, "validated": True},
+    }
+    assert graph._next_fast_field(profile, "name") == "phone"
 
 
 def test_pending_confirm_field_always_falls_back_regardless_of_gate(repos):
@@ -187,3 +218,28 @@ async def test_dispatcher_only_spawns_background_verification_on_real_advance():
     assert ("call-regress", "name") not in dispatcher.FIELD_VERIFICATIONS
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"
     assert CALL_STATES[call_id]["caller_profile"]["name"]["value"] == "Alex Smith"
+
+
+def test_confirm_phase_also_interrupts_on_delayed_failure(repos):
+    # node_capture (registered as "capture_confirm") has no concept of
+    # background verification failures at all — node_capture_confirm's own
+    # guard must catch a failure discovered AFTER the confirm/drain phase
+    # has already started, same as node_capture_fast's identical check
+    # during the fast pass itself. Without this, node_capture would pick
+    # the "missing" field as a fresh target_field and misattribute
+    # whatever utterance is current — the same bug class, one phase later.
+    state = new_call_state("call-1")
+    state["stage"] = "capture"
+    state["capture_phase"] = "confirm"
+    state["practice_area"] = "employment"
+    state["transcript"] = [{"role": "caller", "text": "Yes, that's right.", "ts": "t"}]
+    state["verification_failed_field"] = "email"
+    with patch("backend.supervisor.tools.extract_field") as mock_extract, patch(
+        "backend.supervisor.tools.confirm_field_answer"
+    ) as mock_confirm:
+        result = _invoke(state, repos)
+    mock_extract.assert_not_called()
+    mock_confirm.assert_not_called()
+    assert result["last_asked_field"] == "email"
+    assert result["capture_phase"] == "fast"
+    assert "email" in result["pending_reply"].lower()
