@@ -10,3 +10,4 @@ venv/
 docs/.obsidian/
 .claude/settings.local.json
 .coverage
+client/config.js

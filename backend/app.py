@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -30,13 +30,35 @@ def get_repos() -> Repositories:
 
 # Local-only prototype: client/index.html is opened directly as a file:// page
 # (no bundler/dev server per docs/DECISIONS.md), so its origin is "null" —
-# CORS must be wide open for it to reach this backend at all.
+# CORS must be wide open for it to reach this backend at all. Once deployed
+# (Phase 9), PUBLIC_CLIENT_ORIGIN locks this down to the real Firebase origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[settings.public_client_origin] if settings.public_client_origin else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def verify_access_token(access_token: Optional[str] = None) -> None:
+    # No-op (always passes) when settings.jupus_access_token is unset — local
+    # dev is unaffected. When set, requires an exact match (Phase 9 gate).
+    if settings.jupus_access_token and access_token != settings.jupus_access_token:
+        raise HTTPException(status_code=401, detail="invalid or missing access token")
+
+
+@app.middleware("http")
+async def admin_access_gate(request: Request, call_next):
+    # Gates /admin and /admin/annotate behind the same shared-secret query
+    # param as /session and /bridge (Phase 9, Decision 3) — a no-op when
+    # jupus_access_token is unset. Scoped to a single middleware rather than
+    # a per-route dependency since StaticFiles serves many files under the
+    # /admin mount.
+    if settings.jupus_access_token and request.url.path.startswith("/admin"):
+        access_token = request.query_params.get("access_token")
+        if access_token != settings.jupus_access_token:
+            return PlainTextResponse("invalid or missing access token", status_code=401)
+    return await call_next(request)
 
 REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 REALTIME_MODEL = "gpt-realtime-2.1"
@@ -47,7 +69,7 @@ class SessionRequest(BaseModel):
     call_id: str
 
 
-@app.post("/session")
+@app.post("/session", dependencies=[Depends(verify_access_token)])
 async def create_session(request: SessionRequest):
     async with httpx.AsyncClient() as client:
         try:
@@ -98,7 +120,15 @@ class BridgeMessage(BaseModel):
 
 
 @app.websocket("/bridge")
-async def bridge(websocket: WebSocket, call_id: str, repos: Repositories = Depends(get_repos)):
+async def bridge(
+    websocket: WebSocket,
+    call_id: str,
+    access_token: Optional[str] = None,
+    repos: Repositories = Depends(get_repos),
+):
+    if settings.jupus_access_token and access_token != settings.jupus_access_token:
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     dispatcher.CONNECTIONS[call_id] = websocket
     while True:
