@@ -1,11 +1,13 @@
-# Phase 7 — Polish + Submission
+# Phase 8 — Polish + Submission
 
 ## Goal
 
-Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–6, and a recorded walkthrough. This phase has no new application code — it's verification, documentation, and (only if time allows) the Railway stretch.
+Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–7, and a recorded walkthrough. This phase has no new application code — it's verification, documentation, and (only if time allows) the Railway stretch.
 
 ## Prerequisite
-Phase 6a, 6b, and 6c DoD all met.
+Phase 7 (optimistic capture) DoD met, on top of Phase 6a/6b/6c.
+
+**Renumbered from Phase 7** on 2026-08-24 to make room for `phase-7-optimistic-capture.md` — final submission has to stay the last phase regardless of number; this doc's content is unchanged, only its number and self-references moved.
 
 ---
 
@@ -30,7 +32,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 ## Final regression pass
 
-1. `pytest` (the **entire** suite, all phases) — must pass with zero failures. This is the single command that proves the whole backend still works after Phase 7's inevitable small tweaks (README-driven fixes, tightened prompts, etc.).
+1. `pytest` (the **entire** suite, all phases) — must pass with zero failures. This is the single command that proves the whole backend still works after Phase 8's inevitable small tweaks (README-driven fixes, tightened prompts, etc.).
 2. Re-run **all 6 scripted scenarios live**, fresh, in one sitting, after everything else is finalized (catches regressions introduced while polishing):
    - Info-only, no booking (routing story, declines to book)
    - Happy-path booking, full confirm-back
@@ -66,7 +68,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: a separate spectator page (e.g. `admin/graph.html` or a new admin tab), never folded into the caller-facing `client/index.html` — it's read-only, driven off the trace stream, and must have zero ability to affect the live call or add latency/risk to the hot path.
 
-**Scope guard**: attempt only after every required Phase 7 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
+**Scope guard**: attempt only after every required Phase 8 DoD item is met, and after the Railway stretch if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
 
 ## Optional stretch — Caller-facing visual polish
 
@@ -81,7 +83,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: this is `client/index.html` + its CSS/JS only — no backend changes, no new endpoints.
 
-**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 7 DoD is met, and cut first if time runs short.
+**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 8 DoD is met, and cut first if time runs short.
 
 ## Optional stretch — Admin panel UI/UX polish
 
@@ -99,7 +101,7 @@ One section per question, each referencing actual file paths and specific behavi
 
 **Placement**: `admin/index.html`, `admin/app.js`, `admin/annotate.html`, `admin/annotate.js` — no backend changes.
 
-**Scope guard**: same as the other optional stretches — attempt only once the required Phase 7 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
+**Scope guard**: same as the other optional stretches — attempt only once the required Phase 8 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
 
 ## Optional stretch — Real statute citation (tenancy)
 

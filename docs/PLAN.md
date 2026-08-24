@@ -266,7 +266,7 @@ Jupus/
     handoffs/                         # one .md per escalated call
     phases/
       cross-cutting.md
-      phase-1-raw-voice-loop.md ... phase-7-polish-submission.md
+      phase-1-raw-voice-loop.md ... phase-8-polish-submission.md
     fixes/
       INDEX.md
     known-issues/
@@ -292,7 +292,8 @@ Work in order. Do not start a phase until the previous one's DoD is verified —
 | 6a | [`phases/phase-6a-observability.md`](phases/phase-6a-observability.md) | Deterministic metrics, base admin panel (list/drill-in/trace viewer), closes out `cross-cutting.md` (error handling, disconnect cleanup, mocked scenario suite). Depends only on Phases 1–5. |
 | 6b | [`phases/phase-6b-error-taxonomy.md`](phases/phase-6b-error-taxonomy.md) | Error taxonomy registry, LLM-judge classification pass, `run_eval.py`. Depends on 6a only. |
 | 6c | [`phases/phase-6c-benevolent-dictator.md`](phases/phase-6c-benevolent-dictator.md) | BD annotation page, taxonomy critique + approval, judge calibration, live-Claude regression harness. Depends on 6a and 6b. |
-| 7 | [`phases/phase-7-polish-submission.md`](phases/phase-7-polish-submission.md) | README, written answers, full regression pass, video |
+| 7 | [`phases/phase-7-optimistic-capture.md`](phases/phase-7-optimistic-capture.md) | Decouple field-capture latency from Claude round-trips: a fast deterministic sequencer asks the next field instantly, real verification runs in the background, corrections drain in a batched confirm phase |
+| 8 | [`phases/phase-8-polish-submission.md`](phases/phase-8-polish-submission.md) | README, written answers, full regression pass, video |
 
 Phase 6 was originally one phase but split into 6a/6b/6c — by far the largest single phase otherwise, and several of its pieces don't actually depend on each other (you can see call traces in the admin panel long before the taxonomy/judge machinery exists). The dependency order is strictly forward: 6b depends on 6a, 6c depends on 6a+6b, and neither 6a nor 6b ever depends on something built later.
 
