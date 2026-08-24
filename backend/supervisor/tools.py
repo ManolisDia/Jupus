@@ -6,6 +6,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from backend.supervisor import prompts
+from backend.supervisor.knowledge import corpus as knowledge_corpus
+from backend.supervisor.knowledge import search as knowledge_search
 from backend.supervisor.llm_utils import call_claude_json, call_claude_text
 from backend.utils import now_iso
 
@@ -267,6 +269,50 @@ def confirm_booking_answer(utterance: str) -> dict:
         system=prompts.CONFIRM_BOOKING_ANSWER_PROMPT,
         user_content=utterance,
         json_schema=CONFIRM_BOOKING_SCHEMA,
+    )
+
+
+# Phase 8 (case research) — a BM25 score below this floor means the top
+# candidate shares essentially no relevant vocabulary with the corpus, so
+# the grounding Claude call is skipped entirely (Decision 2,
+# docs/phases/phase-8-legal-research.md) — calibrated against the actual
+# corpus content: genuine matches score ~2-6, off-topic utterances mostly
+# score 0, with occasional single-word coincidental overlap landing just
+# under this floor.
+BM25_RELEVANCE_FLOOR = 2.0
+
+GROUND_STATUTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "selected_id": {"type": ["string", "null"]},
+        "spoken_framing": {"type": ["string", "null"]},
+    },
+    "required": ["selected_id", "spoken_framing"],
+    "additionalProperties": False,
+}
+
+
+def search_statute_candidates(area: str, query: str) -> list[dict]:
+    return knowledge_search.bm25_search(query, knowledge_corpus.load_corpus(area), top_k=3)
+
+
+def ground_statute_citation(utterance: str, candidates: list[dict]) -> dict:
+    # Closed-set selection only (Decision 3) — the prompt forbids selecting
+    # an id outside `candidates` or inventing citation text, and the caller
+    # (backend.dispatcher._search_statutes_in_background) additionally
+    # verifies the returned id defensively rather than trusting it blindly.
+    user_content = json.dumps(
+        {
+            "caller_situation": utterance,
+            "candidates": [
+                {"id": c["id"], "citation": c["citation"], "text": c["text"]} for c in candidates
+            ],
+        }
+    )
+    return call_claude_json(
+        system=prompts.GROUND_STATUTE_CITATION_PROMPT,
+        user_content=user_content,
+        json_schema=GROUND_STATUTE_SCHEMA,
     )
 
 

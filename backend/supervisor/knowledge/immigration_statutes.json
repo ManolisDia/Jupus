@@ -1,0 +1,65 @@
+[
+  {
+    "id": "immigration-ia1971-s3",
+    "citation": "Immigration Act 1971, s.3(1)(c)",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["overstaying", "visa expired", "leave to remain expired", "stayed too long"],
+    "text": "A person who remains in the UK after their permission (leave to remain) has expired becomes an overstayer and is liable to removal. Depending on the length and circumstances of the overstay, this can also affect eligibility for a future re-entry visa."
+  },
+  {
+    "id": "immigration-rtw-checks",
+    "citation": "Immigration, Asylum and Nationality Act 2006 (right to work checks)",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["right to work", "employer checks", "employed without permission", "work visa"],
+    "text": "Employers are required to check a prospective employee's right to work in the UK before employment begins, and can face a civil penalty for knowingly employing someone without the right to work."
+  },
+  {
+    "id": "immigration-ia2014-rtr",
+    "citation": "Immigration Act 2014 (right to rent scheme)",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["right to rent", "landlord immigration check", "renting without status", "tenancy immigration check"],
+    "text": "Landlords in England are required to check a prospective tenant's immigration status and right to rent before granting a residential tenancy, and can face a civil penalty for letting to someone without the right to rent."
+  },
+  {
+    "id": "immigration-euss-late",
+    "citation": "EU Settlement Scheme — late application guidance",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["EU settlement scheme", "settled status", "pre-settled status", "late application", "missed the deadline"],
+    "text": "An EEA or Swiss citizen (and their family members) resident in the UK before the end of the Brexit transition period may still be able to make a late application to the EU Settlement Scheme where there are reasonable grounds for missing the original deadline."
+  },
+  {
+    "id": "immigration-iaa1999-s8",
+    "citation": "Immigration and Asylum Act 1999, s.8",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["asylum claim", "claiming asylum late", "delay claiming asylum", "credibility"],
+    "text": "An asylum claim should generally be made as soon as reasonably practicable after arrival in the UK. A delay in claiming can be treated as damaging to the claimant's credibility, but a late claim is not automatically barred on that basis alone."
+  },
+  {
+    "id": "immigration-rules-part9",
+    "citation": "Immigration Rules, Part 9 (general grounds for refusal)",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["visa refused", "application refused", "deception", "false representations"],
+    "text": "An immigration application can be refused on general grounds including where false representations or deception were used, or where relevant facts were not disclosed, in a current or previous application."
+  },
+  {
+    "id": "immigration-bna1981",
+    "citation": "British Nationality Act 1981 (naturalisation)",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["citizenship", "naturalisation", "becoming a british citizen", "good character requirement"],
+    "text": "A person seeking to register or naturalise as a British citizen must generally meet residence requirements and a 'good character' requirement, in addition to the specific route's other eligibility criteria."
+  },
+  {
+    "id": "immigration-ia1971-s24",
+    "citation": "Immigration Act 1971, s.24",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["illegal entry", "overstaying offence", "immigration offence", "criminal record immigration"],
+    "text": "Knowingly entering the UK illegally, or remaining beyond permitted leave without reasonable excuse, can be a criminal offence under the Immigration Act 1971, separate from the civil consequences of removal."
+  },
+  {
+    "id": "immigration-appeal-rights",
+    "citation": "Nationality, Immigration and Asylum Act 2002 (rights of appeal / administrative review)",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["appeal a decision", "administrative review", "visa refusal appeal", "time limit to appeal"],
+    "text": "Certain immigration decisions carry a right of appeal or administrative review, but these generally come with strict, short time limits — often as little as 14 days from the decision if the person is in the UK — after which the right may be lost."
+  }
+]

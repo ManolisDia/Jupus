@@ -271,7 +271,7 @@ Jupus/
     DECISIONS.md
     error_taxonomy.md                 # error class design + evolution process
     benevolent_dictator.md            # the human annotation/calibration role & process
-    scenarios.md                      # the 6 canonical test scenarios (S1-S6)
+    scenarios.md                      # the canonical test scenarios (S1-S6, plus S7 added in Phase 8)
     answers.md                        # 4 required written answers
     handoffs/                         # one .md per escalated call
     phases/

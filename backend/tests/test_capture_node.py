@@ -217,7 +217,10 @@ def test_zero_confidence_email_still_explains_and_reprompts(repos):
     assert "valid" in result["pending_reply"].lower()
 
 
-def test_all_fields_confirmed_transitions_to_booking(repos):
+def test_all_fields_confirmed_transitions_to_research(repos):
+    # Phase 8 (case research): once every field is confirmed, capture now
+    # hands off to the new "research" stage rather than straight to
+    # "booking" — see docs/phases/phase-8-legal-research.md.
     confirmed = lambda v: {"value": v, "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
     state = _capture_state(
         name=confirmed("Alex Smith"),
@@ -225,7 +228,9 @@ def test_all_fields_confirmed_transitions_to_booking(repos):
         phone=confirmed("5551234567"),
     )
     result = _invoke(state, repos)
-    assert result["stage"] == "booking"
+    assert result["stage"] == "research"
+    assert result["research_phase"] == "gather"
+    assert "work" in result["pending_reply"].lower()  # _capture_state's practice_area is "employment"
 
 
 def test_llm_failure_returns_fallback_reply_without_crashing(repos):

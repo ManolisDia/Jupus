@@ -152,5 +152,36 @@ slower than needed once real tool-call round trips exist (Phase 2+). Not revisit
 was a live A/B, not a settled rejection; if revisited, `backend/app.py`'s `REALTIME_MODEL` is a
 one-line change.
 
+### Case research (Phase 8) — jurisdiction, corpus provenance, and why it can never invent a citation
+Three static per-practice-area statute corpora (`backend/supervisor/knowledge/{employment,tenancy,immigration}_statutes.json`,
+8-10 entries each) are all **England & Wales** law, hand-authored during
+implementation from general knowledge for this take-home — not scraped, not
+generated at runtime by an LLM, and not independently verified against
+primary legal sources. This is stated plainly here, and every delivered
+citation is followed by a fixed spoken disclaimer ("this is general
+information, not legal advice, but it's worth mentioning to the attorney")
+precisely because of that provenance — this is a demonstration of a
+retrieval mechanism, not a production legal research tool.
+
+Two things keep the feature from ever inventing a citation, deliberately
+layered rather than relying on either alone: (1) a BM25 relevance floor
+(`tools.BM25_RELEVANCE_FLOOR`) means most utterances during the research
+stage never even reach an LLM call — nothing to ground means nothing to
+risk hallucinating; (2) when the floor is cleared, the one Claude call
+(`ground_statute_citation`) is closed-set selection only — it's handed the
+top BM25 candidates' exact `{id, citation, text}` and must return one of
+those exact ids or `null`, never freeform text, and the caller
+(`dispatcher._search_statutes_in_background`) additionally verifies the
+returned id is actually one of the candidates it was given before trusting
+it. See `docs/phases/phase-8-legal-research.md` for the full design.
+
+Retrieval itself is plain-Python BM25 over the corpus, not embeddings or a
+vector DB — right-sized for 8-10 entries per area today. Flagged as a
+deliberate future consideration, not decided now: if the corpus grows
+substantially (more areas, many more entries, denser text) or keyword
+match starts missing paraphrased situations, a local sentence-transformer
+embedding + cosine search is the natural next step; still no vector DB
+needed until the corpus is far larger than "a few dozen entries per area."
+
 ### Realtime (OpenAI) + Supervisor (Claude) — two vendors, deliberately
 OpenAI Realtime has the most mature WebRTC/tool-calling/interrupt handling of the available realtime voice APIs. Claude powers the supervisor's reasoning (extraction, classification, summarization). Two API keys is an accepted tradeoff, documented clearly in the README since the brief requires documenting exactly what's needed to run the project.

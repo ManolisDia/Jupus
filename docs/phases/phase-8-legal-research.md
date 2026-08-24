@@ -174,14 +174,23 @@ RESEARCH_FILLER_QUESTIONS = {
     "immigration": "Got it — do you know what type of visa or status you're currently on?",
 }
 
+BOOKING_INVITE_REPLY = "What day and time works for you?"
+
+
 def node_research_gather(state: CallState, config: RunnableConfig) -> dict:
     utterance = state["transcript"][-1]["text"]
     area = state["practice_area"]
     if heuristics.looks_like_research_skip(utterance):
         # caller explicitly doesn't want to elaborate -> straight to booking,
-        # no search ever spawned. (Explicit "get me a human" requests are
-        # already caught earlier, centrally, in dispatcher.process_supervisor_call.)
-        return {"stage": "booking", "research_phase": "gather", **_agent_turn(None)}
+        # no search ever spawned. Speaks BOOKING_INVITE_REPLY rather than
+        # nothing — silence here would leave the caller with no cue that
+        # booking has started (correction made during implementation: an
+        # earlier draft of this doc had this branch reply with nothing,
+        # which is a real dead-air bug, not a "no filler" stylistic choice
+        # — those are different things). (Explicit "get me a human"
+        # requests are already caught earlier, centrally, in
+        # dispatcher.process_supervisor_call.)
+        return {"stage": "booking", "research_phase": "gather", **_agent_turn(BOOKING_INVITE_REPLY)}
     return {
         "research_phase": "deliver",
         "background_search_query": utterance,
@@ -198,11 +207,14 @@ STATUTE_DISCLAIMER = "Just so you know — this is general information, not lega
 
 def node_research_deliver(state: CallState, config: RunnableConfig) -> dict:
     citation = state.get("statute_citation")   # merged in by dispatcher's reconciliation step, see below
-    reply = f"{citation['spoken_framing']} {STATUTE_DISCLAIMER}" if citation else None
+    if citation:
+        reply = f"{citation['spoken_framing']} {STATUTE_DISCLAIMER} {BOOKING_INVITE_REPLY}"
+    else:
+        reply = BOOKING_INVITE_REPLY
     return {"stage": "booking", "research_phase": "gather", **_agent_turn(reply)}
 ```
 
-If `citation` is `None` — genuinely nothing relevant found, search failed, or the background task hadn't resolved yet (Decision 4) — the reply is silent on the topic (`_agent_turn(None)`, same "no filler acknowledgment" pattern `docs/DECISIONS.md` already establishes elsewhere) and the call moves straight into `booking`'s existing flow.
+If `citation` is `None` — genuinely nothing relevant found, search failed, or the background task hadn't resolved yet (Decision 4) — the reply is silent on the *statute* topic (no citation, no disclaimer) but still speaks `BOOKING_INVITE_REPLY` to move the caller into booking; this turn must never leave the caller with dead air and no next question, which is a different concern from `docs/DECISIONS.md`'s "no filler acknowledgment while waiting" entry (that's about not narrating a wait, not about skipping a real question the conversation needs).
 
 ### `route_by_stage`
 

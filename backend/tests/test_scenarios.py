@@ -1,4 +1,5 @@
-"""docs/scenarios.md — the 6 canonical scenarios (S1-S6), mocked-Claude and
+"""docs/scenarios.md — the canonical scenarios (S1-S6, plus S7's two variants
+added alongside Phase 8's case-research node), mocked-Claude and
 driven through backend.dispatcher.process_supervisor_call (the real dispatch
 entry point on this branch; docs/scenarios.md calls it `process_supervisor_call`
 too, but an earlier draft of this file used a since-removed `on_ask_supervisor`
@@ -54,6 +55,18 @@ def booking_repos():
 async def _turn(repos, call_id, tool_call_id, utterance):
     with patch("backend.dispatcher.send_over_bridge"):
         await process_supervisor_call(repos, call_id, tool_call_id, utterance)
+
+
+async def _await_statute_search(call_id):
+    # Phase 8 (case research): mirrors _await_background_verification below
+    # — dispatcher.STATUTE_SEARCHES holds a real asyncio.Task, scheduled but
+    # not actually run until explicitly awaited; reconciling immediately
+    # after lets a test assert on the merged state without needing a whole
+    # extra turn just to observe it.
+    task = dispatcher.STATUTE_SEARCHES.get(call_id)
+    if task:
+        await task
+        dispatcher._reconcile_statute_search(CALL_STATES[call_id], call_id)
 
 
 async def _await_background_verification(call_id, field):
@@ -168,6 +181,12 @@ async def test_scenario_s2_happy_path_booking(booking_repos):
         return_value={"confirmed": True, "corrected_value": None},
     ):
         await _turn(repos, call_id, "tool-7", "Yes, that's right.")
+    assert CALL_STATES[call_id]["stage"] == "research"
+
+    # Phase 8 (case research): S2/S3 stay focused on the booking flow itself
+    # (S7 exercises the research node's own mechanics) — a research-skip
+    # phrase moves straight to booking with no background search spawned.
+    await _turn(repos, call_id, "tool-7b", "Honestly, let's just book me in.")
     assert CALL_STATES[call_id]["stage"] == "booking"
 
     with (
@@ -247,6 +266,9 @@ async def test_scenario_s3_slot_conflict_booking(booking_repos):
         return_value={"confirmed": True, "corrected_value": None},
     ):
         await _turn(repos, call_id, "tool-7", "Yes, that's right.")
+    assert CALL_STATES[call_id]["stage"] == "research"
+
+    await _turn(repos, call_id, "tool-7b", "Honestly, let's just book me in.")
     assert CALL_STATES[call_id]["stage"] == "booking"
 
     with (
@@ -397,3 +419,137 @@ async def test_scenario_s6_explicit_escalation(repos, tmp_path):
     final = CALL_STATES[call_id]
     assert final["stage"] == "ended"
     assert final["escalation_reason"] == "explicit_request"
+
+
+async def _drive_to_research(repos, call_id):
+    """Shared capture flow for S7's two variants — the same sequence as
+    S2's up through 'all fields confirmed', landing in stage='research'
+    rather than 'booking' now that Phase 8 sits between them."""
+    await _turn(repos, call_id, "tool-1", "I'd like to book a consultation.")
+    with patch(
+        "backend.supervisor.tools.classify_practice_area",
+        return_value={"area": "tenancy", "confidence": 0.9},
+    ):
+        await _turn(repos, call_id, "tool-2", "It's about my flat.")
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "Jamie Lee", "confidence": 0.9}):
+        await _turn(repos, call_id, "tool-3", "Jamie Lee")
+        await _await_background_verification(call_id, "name")
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "jamie@example.com", "confidence": 0.9}):
+        await _turn(repos, call_id, "tool-4", "jamie at example dot com")
+        await _await_background_verification(call_id, "email")
+    with (
+        patch("backend.supervisor.tools.extract_field", return_value={"value": "5551239876", "confidence": 0.9}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say jamie@example.com?"),
+    ):
+        await _turn(repos, call_id, "tool-5", "555-123-9876")
+    with (
+        patch("backend.supervisor.tools.confirm_field_answer", return_value={"confirmed": True, "corrected_value": None}),
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-123-9876?"),
+    ):
+        await _turn(repos, call_id, "tool-6", "Yes, that's right.")
+    with patch("backend.supervisor.tools.confirm_field_answer", return_value={"confirmed": True, "corrected_value": None}):
+        await _turn(repos, call_id, "tool-7", "Yes, that's right.")
+    assert CALL_STATES[call_id]["stage"] == "research"
+    assert CALL_STATES[call_id]["research_phase"] == "gather"
+
+
+async def test_scenario_s7_case_research_with_citation(booking_repos):
+    repos = booking_repos
+    call_id = "scenario-s7-citation"
+    repos.slots.availability_result = SLOT_A
+
+    await _drive_to_research(repos, call_id)
+
+    fake_candidate = {
+        "id": "tenancy-poe1977-s5", "citation": "Protection from Eviction Act 1977, s.5",
+        "text": "...", "score": 5.0, "jurisdiction": "England & Wales", "topic_tags": [],
+    }
+    await _turn(
+        repos, call_id, "tool-7b",
+        "My landlord is trying to evict me tomorrow without giving me any notice.",
+    )
+    assert CALL_STATES[call_id]["research_phase"] == "deliver"
+    assert CALL_STATES[call_id]["stage"] == "research"
+
+    with (
+        patch("backend.supervisor.tools.search_statute_candidates", return_value=[fake_candidate]),
+        patch(
+            "backend.supervisor.tools.ground_statute_citation",
+            return_value={
+                "selected_id": "tenancy-poe1977-s5",
+                "spoken_framing": "Landlords generally need to give four weeks' written notice before evicting a tenant.",
+            },
+        ),
+    ):
+        await _await_statute_search(call_id)
+
+    await _turn(repos, call_id, "tool-8", "No, nothing in writing, they just showed up and told me to leave.")
+    mid = CALL_STATES[call_id]
+    assert mid["stage"] == "booking"
+    assert "four weeks" in mid["pending_reply"]
+    assert "not legal advice" in mid["pending_reply"]
+
+    with (
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": "2026-09-03", "window": "afternoon", "time": "14:00", "confidence": 0.9},
+        ),
+        patch("backend.supervisor.tools.generate_confirmation_summary", return_value="Thursday at 2pm, sound right?"),
+    ):
+        await _turn(repos, call_id, "tool-9", "Thursday afternoon.")
+    with patch(
+        "backend.supervisor.tools.confirm_booking_answer",
+        return_value={"accepted": True, "needs_clarification": False},
+    ):
+        await _turn(repos, call_id, "tool-10", "Yes, that works.")
+
+    final = CALL_STATES[call_id]
+    assert final["stage"] == "ended"
+    assert final["booking_confirmed"] is True
+    # research must not change the booking outcome, only add turns before it
+    assert repos.slots.book_calls == [SLOT_A["id"]]
+
+
+async def test_scenario_s7_case_research_no_citation(booking_repos):
+    repos = booking_repos
+    call_id = "scenario-s7-no-citation"
+    repos.slots.availability_result = SLOT_A
+
+    await _drive_to_research(repos, call_id)
+
+    await _turn(repos, call_id, "tool-7b", "Just wanted to ask about your general process, really.")
+    assert CALL_STATES[call_id]["research_phase"] == "deliver"
+
+    # BM25 finds nothing relevant at all — the grounding call is never even
+    # reached (Decision 2, docs/phases/phase-8-legal-research.md).
+    with patch("backend.supervisor.tools.search_statute_candidates", return_value=[]) as mock_search, patch(
+        "backend.supervisor.tools.ground_statute_citation"
+    ) as mock_ground:
+        await _await_statute_search(call_id)
+    mock_search.assert_called_once()
+    mock_ground.assert_not_called()
+
+    await _turn(repos, call_id, "tool-8", "Nothing specific, just wanted to understand my options.")
+    mid = CALL_STATES[call_id]
+    assert mid["stage"] == "booking"
+    assert "not legal advice" not in mid["pending_reply"]
+    assert "day and time" in mid["pending_reply"].lower()
+
+    with (
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": "2026-09-03", "window": "afternoon", "time": "14:00", "confidence": 0.9},
+        ),
+        patch("backend.supervisor.tools.generate_confirmation_summary", return_value="Thursday at 2pm, sound right?"),
+    ):
+        await _turn(repos, call_id, "tool-9", "Thursday afternoon.")
+    with patch(
+        "backend.supervisor.tools.confirm_booking_answer",
+        return_value={"accepted": True, "needs_clarification": False},
+    ):
+        await _turn(repos, call_id, "tool-10", "Yes, that works.")
+
+    final = CALL_STATES[call_id]
+    assert final["stage"] == "ended"
+    assert final["booking_confirmed"] is True
+    assert repos.slots.book_calls == [SLOT_A["id"]]

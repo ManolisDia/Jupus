@@ -21,7 +21,7 @@ FIELD_PRIORITY: list[str] = ["name", "email", "phone"]
 
 class CallState(TypedDict):
     call_id: str
-    stage: Literal["greeting", "routing", "capture", "booking", "escalation", "ended"]
+    stage: Literal["greeting", "routing", "capture", "research", "booking", "escalation", "ended"]
     practice_area: Optional[Literal["employment", "tenancy", "immigration"]]
     caller_profile: CallerProfile
     transcript: Annotated[list[dict], operator.add]
@@ -62,6 +62,23 @@ class CallState(TypedDict):
     # that utterance was already fully processed and must not be
     # background-re-verified).
     background_verify_field: Optional[str]
+    # Phase 8 (case research) — only meaningful while stage == "research".
+    # "gather": node_research_gather is either asking the filler follow-up
+    # (having just spawned the background search) or, on the very first
+    # turn of this stage, has already been asked by node_capture_confirm's
+    # own transition and is waiting for the caller's answer. "deliver": the
+    # next turn checks the (usually-resolved) background search result and
+    # speaks the citation, or nothing, before moving to booking.
+    research_phase: Literal["gather", "deliver"]
+    # Set once the background statute search resolves — found, not found,
+    # or failed all collapse to None here (Decision 4,
+    # docs/phases/phase-8-legal-research.md). None while still pending or
+    # if research never ran for this call at all (e.g. escalated earlier).
+    statute_citation: Optional[dict]
+    # Transient — set ONLY by node_research_gather, popped by dispatcher.py
+    # right after GRAPH.invoke returns, same pattern as background_verify_field.
+    # Never left set across turns.
+    background_search_query: Optional[str]
 
 
 def _new_field_capture() -> FieldCapture:
@@ -92,6 +109,9 @@ def new_call_state(call_id: str) -> CallState:
         last_asked_field=None,
         verification_failed_field=None,
         background_verify_field=None,
+        research_phase="gather",
+        statute_citation=None,
+        background_search_query=None,
     )
 
 

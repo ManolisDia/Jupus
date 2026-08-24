@@ -24,8 +24,12 @@ async def test_replay_creates_one_call_per_scenario():
         results = await replay_all(repos, "test-label")
 
     assert set(results.keys()) == set(SCENARIOS.keys())
-    assert len(results) == 6
+    # S1-S6 plus S7's two variants (S7a, S7b), added alongside Phase 8's
+    # case-research node — not hardcoded to 6 so this doesn't silently
+    # break (or silently stop testing anything) the next time a scenario
+    # is added or removed.
+    assert len(results) == len(SCENARIOS)
 
     tagged = repos.evals.eval_runs.get("test-label", set())
-    assert len(tagged) == 6
+    assert len(tagged) == len(SCENARIOS)
     assert tagged == set(results.values())

@@ -19,6 +19,44 @@ FIELD_LABELS = {
     "phone": "phone number",
 }
 
+# Phase 8 (case research) — the intro question is asked as part of the
+# SAME turn that transitions capture -> research (see _enter_research
+# below), not a separate chained turn — the transitioning node already has
+# everything it needs (practice_area) to ask it directly.
+RESEARCH_INTRO_QUESTIONS = {
+    "employment": "Before we get you booked in — can you tell me a bit more about what's been going on at work?",
+    "tenancy": "Before we get you booked in — can you tell me a bit more about what's been happening with your landlord?",
+    "immigration": "Before we get you booked in — can you walk me through a bit more of what's going on with your case?",
+}
+
+# Asked immediately after the caller answers the intro question, with zero
+# Claude calls — this is what buys the background statute search its time
+# (the caller's answer to THIS question is a whole extra turn of wall-clock
+# time before node_research_deliver ever runs). See
+# docs/phases/phase-8-legal-research.md.
+RESEARCH_FILLER_QUESTIONS = {
+    "employment": "Got it — did they give you a reason, in writing or otherwise?",
+    "tenancy": "Got it — did they give you anything in writing, or was it just said to you?",
+    "immigration": "Got it — do you know what type of visa or status you're currently on?",
+}
+
+STATUTE_DISCLAIMER = "Just so you know — this is general information, not legal advice, but it's worth mentioning to the attorney."
+
+# The line that used to live directly in node_capture's "all fields
+# confirmed" branches, now spoken once research is done (found a citation
+# or not) instead of at the moment capture finishes.
+BOOKING_INVITE_REPLY = "What day and time works for you?"
+
+
+def _enter_research(state: CallState) -> dict:
+    area = state["practice_area"]
+    return {
+        "stage": "research",
+        "research_phase": "gather",
+        "consecutive_llm_failures": 0,
+        **_agent_turn(RESEARCH_INTRO_QUESTIONS[area]),
+    }
+
 
 def _repos(config: RunnableConfig):
     return config["configurable"]["repos"]
@@ -92,6 +130,8 @@ def route_by_stage(state: CallState) -> str:
         # never touched outside stage == "capture" so this is a clean split,
         # not a new top-level stage.
         return "capture_confirm" if state["capture_phase"] == "confirm" else "capture_fast"
+    if stage == "research":
+        return "research_deliver" if state["research_phase"] == "deliver" else "research_gather"
     return stage
 
 
@@ -276,12 +316,12 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
         else:
             target_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "missing"), None)
             if target_field is None:
-                reply = "Thanks, I've got everything I need. What day and time works for you?"
+                result = _enter_research(state)
                 repos.trace.record_event(
                     call_id, "node_exited", node="capture",
-                    stage_from="capture", stage_to="booking", pending_reply=reply,
+                    stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
                 )
-                return {"stage": "booking", "consecutive_llm_failures": 0, **_agent_turn(reply)}
+                return result
             extracted = call_claude_tool(
                 repos.trace, call_id, "capture", "extract_field", tools.extract_field, utterance, target_field
             )
@@ -318,12 +358,12 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
 
     remaining = [f for f in FIELD_PRIORITY if new_profile[f]["status"] != "confirmed"]
     if not remaining:
-        reply = "Thanks, I've got everything I need. What day and time works for you?"
+        result = {"caller_profile": new_profile, **_enter_research(state)}
         repos.trace.record_event(
             call_id, "node_exited", node="capture",
-            stage_from="capture", stage_to="booking", pending_reply=reply,
+            stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
         )
-        return {"stage": "booking", "caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+        return result
 
     next_target = remaining[0]
     if new_profile[next_target]["status"] == "pending_confirm":
@@ -498,7 +538,8 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
     # THIS turn's utterance (the answer to asked_field, the last fast-asked
     # field) for real before deciding the first drain item.
     result = _finish_fast_pass(state, config, asked_field)
-    result["capture_phase"] = "confirm"
+    if result.get("stage") != "research":
+        result["capture_phase"] = "confirm"
     return result
 
 
@@ -582,12 +623,12 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
 
     pending_field = next((f for f in FIELD_PRIORITY if new_profile[f]["status"] == "pending_confirm"), None)
     if pending_field is None:
-        reply = "Thanks, I've got everything I need. What day and time works for you?"
+        result = {"caller_profile": new_profile, **_enter_research(state)}
         repos.trace.record_event(
             call_id, "node_exited", node="capture_fast",
-            stage_from="capture", stage_to="booking", pending_reply=reply,
+            stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
         )
-        return {"stage": "booking", "caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+        return result
 
     try:
         confirm_back = call_claude_tool(
@@ -851,6 +892,70 @@ def node_capture_confirm(state: CallState, config: RunnableConfig) -> dict:
     return node_capture(state, config)
 
 
+def node_research_gather(state: CallState, config: RunnableConfig) -> dict:
+    """Phase 8 (case research) — handles the turn answering the research
+    intro question (asked by _enter_research as part of capture's own
+    completion). A caller who explicitly declines to elaborate skips
+    research entirely and goes straight to booking, with no search ever
+    spawned; otherwise this turn spawns the background statute search
+    (signaled via background_search_query for dispatcher.py to pick up,
+    same pattern as Phase 7's background_verify_field) and replies with a
+    templated filler question — zero Claude calls on this turn, which is
+    what buys the search its time. See
+    docs/phases/phase-8-legal-research.md."""
+    repos = _repos(config)
+    call_id = state["call_id"]
+    repos.trace.record_event(call_id, "node_entered", node="research_gather")
+    utterance = state["transcript"][-1]["text"] if state["transcript"] else ""
+    area = state["practice_area"]
+
+    if heuristics.looks_like_research_skip(utterance):
+        repos.trace.record_event(
+            call_id, "node_exited", node="research_gather",
+            stage_from="research", stage_to="booking", pending_reply=BOOKING_INVITE_REPLY,
+        )
+        return {
+            "stage": "booking", "research_phase": "gather",
+            "consecutive_llm_failures": 0, **_agent_turn(BOOKING_INVITE_REPLY),
+        }
+
+    reply = RESEARCH_FILLER_QUESTIONS[area]
+    repos.trace.record_event(
+        call_id, "node_exited", node="research_gather",
+        stage_from="research", stage_to="research", pending_reply=reply,
+    )
+    return {
+        "research_phase": "deliver",
+        "background_search_query": utterance,
+        "consecutive_llm_failures": 0,
+        **_agent_turn(reply),
+    }
+
+
+def node_research_deliver(state: CallState, config: RunnableConfig) -> dict:
+    """Phase 8 (case research) — handles the turn after the filler
+    question. state["statute_citation"] was merged in (if resolved) by
+    dispatcher._reconcile_statute_search immediately before this node ran;
+    a still-in-flight or never-run search is indistinguishable here from
+    "nothing found" (Decision 4, docs/phases/phase-8-legal-research.md) —
+    either way this turn moves on to booking, with or without a citation."""
+    repos = _repos(config)
+    call_id = state["call_id"]
+    repos.trace.record_event(call_id, "node_entered", node="research_deliver")
+
+    citation = state.get("statute_citation")
+    if citation:
+        reply = f"{citation['spoken_framing']} {STATUTE_DISCLAIMER} {BOOKING_INVITE_REPLY}"
+    else:
+        reply = BOOKING_INVITE_REPLY
+
+    repos.trace.record_event(
+        call_id, "node_exited", node="research_deliver",
+        stage_from="research", stage_to="booking", pending_reply=reply,
+    )
+    return {"stage": "booking", "research_phase": "gather", "consecutive_llm_failures": 0, **_agent_turn(reply)}
+
+
 def build_graph():
     g = StateGraph(CallState)
     for name, fn in [
@@ -858,6 +963,8 @@ def build_graph():
         ("routing", node_routing),
         ("capture_fast", node_capture_fast),
         ("capture_confirm", node_capture_confirm),
+        ("research_gather", node_research_gather),
+        ("research_deliver", node_research_deliver),
         ("booking", node_booking),
         ("escalation", node_escalation),
     ]:
@@ -870,6 +977,8 @@ def build_graph():
             "routing": "routing",
             "capture_fast": "capture_fast",
             "capture_confirm": "capture_confirm",
+            "research_gather": "research_gather",
+            "research_deliver": "research_deliver",
             "booking": "booking",
             "escalation": "escalation",
         },

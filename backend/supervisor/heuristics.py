@@ -52,3 +52,20 @@ def looks_like_field_shape(field_name: str, utterance: str) -> bool:
     if field_name == "phone":
         return any(ch.isdigit() for ch in utterance)
     return True  # name/preferred_time: no reliable shape signal, rely on looks_like_tangent alone
+
+
+# Phase 8 (case research) — used by node_research_gather to decide whether
+# the caller's answer to the research intro question is a genuine decline
+# to elaborate, in which case the search is skipped entirely and the call
+# goes straight to booking. Deliberately narrow substring match, same
+# category as EXPLICIT_REQUEST_PHRASES above — no LLM call on this path.
+RESEARCH_SKIP_PHRASES = [
+    "let's just book", "lets just book", "just book me in", "can we just book",
+    "rather just book", "rather not say", "rather not talk about it",
+    "skip that", "no thanks", "not really", "prefer not to",
+]
+
+
+def looks_like_research_skip(utterance: str) -> bool:
+    lowered = utterance.lower()
+    return any(phrase in lowered for phrase in RESEARCH_SKIP_PHRASES)
