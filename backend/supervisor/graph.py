@@ -934,12 +934,17 @@ def node_research_gather(state: CallState, config: RunnableConfig) -> dict:
     intro question (asked by _enter_research as part of capture's own
     completion). A caller who explicitly declines to elaborate skips
     research entirely and goes straight to booking, with no search ever
-    spawned; otherwise this turn spawns the background statute search
-    (signaled via background_search_query for dispatcher.py to pick up,
-    same pattern as Phase 7's background_verify_field) and replies with a
-    templated filler question — zero Claude calls on this turn, which is
-    what buys the search its time. See
-    docs/phases/phase-8-legal-research.md."""
+    spawned; a bare affirmation/leftover reaction (heuristics.
+    looks_like_bare_affirmation — e.g. a trailing "yep, that's correct"
+    still reacting to the PREVIOUS question, since the capture->research
+    handoff has no extra round-trip for the caller to catch up on a fresh
+    question) gets one re-ask rather than being silently treated as the
+    substantive answer, since it never plausibly is one. Otherwise this
+    turn spawns the background statute search (signaled via
+    background_search_query for dispatcher.py to pick up, same pattern as
+    Phase 7's background_verify_field) and replies with a templated
+    filler question — zero Claude calls on this turn, which is what buys
+    the search its time. See docs/phases/phase-8-legal-research.md."""
     repos = _repos(config)
     call_id = state["call_id"]
     repos.trace.record_event(call_id, "node_entered", node="research_gather")
@@ -954,6 +959,33 @@ def node_research_gather(state: CallState, config: RunnableConfig) -> dict:
         return {
             "stage": "booking", "research_phase": "gather",
             "consecutive_llm_failures": 0, **_agent_turn(BOOKING_INVITE_REPLY),
+        }
+
+    if heuristics.looks_like_bare_affirmation(utterance):
+        attempts = state["retry_counts"].get("research_gather", 0) + 1
+        if attempts >= 2:
+            # Best-effort enrichment only (Decision 4) — never loops or
+            # escalates over this; give up gracefully after one re-ask.
+            repos.trace.record_event(
+                call_id, "node_exited", node="research_gather",
+                stage_from="research", stage_to="booking", pending_reply=BOOKING_INVITE_REPLY,
+            )
+            return {
+                "stage": "booking", "research_phase": "gather",
+                "retry_counts": {**state["retry_counts"], "research_gather": attempts},
+                "consecutive_llm_failures": 0, **_agent_turn(BOOKING_INVITE_REPLY),
+            }
+        reply = "Sorry, I don't think I quite caught that — can you tell me a bit more about what's actually been happening?"
+        repos.trace.record_event(
+            call_id, "research_gather_bare_affirmation_fallback", node="research_gather", utterance=utterance
+        )
+        repos.trace.record_event(
+            call_id, "node_exited", node="research_gather",
+            stage_from="research", stage_to="research", pending_reply=reply,
+        )
+        return {
+            "retry_counts": {**state["retry_counts"], "research_gather": attempts},
+            "consecutive_llm_failures": 0, **_agent_turn(reply),
         }
 
     reply = RESEARCH_FILLER_QUESTIONS[area]

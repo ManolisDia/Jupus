@@ -62,6 +62,36 @@ def test_research_gather_skip_phrase_goes_straight_to_booking(repos):
     assert dispatcher.STATUTE_SEARCHES == {}
 
 
+def test_research_gather_bare_affirmation_reasks_without_spawning_search(repos):
+    # Regression for a real, live-reproduced bug: a caller's trailing "yep,
+    # that's correct" (still reacting to the phone confirm-back right
+    # before the capture->research handoff, which has no extra round-trip)
+    # got misattributed to the NEW research intro question and silently
+    # burned the one shot at a citation. Must re-ask instead of treating
+    # this as the substantive answer.
+    state = _research_state("gather", area="tenancy", utterance="Yep, that's correct.")
+    with patch("backend.supervisor.tools.search_statute_candidates") as mock_search:
+        result = _invoke(state, repos)
+    mock_search.assert_not_called()
+    assert result["research_phase"] == "gather"  # stays in gather, not advanced to deliver
+    assert "background_search_query" not in result or not result["background_search_query"]
+    assert result["retry_counts"]["research_gather"] == 1
+    assert "caught that" in result["pending_reply"].lower()
+    assert dispatcher.STATUTE_SEARCHES == {}
+
+
+def test_research_gather_gives_up_after_second_bare_affirmation(repos):
+    # Best-effort enrichment only (Decision 4, docs/phases/
+    # phase-8-legal-research.md) — never loops or escalates over this.
+    state = _research_state("gather", area="tenancy", utterance="Yeah, correct.")
+    state["retry_counts"] = {"research_gather": 1}
+    result = _invoke(state, repos)
+    assert result["stage"] == "booking"
+    assert result["retry_counts"]["research_gather"] == 2
+    assert "day and time" in result["pending_reply"].lower()
+    assert dispatcher.STATUTE_SEARCHES == {}
+
+
 # --- node_research_deliver -----------------------------------------------
 
 

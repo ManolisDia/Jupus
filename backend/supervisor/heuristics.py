@@ -1,5 +1,7 @@
 """Deterministic (non-Claude) heuristics used by the dispatcher."""
 
+import re
+
 EXPLICIT_REQUEST_PHRASES = [
     "speak to a person", "talk to a human", "real person",
     "representative", "talk to someone", "human agent",
@@ -69,3 +71,34 @@ RESEARCH_SKIP_PHRASES = [
 def looks_like_research_skip(utterance: str) -> bool:
     lowered = utterance.lower()
     return any(phrase in lowered for phrase in RESEARCH_SKIP_PHRASES)
+
+
+# Phase 8 (case research) — used by node_research_gather to catch a
+# leftover reaction to the PREVIOUS question (e.g. confirming a field
+# right before the capture->research handoff) getting misattributed to
+# the NEW research intro question, since that handoff has no extra
+# round-trip for the caller to "catch up" on a fresh question — confirmed
+# live: a caller's trailing "yep, that's correct" (still reacting to the
+# phone confirm-back) landed as node_research_gather's utterance and got
+# treated as their landlord-situation description, burning the one shot
+# at a real citation on content that was never actually about it. Unlike
+# TANGENT_PREFIXES (which flags utterances that look like a QUESTION or
+# aside), this flags utterances that are ENTIRELY made of acknowledgment/
+# affirmation words and nothing else — a real answer to "tell me what
+# happened" almost never consists purely of these, even a short one
+# ("he just showed up" already has content words outside this set).
+_BARE_AFFIRMATION_TOKENS = frozenset(
+    "yes yeah yep yup correct right ok okay sure no nope nah thats that "
+    "is it was true affirmative indeed exactly".split()
+)
+_WORD_RE = re.compile(r"[a-z]+")
+
+
+def looks_like_bare_affirmation(utterance: str) -> bool:
+    stripped = utterance.strip().lower().replace("'", "")
+    if not stripped:
+        return True  # empty/silence carries no substantive content either
+    tokens = _WORD_RE.findall(stripped)
+    if not tokens:
+        return True
+    return all(token in _BARE_AFFIRMATION_TOKENS for token in tokens)
