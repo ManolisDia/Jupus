@@ -7,7 +7,7 @@ from fastapi import WebSocket
 from backend.db.repositories import Repositories
 from backend.supervisor import tools
 from backend.supervisor.faq import match_faq
-from backend.supervisor.graph import GRAPH, apply_extraction
+from backend.supervisor.graph import GRAPH, LOW_CONFIDENCE_CONFIRM_THRESHOLD, apply_extraction
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from backend.supervisor.state import CALL_STATES, FIELD_PRIORITY, CallState, get_or_create_state
@@ -103,7 +103,13 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
             traced_call, repos.trace, call_id, "capture_fast_background",
             "validate_email" if field == "email" else "validate_phone", validator, candidate,
         )
-        if not valid:
+        # Low confidence is treated the same as invalid format — a
+        # well-formed-looking but unconfidently-heard email/phone must not
+        # silently reach the confirm-back phase, where it would only get
+        # Claude's soft "spell out if it would help" discretion rather
+        # than a guaranteed ask to spell it out (backend.supervisor.graph.
+        # LOW_CONFIDENCE_CONFIRM_THRESHOLD; see docs/fixes/).
+        if not valid or extracted["confidence"] < LOW_CONFIDENCE_CONFIRM_THRESHOLD:
             return {"field": field, "success": False}
         return {
             "field": field, "success": True,

@@ -331,12 +331,43 @@ async def test_scenario_s4_low_confidence_capture(repos):
         await _turn(repos, call_id, "tool-4", "No, it's Alex Smith.")
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"
 
-    # garbled email -> always pending_confirm regardless of confidence (email/
-    # phone are never auto-trusted, per docs/DECISIONS.md). "email" isn't
+    # garbled email at medium confidence (0.6, below LOW_CONFIDENCE_CONFIRM_
+    # THRESHOLD) is now treated the same as an invalid format — re-asked to
+    # spell it out, not silently sent to pending_confirm/a soft Claude
+    # confirm-back (this refines, not contradicts, docs/DECISIONS.md's
+    # "email/phone are always confirmed back regardless of confidence" —
+    # that's still true ONCE confidence clears this floor). "email" isn't
     # FIELD_PRIORITY's last field, so this advances optimistically —
     # extract_field runs in the background, explicitly awaited here.
     with patch("backend.supervisor.tools.extract_field", return_value={"value": "alex@example.com", "confidence": 0.6}):
         await _turn(repos, call_id, "tool-5", "alex at example dot com")
+        # Let the background task actually finish (so the NEXT turn's own
+        # reconcile-before-invoke step discovers it as done), but don't
+        # reconcile it here — verification_failed_field is a genuinely
+        # single-turn transient signal (dispatcher._reconcile_field_
+        # verifications resets it to None every pass), so consuming it in
+        # a separate step before the turn that's meant to act on it would
+        # just wipe it again before node_capture_fast ever sees it.
+        task = dispatcher.FIELD_VERIFICATIONS.get((call_id, "email"))
+        if task:
+            await task
+    assert CALL_STATES[call_id]["last_asked_field"] == "phone"
+
+    # the caller's next utterance ("555-123-4567", intended as phone) is
+    # interrupted by the now-finished background failure — node_capture_fast's
+    # own reconcile-before-invoke step discovers it and asks to spell out
+    # email instead of processing this utterance as phone's answer.
+    await _turn(repos, call_id, "tool-6", "555-123-4567")
+    mid = CALL_STATES[call_id]
+    assert mid["caller_profile"]["email"]["status"] == "missing"
+    assert mid["last_asked_field"] == "email"
+    assert mid["capture_phase"] == "fast"
+    assert "spell" in mid["pending_reply"].lower()
+
+    # caller spells it out clearly -> high confidence, advances (again) to
+    # ask about phone, spawning a fresh background check for email.
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "alex@example.com", "confidence": 0.9}):
+        await _turn(repos, call_id, "tool-7", "A, L, E, X, at example dot com")
         await _await_background_verification(call_id, "email")
     assert CALL_STATES[call_id]["caller_profile"]["email"]["status"] == "pending_confirm"
     assert CALL_STATES[call_id]["last_asked_field"] == "phone"
@@ -350,7 +381,7 @@ async def test_scenario_s4_low_confidence_capture(repos):
         patch("backend.supervisor.tools.extract_field", return_value={"value": "5551234567", "confidence": 0.9}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say alex@example.com?"),
     ):
-        await _turn(repos, call_id, "tool-6", "555-123-4567")
+        await _turn(repos, call_id, "tool-8", "555-123-4567")
     assert CALL_STATES[call_id]["caller_profile"]["phone"]["status"] == "pending_confirm"
     assert CALL_STATES[call_id]["capture_phase"] == "confirm"
 
@@ -359,7 +390,7 @@ async def test_scenario_s4_low_confidence_capture(repos):
         patch("backend.supervisor.tools.confirm_field_answer", return_value={"confirmed": True, "corrected_value": None}),
         patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 555-123-4567?"),
     ):
-        await _turn(repos, call_id, "tool-7", "Yes, that's right.")
+        await _turn(repos, call_id, "tool-9", "Yes, that's right.")
 
     final_profile = CALL_STATES[call_id]["caller_profile"]
     assert final_profile["name"]["status"] == "confirmed"

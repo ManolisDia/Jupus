@@ -19,6 +19,23 @@ FIELD_LABELS = {
     "phone": "phone number",
 }
 
+# Below this, an email/phone extraction is treated the same as an invalid
+# one — re-asked rather than sent to Claude's soft "spell out ambiguous
+# characters if it would help" confirm-back instruction, which live testing
+# showed doesn't reliably trigger (see docs/fixes/ for this session's
+# write-up). Same 0.75 bar apply_extraction already treats as "confident"
+# elsewhere, for consistency. Deliberately deterministic/code-driven, not
+# another soft prompt instruction — the project's own history
+# (docs/DECISIONS.md's Haiku->Sonnet entry) is that this class of "the
+# model should reliably do X" instruction needs to be enforced in code
+# when X actually matters, not hoped for.
+LOW_CONFIDENCE_CONFIRM_THRESHOLD = 0.75
+
+SPELL_OUT_REPLIES = {
+    "email": "I want to make sure I've got that exactly right — could you spell out your email address for me, one character at a time?",
+    "phone": "I want to make sure I've got that exactly right — could you read out your phone number one digit at a time?",
+}
+
 # Phase 8 (case research) — the intro question is asked as part of the
 # SAME turn that transitions capture -> research (see _enter_research
 # below), not a separate chained turn — the transitioning node already has
@@ -328,12 +345,17 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
             if target_field in ("email", "phone"):
                 # handled fully explicitly, not through apply_extraction's
                 # confidence thresholds: any outcome that isn't a genuinely
-                # valid value — including confidence 0 (nothing recognizable
-                # said at all) — must explain why and re-ask, not silently
-                # repeat the same question with no indication anything was wrong
+                # valid, confidently-heard value — including confidence 0
+                # (nothing recognizable said at all) or a well-formed value
+                # heard with low confidence — must explain why and re-ask,
+                # not silently repeat the same question with no indication
+                # anything was wrong, and not proceed to a confirm-back that
+                # can't be trusted to actually surface the uncertainty.
                 candidate = extracted["value"] or None
                 if candidate is None or not _is_valid_format(target_field, candidate):
-                    return _deny_and_reprompt(target_field, _invalid_format_reply(target_field))
+                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field])
+                if extracted["confidence"] < LOW_CONFIDENCE_CONFIRM_THRESHOLD:
+                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field])
                 new_value, new_status = candidate, "pending_confirm"
             else:
                 new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
@@ -587,7 +609,10 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
                 "validate_email" if asked_field == "email" else "validate_phone",
                 tools.validate_email if asked_field == "email" else tools.validate_phone, candidate,
             )
-            new_value, new_status = (candidate, "pending_confirm") if valid else (None, "missing")
+            # Low confidence is treated the same as invalid — see
+            # LOW_CONFIDENCE_CONFIRM_THRESHOLD above.
+            confident_enough = valid and extracted["confidence"] >= LOW_CONFIDENCE_CONFIRM_THRESHOLD
+            new_value, new_status = (candidate, "pending_confirm") if confident_enough else (None, "missing")
         else:
             new_value, new_status = apply_extraction(asked_field, extracted["value"], extracted["confidence"])
     except LLMCallFailed:
@@ -608,7 +633,10 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
                 "consecutive_llm_failures": 0,
                 **_agent_turn(reply),
             }
-        reply = f"That doesn't look like a valid {FIELD_LABELS[asked_field]} — could you say it again?"
+        if asked_field in ("email", "phone"):
+            reply = SPELL_OUT_REPLIES[asked_field]
+        else:
+            reply = f"That doesn't look like a valid {FIELD_LABELS[asked_field]} — could you say it again?"
         repos.trace.record_event(
             call_id, "node_exited", node="capture_fast",
             stage_from="capture", stage_to="capture", pending_reply=reply,
@@ -859,7 +887,16 @@ def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: st
     (relevant when called from node_capture_confirm — the fast pass isn't
     "done" again until this field is actually resolved).
     """
-    reply = f"Sorry, I need to double check something — what's your {FIELD_LABELS[failed_field]} again?"
+    if failed_field in ("email", "phone"):
+        # A background verification for email/phone now fails on low
+        # confidence too, not just invalid format (see
+        # LOW_CONFIDENCE_CONFIRM_THRESHOLD above) — either way, asking the
+        # caller to spell/read it out character-by-character is a better
+        # re-ask than "say it again", which tends to reproduce the same
+        # ambiguity in natural speech.
+        reply = SPELL_OUT_REPLIES[failed_field]
+    else:
+        reply = f"Sorry, I need to double check something — what's your {FIELD_LABELS[failed_field]} again?"
     repos.trace.record_event(call_id, "capture_fast_delayed_failure_reask", node=node_name, field=failed_field)
     repos.trace.record_event(
         call_id, "node_exited", node=node_name,

@@ -19,6 +19,21 @@ entry below on `last_caller_utterance`. Since a wrong email/phone means the firm
 caller back, the cost of always confirming (one extra turn per field) is worth it; a wrong
 name/time is comparatively low-stakes and doesn't need the same treatment.
 
+**Refined, not reversed, after a live session surfaced a gap this entry didn't cover**: "always
+confirmed back regardless of confidence" originally meant every non-empty, correctly-formatted
+email/phone value proceeds straight to a Claude-generated confirm-back (`generate_confirm_back`,
+`CONFIRM_BACK_PROMPT`'s soft "spell out ambiguous characters if it would help" instruction). Live
+testing showed that soft instruction isn't reliable — a caller reported the agent read back their
+phone number spelled out but not their email, on the same call. `graph.LOW_CONFIDENCE_CONFIRM_
+THRESHOLD` (0.75, same bar `apply_extraction` already uses elsewhere) now gates this: below it, a
+well-formed email/phone value is treated the same as an invalid one — re-asked with a fixed,
+deterministic "please spell that out" reply (`SPELL_OUT_REPLIES`), never left to Claude's
+discretion — instead of proceeding to `pending_confirm`. Once confidence clears that floor
+(whether on the first attempt or a spelled-out retry), the original behavior described above is
+unchanged: always confirmed back, never auto-trusted. Same lesson as the Haiku→Sonnet entry below:
+a "the model should reliably do X when it matters" instruction needs enforcing in code, not left
+to prompt phrasing, once there's live evidence it doesn't hold reliably enough.
+
 ### `last_caller_utterance` is authored by the Realtime model, not a raw ASR transcript
 Discovered during Phase 3 live testing: `ask_supervisor`'s `last_caller_utterance` argument is
 not a passthrough of what OpenAI's speech recognition literally heard — it's a string the

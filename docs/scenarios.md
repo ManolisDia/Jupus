@@ -22,9 +22,10 @@ For each scenario: the scripted caller utterances, the mocked tool responses tha
 - Assert: booking succeeds against the **alternative** slot's id, not the originally requested one; `declined_slot_ids` is empty (they accepted the first alternative offered, never declined).
 
 ### S4 — Low-confidence capture
-- Utterances: garbled name, then a clear correction; garbled email, then a confirm-back "yes that's right."
-- Mocked: `extract_field` for name → confidence `0.4` first, then a second call (post clarification) → confidence `0.9`; `extract_field` for email → confidence `0.6`; `confirm_field_answer` → `{"confirmed": true}`.
-- Assert: `caller_profile.name.status` and `.email.status` both end as `"confirmed"`; `generate_confirm_back` was called at least once (verifies the confirm-back path actually triggered, not just happened to pass).
+- Utterances: garbled name, then a clear correction; garbled email at confidence `0.6`, then — since that's below `graph.LOW_CONFIDENCE_CONFIRM_THRESHOLD` (0.75) — a spelled-out re-attempt at confidence `0.9`, then a confirm-back "yes that's right."
+- Mocked: `extract_field` for name → confidence `0.4` first, then a second call (post clarification) → confidence `0.9`; `extract_field` for email → confidence `0.6` first (rejected, re-asked to spell it out — see below), then `0.9` on the spelled-out attempt; `confirm_field_answer` → `{"confirmed": true}`.
+- A well-formed email/phone value heard at low confidence is now treated the same as an invalid one — re-asked with a deterministic "please spell that out" prompt rather than proceeding to a confirm-back Claude might or might not actually spell out (added after a live session showed the soft "spell out if it would help" instruction in `CONFIRM_BACK_PROMPT` isn't reliably followed — see `docs/fixes/`). This refines, but doesn't reverse, `docs/DECISIONS.md`'s "email/phone are always confirmed back regardless of confidence" — that's still true once confidence clears this floor.
+- Assert: `caller_profile.name.status` and `.email.status` both end as `"confirmed"`; the low-confidence turn's reply mentions spelling it out; `generate_confirm_back` was called at least once on the eventual high-confidence value (verifies the confirm-back path actually triggered, not just happened to pass).
 
 ### S5 — Model-judged escalation (multi-area)
 - Utterance: an issue spanning employment + immigration.

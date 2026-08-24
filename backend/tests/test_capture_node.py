@@ -196,7 +196,10 @@ def test_persistently_invalid_email_explains_and_escalates_instead_of_looping(re
         if state["stage"] == "escalation":
             break
         assert state["caller_profile"]["email"]["status"] == "missing"
-        assert "valid" in state["pending_reply"].lower()
+        # both invalid-format and low-confidence email/phone re-asks now use
+        # the same "please spell it out" phrasing rather than "that doesn't
+        # look valid" — see LOW_CONFIDENCE_CONFIRM_THRESHOLD in graph.py.
+        assert "spell" in state["pending_reply"].lower()
 
     assert state["stage"] == "escalation"
     assert state["escalation_reason"] == "capture_failed"
@@ -214,7 +217,24 @@ def test_zero_confidence_email_still_explains_and_reprompts(repos):
         result = _invoke(state, repos)
     assert result["caller_profile"]["email"]["status"] == "missing"
     assert result["caller_profile"]["email"]["attempts"] == 1
-    assert "valid" in result["pending_reply"].lower()
+    assert "spell" in result["pending_reply"].lower()
+
+
+def test_low_confidence_well_formed_email_asks_to_spell_out_instead_of_confirming(repos):
+    # A well-formed-looking email heard with low confidence must not reach
+    # pending_confirm at all — it's re-asked with a deterministic "spell it
+    # out" prompt rather than proceeding to a confirm-back that leaves
+    # spelling to Claude's discretion. See LOW_CONFIDENCE_CONFIRM_THRESHOLD.
+    state = _capture_state(
+        name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
+    )
+    with patch(
+        "backend.supervisor.tools.extract_field",
+        return_value={"value": "alex@example.com", "confidence": 0.6},
+    ):
+        result = _invoke(state, repos)
+    assert result["caller_profile"]["email"]["status"] == "missing"
+    assert "spell out your email" in result["pending_reply"].lower()
 
 
 def test_all_fields_confirmed_transitions_to_research(repos):
