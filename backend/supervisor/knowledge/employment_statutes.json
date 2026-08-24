@@ -1,0 +1,72 @@
+[
+  {
+    "id": "employment-era1996-s86",
+    "citation": "Employment Rights Act 1996, s.86",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["notice period", "fired without notice", "let go", "dismissed", "statutory minimum notice"],
+    "text": "An employer must give an employee at least one week's notice after one month's continuous service, rising to one week per full year of service up to a maximum of twelve weeks after twelve years or more. An employee who has been employed for one month or more must give at least one week's notice to resign."
+  },
+  {
+    "id": "employment-era1996-s94",
+    "citation": "Employment Rights Act 1996, ss.94, 108",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["unfair dismissal", "fired", "qualifying period", "two years service", "let go from my job"],
+    "text": "An employee ordinarily needs at least two years' continuous service to bring a claim for unfair dismissal. Certain reasons are automatically unfair regardless of length of service, including dismissal for whistleblowing, pregnancy, or asserting a statutory right."
+  },
+  {
+    "id": "employment-era1996-s103a",
+    "citation": "Employment Rights Act 1996, s.103A",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["whistleblowing", "protected disclosure", "fired for reporting", "retaliation"],
+    "text": "Dismissal of an employee for making a protected disclosure (whistleblowing) is automatically unfair, and no minimum length of service is required to bring this type of claim."
+  },
+  {
+    "id": "employment-ea2010-s39",
+    "citation": "Equality Act 2010, s.39",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["discrimination", "protected characteristic", "unfair treatment at work", "disability discrimination", "harassment at work"],
+    "text": "It is unlawful for an employer to discriminate against, harass, or victimise an employee or job applicant because of a protected characteristic (including age, disability, race, sex, religion, sexual orientation, and pregnancy). No minimum length of service is required to bring a discrimination claim."
+  },
+  {
+    "id": "employment-tulrca1992-s188",
+    "citation": "Trade Union and Labour Relations (Consolidation) Act 1992, s.188",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["redundancy consultation", "mass redundancy", "collective consultation", "made redundant with others"],
+    "text": "An employer proposing to make 20 or more employees redundant at one establishment within a 90-day period must consult collectively with employee representatives, for a minimum period of 30 days before the first dismissal takes effect (45 days where 100 or more redundancies are proposed)."
+  },
+  {
+    "id": "employment-era1996-s135",
+    "citation": "Employment Rights Act 1996, ss.135, 155",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["statutory redundancy pay", "redundancy payment", "made redundant", "redundancy entitlement"],
+    "text": "An employee with at least two years' continuous service who is dismissed by reason of redundancy is entitled to a statutory redundancy payment, calculated from age, length of service, and weekly pay (subject to a statutory cap on weekly pay)."
+  },
+  {
+    "id": "employment-wtr1998",
+    "citation": "Working Time Regulations 1998",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["annual leave", "holiday entitlement", "rest breaks", "48 hour week", "working hours"],
+    "text": "Workers are entitled to a statutory minimum of 5.6 weeks' paid annual leave, minimum daily and weekly rest breaks, and (unless they have opted out in writing) an average working week capped at 48 hours."
+  },
+  {
+    "id": "employment-nmwa1998",
+    "citation": "National Minimum Wage Act 1998",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["minimum wage", "underpaid", "not being paid enough", "national living wage"],
+    "text": "Employers must pay workers at least the National Minimum Wage (or National Living Wage, for eligible older workers), with different rates depending on age and apprentice status; underpayment can be recovered and is separately enforceable by HMRC."
+  },
+  {
+    "id": "employment-era1996-s1",
+    "citation": "Employment Rights Act 1996, s.1",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["written statement of particulars", "no contract", "never got a contract", "employment terms in writing"],
+    "text": "An employer must give a worker or employee a written statement of the main terms of their employment no later than their first day of work, covering matters including pay, hours, holiday entitlement, and notice periods."
+  },
+  {
+    "id": "employment-era1996-s98",
+    "citation": "Employment Rights Act 1996, s.98",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["fair dismissal", "reason for dismissal", "fair process", "unfairly sacked"],
+    "text": "A dismissal is only potentially fair if the employer can show it was for one of the statutory permitted reasons (capability, conduct, redundancy, statutory illegality, or some other substantial reason) and followed a fair process appropriate to that reason."
+  }
+]

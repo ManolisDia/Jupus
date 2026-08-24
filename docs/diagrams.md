@@ -116,8 +116,11 @@ flowchart TD
     Routing -->|"multiple_areas → out_of_scope_multi_area"| Escalation
 
     Capture -->|"low/medium confidence → reprompt"| Capture
-    Capture -->|all fields confirmed| Booking["booking"]
+    Capture -->|all fields confirmed| Research["research<br/>(Phase 8)"]
     Capture -->|"3 failed attempts → capture_failed"| Escalation
+
+    Research -->|"follow-up + background statute search"| Research
+    Research -->|"citation delivered (or none found)"| Booking["booking"]
 
     Booking -->|"slot taken → alternative offered"| Booking
     Booking -->|caller accepts| BookedEnd(("ended: booked"))

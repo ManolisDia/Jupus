@@ -1,6 +1,11 @@
 import pytest
 
-from backend.supervisor.heuristics import is_explicit_human_request, looks_like_field_shape, looks_like_tangent
+from backend.supervisor.heuristics import (
+    is_explicit_human_request,
+    looks_like_bare_affirmation,
+    looks_like_field_shape,
+    looks_like_tangent,
+)
 
 
 @pytest.mark.parametrize(
@@ -91,3 +96,34 @@ def test_phone_shape_rejects_utterances_with_no_digits():
 
 def test_name_field_has_no_shape_gate():
     assert looks_like_field_shape("name", "anything at all") is True
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "yes",
+        "Yep, that's correct.",
+        "That's correct.",
+        "Yeah, that's right.",
+        "Correct.",
+        "no",
+        "Nope.",
+        "",
+        "   ",
+    ],
+)
+def test_bare_affirmation_detected(utterance):
+    assert looks_like_bare_affirmation(utterance) is True
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "My landlord is trying to evict me tomorrow without giving me any notice.",
+        "Yeah, he just showed up and told me to leave.",
+        "No, nothing in writing, they just showed up and told me to leave.",
+        "Correct, he never gave me a written notice.",
+    ],
+)
+def test_substantive_answers_not_flagged_as_bare_affirmation(utterance):
+    assert looks_like_bare_affirmation(utterance) is False

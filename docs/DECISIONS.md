@@ -19,6 +19,21 @@ entry below on `last_caller_utterance`. Since a wrong email/phone means the firm
 caller back, the cost of always confirming (one extra turn per field) is worth it; a wrong
 name/time is comparatively low-stakes and doesn't need the same treatment.
 
+**Refined, not reversed, after a live session surfaced a gap this entry didn't cover**: "always
+confirmed back regardless of confidence" originally meant every non-empty, correctly-formatted
+email/phone value proceeds straight to a Claude-generated confirm-back (`generate_confirm_back`,
+`CONFIRM_BACK_PROMPT`'s soft "spell out ambiguous characters if it would help" instruction). Live
+testing showed that soft instruction isn't reliable — a caller reported the agent read back their
+phone number spelled out but not their email, on the same call. `graph.LOW_CONFIDENCE_CONFIRM_
+THRESHOLD` (0.75, same bar `apply_extraction` already uses elsewhere) now gates this: below it, a
+well-formed email/phone value is treated the same as an invalid one — re-asked with a fixed,
+deterministic "please spell that out" reply (`SPELL_OUT_REPLIES`), never left to Claude's
+discretion — instead of proceeding to `pending_confirm`. Once confidence clears that floor
+(whether on the first attempt or a spelled-out retry), the original behavior described above is
+unchanged: always confirmed back, never auto-trusted. Same lesson as the Haiku→Sonnet entry below:
+a "the model should reliably do X when it matters" instruction needs enforcing in code, not left
+to prompt phrasing, once there's live evidence it doesn't hold reliably enough.
+
 ### `last_caller_utterance` is authored by the Realtime model, not a raw ASR transcript
 Discovered during Phase 3 live testing: `ask_supervisor`'s `last_caller_utterance` argument is
 not a passthrough of what OpenAI's speech recognition literally heard — it's a string the
@@ -151,6 +166,37 @@ mini remains a plausible cost/latency optimization worth trying again later if f
 slower than needed once real tool-call round trips exist (Phase 2+). Not revisited now — this
 was a live A/B, not a settled rejection; if revisited, `backend/app.py`'s `REALTIME_MODEL` is a
 one-line change.
+
+### Case research (Phase 8) — jurisdiction, corpus provenance, and why it can never invent a citation
+Three static per-practice-area statute corpora (`backend/supervisor/knowledge/{employment,tenancy,immigration}_statutes.json`,
+8-10 entries each) are all **England & Wales** law, hand-authored during
+implementation from general knowledge for this take-home — not scraped, not
+generated at runtime by an LLM, and not independently verified against
+primary legal sources. This is stated plainly here, and every delivered
+citation is followed by a fixed spoken disclaimer ("this is general
+information, not legal advice, but it's worth mentioning to the attorney")
+precisely because of that provenance — this is a demonstration of a
+retrieval mechanism, not a production legal research tool.
+
+Two things keep the feature from ever inventing a citation, deliberately
+layered rather than relying on either alone: (1) a BM25 relevance floor
+(`tools.BM25_RELEVANCE_FLOOR`) means most utterances during the research
+stage never even reach an LLM call — nothing to ground means nothing to
+risk hallucinating; (2) when the floor is cleared, the one Claude call
+(`ground_statute_citation`) is closed-set selection only — it's handed the
+top BM25 candidates' exact `{id, citation, text}` and must return one of
+those exact ids or `null`, never freeform text, and the caller
+(`dispatcher._search_statutes_in_background`) additionally verifies the
+returned id is actually one of the candidates it was given before trusting
+it. See `docs/phases/phase-8-legal-research.md` for the full design.
+
+Retrieval itself is plain-Python BM25 over the corpus, not embeddings or a
+vector DB — right-sized for 8-10 entries per area today. Flagged as a
+deliberate future consideration, not decided now: if the corpus grows
+substantially (more areas, many more entries, denser text) or keyword
+match starts missing paraphrased situations, a local sentence-transformer
+embedding + cosine search is the natural next step; still no vector DB
+needed until the corpus is far larger than "a few dozen entries per area."
 
 ### Realtime (OpenAI) + Supervisor (Claude) — two vendors, deliberately
 OpenAI Realtime has the most mature WebRTC/tool-calling/interrupt handling of the available realtime voice APIs. Claude powers the supervisor's reasoning (extraction, classification, summarization). Two API keys is an accepted tradeoff, documented clearly in the README since the brief requires documenting exactly what's needed to run the project.

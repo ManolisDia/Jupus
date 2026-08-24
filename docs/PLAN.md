@@ -84,7 +84,7 @@ class CallerProfile(TypedDict):
 
 class CallState(TypedDict):
     call_id: str
-    stage: Literal["greeting", "routing", "capture", "booking", "escalation", "ended"]
+    stage: Literal["greeting", "routing", "capture", "research", "booking", "escalation", "ended"]
     practice_area: Optional[Literal["employment", "tenancy", "immigration"]]
     caller_profile: CallerProfile
     transcript: list[dict]          # rolling {role, text, ts}
@@ -108,13 +108,15 @@ State persists per `call_id` in an in-memory dict on the backend — fine for a 
    - `confidence < 0.4` OR `retry_counts[field] >= 3` → `escalation`, `reason="capture_failed"`
    - all required fields present + confirmed → `booking`
 
-4. **booking** — binds `check_availability`, `suggest_alternative_slots`, `book_consultation` (all deterministic code against SQLite). Flow is code-driven:
+4. **research** (Phase 8) — once every field is confirmed, asks a real follow-up about what happened, searches that practice area's statute corpus in the background while a filler follow-up buys time, and cites the specific provision (or says nothing) before moving on. See `docs/phases/phase-8-legal-research.md` for the full design — this row is a pointer, not a summary of the mechanism.
+
+5. **booking** — binds `check_availability`, `suggest_alternative_slots`, `book_consultation` (all deterministic code against SQLite). Flow is code-driven:
    - extract preferred day/time (Claude) → `check_availability`
    - free → confirm full details back (Claude-generated confirmation sentence) → caller "yes" → `book_consultation` → `stage="ended"`
    - taken → `suggest_alternative_slots` → repeat confirm loop with new slot
    - caller declines twice → `escalation`, `reason="no_acceptable_slot"`
 
-5. **escalation** — binds `escalate_to_human` only. Writes the handoff note, sets `stage="ended"`, returns a graceful closing line.
+6. **escalation** — binds `escalate_to_human` only. Writes the handoff note, sets `stage="ended"`, returns a graceful closing line.
 
 ### Edges
 Plain `if/else` on `CallState` — never an LLM decision about which node runs next (see `CLAUDE.md` rule 2 / `docs/DECISIONS.md`).
@@ -134,7 +136,9 @@ Plain `if/else` on `CallState` — never an LLM decision about which node runs n
 | `suggest_alternative_slots` | booking (code) | SQLite query | `(date: str, area: str) -> list[slot]` |
 | `book_consultation` | booking (code) | SQLite insert | `(slot_id, caller_profile) -> booking_id` |
 | `escalate_to_human` | escalation | Claude summary + code write | `{reason: "unable_to_classify"\|"capture_failed"\|"no_acceptable_slot"\|"out_of_scope_multi_area"\|"explicit_request"\|"system_error", call_summary: string}` — `system_error` added in `docs/phases/cross-cutting.md` |
-| `lookup_practice_area_info` (stretch only) | routing/capture info path | local JSON KB, Claude grounds | `(area) -> text` |
+| `search_statute_candidates` | research (Phase 8) | deterministic BM25 over a local JSON corpus | `(area, query) -> list[{id, citation, jurisdiction, topic_tags, text, score}]` |
+| `ground_statute_citation` | research (Phase 8) | Claude, closed-set selection only | `(utterance, candidates) -> {selected_id: str \| null, spoken_framing: str \| null}` |
+| `lookup_practice_area_info` (stretch only, superseded) | routing/capture info path | local JSON KB, Claude grounds | `(area) -> text` — see `docs/phases/phase-8-legal-research.md`, which built the same idea for real, expanded and per-area |
 
 ---
 
@@ -222,6 +226,12 @@ Jupus/
       prompts.py
       tracing.py                      # trace_events recording — see cross-cutting.md
       llm_utils.py                    # call_claude_tool wrapper — see cross-cutting.md
+      knowledge/                       # Phase 8 — per-area statute corpora + BM25 search
+        employment_statutes.json
+        tenancy_statutes.json
+        immigration_statutes.json
+        corpus.py
+        search.py
     db/
       schema.sql
       seed_slots.py
@@ -261,12 +271,12 @@ Jupus/
     DECISIONS.md
     error_taxonomy.md                 # error class design + evolution process
     benevolent_dictator.md            # the human annotation/calibration role & process
-    scenarios.md                      # the 6 canonical test scenarios (S1-S6)
+    scenarios.md                      # the canonical test scenarios (S1-S6, plus S7 added in Phase 8)
     answers.md                        # 4 required written answers
     handoffs/                         # one .md per escalated call
     phases/
       cross-cutting.md
-      phase-1-raw-voice-loop.md ... phase-8-polish-submission.md
+      phase-1-raw-voice-loop.md ... phase-13-polish-submission.md
     fixes/
       INDEX.md
     known-issues/
@@ -293,8 +303,15 @@ Work in order. Do not start a phase until the previous one's DoD is verified —
 | 6b | [`phases/phase-6b-error-taxonomy.md`](phases/phase-6b-error-taxonomy.md) | Error taxonomy registry, LLM-judge classification pass, `run_eval.py`. Depends on 6a only. |
 | 6c | [`phases/phase-6c-benevolent-dictator.md`](phases/phase-6c-benevolent-dictator.md) | BD annotation page, taxonomy critique + approval, judge calibration, live-Claude regression harness. Depends on 6a and 6b. |
 | 7 | [`phases/phase-7-optimistic-capture.md`](phases/phase-7-optimistic-capture.md) | Decouple field-capture latency from Claude round-trips: a fast deterministic sequencer asks the next field instantly, real verification runs in the background, corrections drain in a batched confirm phase |
-| 8 | [`phases/phase-8-polish-submission.md`](phases/phase-8-polish-submission.md) | README, written answers, full regression pass, video |
+| 8 | [`phases/phase-8-legal-research.md`](phases/phase-8-legal-research.md) | New `research` stage between capture and booking: a real follow-up question, a BM25-searched per-area statute corpus, and a closed-set-grounded citation — retrieval latency hidden behind a filler follow-up, same pattern as Phase 7 |
+| 9 | [`phases/phase-9-hosted-deployment.md`](phases/phase-9-hosted-deployment.md) | Public deployment: Railway (backend, persistent Volume for SQLite) + Firebase Hosting (client), access-token gate, spend caps. Prerequisite for Phase 10's public webhooks. |
+| 10 | [`phases/phase-10-telephony.md`](phases/phase-10-telephony.md) | Real telephony via OpenAI Realtime's native SIP + Twilio, and warm transfer to a human on escalation — a Twilio Conference from call-start, a human added as a third participant, the AI leg dropped once briefed |
+| 11 | [`phases/phase-11-latency-observability.md`](phases/phase-11-latency-observability.md) | Real per-turn latency stage breakdown (STT/dialogue-decision, supervisor round-trip, deferred-wait, TTS-first-audio) plus estimated cost-per-call, both as p50/p95 in the admin panel |
+| 12 | [`phases/phase-12-concurrency-stress-test.md`](phases/phase-12-concurrency-stress-test.md) | Scripted proof that N concurrent, distinct calls don't block each other or leak state — direct evidence for the "production volume/concurrency management" claim |
+| 13 | [`phases/phase-13-polish-submission.md`](phases/phase-13-polish-submission.md) | README, written answers, full regression pass, video |
 
 Phase 6 was originally one phase but split into 6a/6b/6c — by far the largest single phase otherwise, and several of its pieces don't actually depend on each other (you can see call traces in the admin panel long before the taxonomy/judge machinery exists). The dependency order is strictly forward: 6b depends on 6a, 6c depends on 6a+6b, and neither 6a nor 6b ever depends on something built later.
+
+Phases 9–12 are stretches beyond the original brief's four required user stories, scoped and ordered deliberately: 9 (hosting) before 10 (telephony) because 10's Twilio webhooks need a public URL; 11 (latency/cost) and 12 (concurrency) have no hard dependency on 9/10 and could in principle move earlier, but are sequenced after telephony so the riskiest, highest-payoff piece gets tackled while the most build-time runway remains — see each phase doc's own "Why this exists"/prerequisite notes for the full reasoning. Phase 13 (submission) stays numerically last regardless of how many stretches precede it, and its own DoD explicitly accounts for any of 9–12 not getting built (documented as an intentional scope cut, not a silent gap).
 
 `docs/phases/cross-cutting.md` also applies retroactively from Phase 3 onward (every Claude-backed tool function must use its `call_claude_tool` wrapper from the moment it's written) even though its own Definition of Done is verified at Phase 6a — read it before Phase 3, not after. `docs/scenarios.md` defines the 6 canonical test scenarios used by both manual DoD checks, Phase 6a's automated mocked-regression suite, and Phase 6c's live-pipeline regression harness.

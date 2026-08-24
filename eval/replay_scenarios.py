@@ -1,6 +1,7 @@
 """python eval/replay_scenarios.py --label <name>
 
-Drives the 6 canonical scenarios (docs/scenarios.md, S1-S6) through the real,
+Drives the canonical scenarios (docs/scenarios.md, S1-S6 plus S7's two
+variants added alongside Phase 8's case-research node) through the real,
 UNMOCKED pipeline (live Claude/OpenAI calls) — unlike backend/tests/
 test_scenarios.py, which mocks every Claude-backed tools.py function for fast
 CI-style checks. Tags each resulting call in eval_runs with (label,
@@ -65,6 +66,11 @@ SCENARIOS: dict[str, list[str]] = {
         "5551234567",
         "Yes, that's right.",  # drain item 1: confirm email
         "Yes.",  # drain item 2: confirm phone
+        # Phase 8 (case research): capture now hands off to a "research"
+        # stage instead of straight to booking — a skip phrase moves
+        # straight to booking with no background search spawned, keeping S2
+        # focused on the booking flow itself (S7 exercises research).
+        "Honestly, let's just book me in.",
         "Thursday afternoon",
         "Yes, that works.",
     ],
@@ -77,6 +83,7 @@ SCENARIOS: dict[str, list[str]] = {
         "5551234567",
         "Yes, that's right.",  # drain item 1: confirm email
         "Yes.",  # drain item 2: confirm phone
+        "Honestly, let's just book me in.",  # Phase 8: skip research, see S2's comment
         # backend/db/repositories/sqlite_slots.py pre-books 10am and 2pm on
         # the first seeded business day for every area — this deterministically
         # collides so the alternative-slot branch of node_booking fires for real
@@ -111,6 +118,35 @@ SCENARIOS: dict[str, list[str]] = {
     ],
     "S6": [
         "Can you just put me through to a real person?",
+    ],
+    # Phase 8 (case research) — S7's two variants (docs/scenarios.md). The
+    # research intro question is asked as part of capture's own completion
+    # (no separate caller utterance needed for it); the utterance right
+    # after phone's confirmation answers that intro question, and the one
+    # after that answers the research node's own filler follow-up.
+    "S7a": [  # citation found
+        "I need some help with my tenancy.",
+        "Alex Smith",
+        "alex.smith@example.com",
+        "5551234567",
+        "Yes, that's right.",  # drain item 1: confirm email
+        "Yes.",  # drain item 2: confirm phone
+        "My landlord is trying to evict me tomorrow without giving me any notice.",
+        "No, nothing in writing, they just showed up and told me to leave.",
+        "Thursday afternoon",
+        "Yes, that works.",
+    ],
+    "S7b": [  # no relevant statute found
+        "I need some help with my tenancy.",
+        "Alex Smith",
+        "alex.smith@example.com",
+        "5551234567",
+        "Yes, that's right.",  # drain item 1: confirm email
+        "Yes.",  # drain item 2: confirm phone
+        "Just wanted to ask about your general process, really.",
+        "Nothing specific, just wanted to understand my options.",
+        "Thursday afternoon",
+        "Yes, that works.",
     ],
 }
 

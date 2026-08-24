@@ -17,6 +17,18 @@ let localStream = null;
 let ws = null;
 let lastVerbatimTranscript = null;
 
+// Response.create collision avoidance (see docs/known-issues/2026-08-22-001.md
+// and docs/fixes/ for the write-up this session added). true between a
+// response.created and its matching response.done — the Realtime API
+// rejects a second response.create while one is already active
+// ("Conversation already has an active response in progress"), which is
+// expected under the async dispatcher's design (a deferred supervisor
+// reply can land right as the caller's own new utterance auto-creates its
+// own response). Tracked so a supervisor_result arriving mid-response can
+// wait for the active one to finish rather than racing it.
+let responseActive = false;
+let pendingResponseCreate = false;
+
 // ---------------------------------------------------------------------------
 // Presentational-only state (Phase 7 caller-facing visual polish stretch).
 // Nothing in this section reads from or writes to pc/ws/dataChannel — it
@@ -241,9 +253,30 @@ function teardown(statusMessage) {
   }
   teardownVisualizer();
   callerSpeaking = false;
+  responseActive = false;
+  pendingResponseCreate = false;
   startBtn.disabled = false;
   endBtn.disabled = true;
   setStatus(statusMessage);
+}
+
+// The ONE path anything wanting the model to speak/act next must go
+// through — never call dataChannel.send({type: "response.create"})
+// directly. If a response is already active, queues the request instead
+// of firing it immediately (avoiding the collision in the common case);
+// the response.done handler below flushes at most one queued request once
+// the active response actually finishes. This is a preventative check, not
+// a retry-after-the-fact — it doesn't need to distinguish which response
+// is active, just whether the slot is currently claimed, so it isn't
+// exposed to the per-response-ID race that sank the retry-on-cancel
+// mechanism this doc's known-issues entry describes. The error handler
+// below is still the backstop for whatever race slips through anyway.
+function requestResponse() {
+  if (responseActive) {
+    pendingResponseCreate = true;
+    return;
+  }
+  dataChannel.send(JSON.stringify({ type: "response.create" }));
 }
 
 const SUPERVISOR_INSTRUCTIONS = `You are the phone-answering voice for a law firm. You have exactly one
@@ -398,7 +431,7 @@ async function startCall() {
           },
         })
       );
-      dataChannel.send(JSON.stringify({ type: "response.create" }));
+      requestResponse();
     };
     ws.onerror = () => teardown("error: lost connection to backend");
     ws.onclose = () => {
@@ -434,7 +467,33 @@ async function startCall() {
     dataChannel.onmessage = (e) => {
       const parsed = JSON.parse(e.data);
       if (parsed.type === "error") {
-        teardown("error: " + (parsed.error?.message || "realtime session error"));
+        const errMessage = parsed.error?.message || "";
+        if (errMessage.includes("already has an active response in progress")) {
+          // Expected, recoverable race (see the responseActive/
+          // pendingResponseCreate machinery above and docs/known-issues/
+          // 2026-08-22-001.md) — our own response.create lost a race
+          // against a response the caller's own speech already triggered.
+          // The conversation.item.create for the tool result already
+          // succeeded (only response.create was rejected), so nothing
+          // was lost — whichever response is actually active will pick
+          // it up, or the response.done handler's queued flush will.
+          // Must NOT tear down an otherwise-healthy call over this.
+          console.warn("oai realtime: response.create collided with an active response — call continues", parsed.error);
+          return;
+        }
+        teardown("error: " + (errMessage || "realtime session error"));
+        return;
+      }
+      if (parsed.type === "response.created") {
+        responseActive = true;
+        return;
+      }
+      if (parsed.type === "response.done") {
+        responseActive = false;
+        if (pendingResponseCreate) {
+          pendingResponseCreate = false;
+          requestResponse();
+        }
         return;
       }
       if (parsed.type === "conversation.item.input_audio_transcription.completed") {

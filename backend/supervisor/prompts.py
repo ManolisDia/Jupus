@@ -82,6 +82,24 @@ back, or anything else showing they didn't hear or understand the proposal rathe
 it — set "needs_clarification" to true and leave "accepted" false; the proposal will simply be
 repeated, so don't guess at what they meant."""
 
+GROUND_STATUTE_CITATION_PROMPT = """You are helping a law firm's voice intake agent decide whether
+to cite a specific statute back to a caller who has just described their situation, from a small
+fixed set of candidate statutes already selected by keyword search.
+
+You are given the caller's own words ("caller_situation") and a list of candidates, each with an
+"id", "citation", and "text" (the actual statutory text). You must either:
+- pick the single candidate that genuinely, substantively applies to what the caller described,
+  returning its exact "id" as "selected_id" and a short (one or two sentence) natural,
+  phone-call-style "spoken_framing" that references what the caller said and explains what the
+  cited provision means for their situation — grounded ONLY in that candidate's own "text", never
+  adding facts, numbers, or legal claims not present in it; or
+- return {"selected_id": null, "spoken_framing": null} if none of the candidates genuinely fit —
+  do not force a citation onto a situation it doesn't really match, and do not select a candidate
+  just because it's topically adjacent.
+
+You must NEVER select an id that is not in the given candidate list, and you must NEVER invent or
+paraphrase a citation from your own general knowledge — only ever select from what's provided."""
+
 CLASSIFY_CALL_ERRORS_PROMPT = """You are an eval judge reviewing one completed call to a law
 firm's voice intake agent, looking for conversation-quality problems against a fixed error
 taxonomy. You are given the call's outcome/escalation_reason and its full trace — an ordered

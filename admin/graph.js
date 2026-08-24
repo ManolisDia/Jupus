@@ -6,35 +6,46 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 // node_capture_fast's own fallback paths (gate/urgent/pending-confirm),
 // which is why its own trace events are always node="capture", never a
 // separate "capture_confirm" label — there isn't one in real trace data.
+//
+// Phase 8 (case research) inserted a "research" stage between capture and
+// booking — two real nodes, node_research_gather (asks the follow-up,
+// spawns the background statute search, asks a filler question) and
+// node_research_deliver (cites the result, or says nothing, then moves on)
+// — rendered here as one "Research" box, same as capture_fast/capture
+// share one visual "Capture" pairing conceptually even though they're two
+// node ids. See docs/phases/phase-8-legal-research.md.
 const NODES = [
   { id: "greeting", label: "Greeting", x: 20, y: 70, w: 165, h: 68 },
   { id: "routing", label: "Routing", x: 220, y: 70, w: 165, h: 68 },
   { id: "capture_fast", label: "Capture (fast)", x: 420, y: 70, w: 165, h: 68 },
   { id: "capture", label: "Capture (confirm)", x: 620, y: 70, w: 165, h: 68 },
-  { id: "booking", label: "Booking", x: 820, y: 70, w: 165, h: 68 },
-  { id: "escalation", label: "Escalation", x: 520, y: 280, w: 165, h: 68 },
+  { id: "research", label: "Research", x: 820, y: 70, w: 165, h: 68 },
+  { id: "booking", label: "Booking", x: 1020, y: 70, w: 165, h: 68 },
+  { id: "escalation", label: "Escalation", x: 620, y: 280, w: 165, h: 68 },
 ];
 
 const MAIN_EDGES = [
   { key: "greeting-routing", d: "M185,104 L220,104", labelPos: [202, 96] },
   { key: "routing-capture_fast", d: "M385,104 L420,104", labelPos: [402, 96] },
   { key: "capture_fast-capture", d: "M585,104 L620,104", labelPos: [602, 96] },
-  { key: "capture-booking", d: "M785,104 L820,104", labelPos: [802, 96] },
+  { key: "capture-research", d: "M785,104 L820,104", labelPos: [802, 96] },
+  { key: "research-booking", d: "M985,104 L1020,104", labelPos: [1002, 96] },
 ];
 
 const LOOP_EDGES = [
   { key: "routing-routing", d: "M273,70 C273,14 332,14 332,70", labelPos: [302, 26] },
   { key: "capture_fast-capture_fast", d: "M473,70 C473,14 532,14 532,70", labelPos: [502, 26] },
   { key: "capture-capture", d: "M673,70 C673,14 732,14 732,70", labelPos: [702, 26] },
-  { key: "booking-booking", d: "M873,70 C873,14 932,14 932,70", labelPos: [902, 26] },
+  { key: "research-research", d: "M873,70 C873,14 932,14 932,70", labelPos: [902, 26] },
+  { key: "booking-booking", d: "M1073,70 C1073,14 1132,14 1132,70", labelPos: [1102, 26] },
 ];
 
 const ANY_EDGES = [
-  { key: "greeting-escalation", d: "M102,138 C102,220 400,262 545,280" },
-  { key: "routing-escalation", d: "M302,138 C302,200 460,252 565,280" },
-  { key: "capture_fast-escalation", d: "M502,138 C502,210 545,250 585,280" },
-  { key: "capture-escalation", d: "M702,138 C702,210 670,250 630,280" },
-  { key: "booking-escalation", d: "M902,138 C902,200 750,252 660,280" },
+  { key: "greeting-escalation", d: "M102,138 C102,220 470,262 645,280" },
+  { key: "routing-escalation", d: "M302,138 C302,200 520,252 665,280" },
+  { key: "capture_fast-escalation", d: "M502,138 C502,210 590,250 700,280" },
+  { key: "capture-escalation", d: "M702,138 C702,210 702,250 702,280" },
+  { key: "booking-escalation", d: "M1102,138 C1102,220 850,262 765,280" },
 ];
 
 const nodeEls = {};
@@ -90,7 +101,7 @@ function buildGraph() {
 
   // small "any stage, any time" marker near the escalation node
   const anyLabel = document.createElementNS(SVG_NS, "text");
-  anyLabel.setAttribute("x", 300);
+  anyLabel.setAttribute("x", 400);
   anyLabel.setAttribute("y", 224);
   anyLabel.setAttribute("text-anchor", "middle");
   anyLabel.setAttribute("class", "edge-label");
@@ -119,6 +130,15 @@ function buildGraph() {
         "(reading back email/phone once every field's been fast-asked) AND as Capture (fast)'s " +
         "own fallback path, which is why its trace events are always labeled \"capture\", never " +
         "a separate confirm label. N/E/P below show each field's live status.";
+      g.appendChild(title);
+    }
+    if (n.id === "research") {
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent =
+        "Phase 8: asks a real follow-up about what happened, then hides the retrieval latency " +
+        "(a BM25 search plus one grounding Claude call, both running in the background) behind a " +
+        "templated filler question — zero LLM calls on that turn. Cites a statute on the next " +
+        "turn if the search found a genuine match, or says nothing about it and moves on if not.";
       g.appendChild(title);
     }
     if (n.id === "booking") {
@@ -155,6 +175,16 @@ function buildGraph() {
     nodesG.appendChild(g);
     nodeEls[n.id] = g;
   }
+
+  // Phase 8: node_research_gather and node_research_deliver are two
+  // distinct real node ids (their own trace events, their own describeTransition
+  // branches above) but share ONE visual box here — same conceptual pairing
+  // as capture_fast/capture, just drawn as a single node instead of two
+  // spatially separate ones. Alias both ids to the same element so
+  // setNodeState/markVisited (keyed by the real node id from trace events)
+  // actually light it up, instead of silently no-op'ing on an unknown id.
+  nodeEls["research_gather"] = nodeEls.research;
+  nodeEls["research_deliver"] = nodeEls.research;
 }
 
 // Capture (both nodes) and booking render their own richer sub-state (see
@@ -277,6 +307,14 @@ function describeTransition(node, stageFrom, stageTo, pendingReply) {
     }
     return { edge: "capture_fast-capture_fast", text: "plausible direct answer → advance to next field, verifying in background" };
   }
+  if (node === "capture_fast" && stageTo === "research") {
+    // Phase 8: _finish_fast_pass can complete every field within the SAME
+    // capture_fast turn (the last field auto-confirms, nothing left
+    // pending) — jumps straight to research without ever visiting the
+    // "Capture (confirm)" node, same shape as the pre-existing
+    // capture_fast -> booking short-circuit below used to.
+    return { edge: null, text: "every field already confirmed → skipping straight to research" };
+  }
   if (node === "capture_fast" && stageTo === "booking") {
     return { edge: null, text: "every field already confirmed → skipping straight to booking" };
   }
@@ -291,11 +329,31 @@ function describeTransition(node, stageFrom, stageTo, pendingReply) {
     }
     return { edge: "capture-capture", text: "field not yet confirmed → re-prompt or confirm-back" };
   }
-  if (node === "capture" && stageTo === "booking") {
-    return { edge: "capture-booking", text: "name + email + phone all status=confirmed → entering booking" };
+  if (node === "capture" && stageTo === "research") {
+    return { edge: "capture-research", text: "name + email + phone all status=confirmed → entering research" };
   }
   if (node === "capture" && stageTo === "escalation") {
     return { edge: "capture-escalation", text: "attempts ≥ 3 on one field → escalate (capture_failed)" };
+  }
+  // Phase 8 (case research): node_research_gather's own trace events never
+  // distinguish "spawned the background search, asking the filler
+  // question" from "caller declined to elaborate, skip to booking" via
+  // stage_to alone during the first case (both stay stage="research") —
+  // same text-sniffing style already used above/below for capture_fast.
+  if (node === "research_gather" && stageTo === "research") {
+    return {
+      edge: "research-research",
+      text: "spawning background statute search → asking a filler follow-up while it resolves",
+    };
+  }
+  if (node === "research_gather" && stageTo === "booking") {
+    return { edge: "research-booking", text: "caller declined to elaborate → skipping straight to booking" };
+  }
+  if (node === "research_deliver" && stageTo === "booking") {
+    if (reply.includes("not legal advice")) {
+      return { edge: "research-booking", text: "relevant statute found → citing it, then entering booking" };
+    }
+    return { edge: "research-booking", text: "nothing relevant found (or search still pending) → entering booking" };
   }
   if (node === "booking" && stageTo === "booking") {
     if (reply.includes("other day") || reply.includes("what other")) {

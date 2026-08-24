@@ -7,7 +7,7 @@ from fastapi import WebSocket
 from backend.db.repositories import Repositories
 from backend.supervisor import tools
 from backend.supervisor.faq import match_faq
-from backend.supervisor.graph import GRAPH, apply_extraction
+from backend.supervisor.graph import GRAPH, LOW_CONFIDENCE_CONFIRM_THRESHOLD, apply_extraction
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from backend.supervisor.state import CALL_STATES, FIELD_PRIORITY, CallState, get_or_create_state
@@ -28,6 +28,12 @@ CONNECTIONS: dict[str, WebSocket] = {}
 # against a turn that might be awaiting this same task while holding the
 # lock).
 FIELD_VERIFICATIONS: dict[tuple[str, str], asyncio.Task] = {}
+# Phase 8 (case research) — call_id -> the background statute-search task
+# spawned off node_research_gather's background_search_query signal. Only
+# one in flight at a time per call (research runs once per call). Same
+# "never touches CALL_STATES/the per-call lock" shape as
+# _verify_field_in_background, for the same deadlock-avoidance reason.
+STATUTE_SEARCHES: dict[str, asyncio.Task] = {}
 
 
 def get_lock(call_id: str) -> asyncio.Lock:
@@ -97,7 +103,13 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
             traced_call, repos.trace, call_id, "capture_fast_background",
             "validate_email" if field == "email" else "validate_phone", validator, candidate,
         )
-        if not valid:
+        # Low confidence is treated the same as invalid format — a
+        # well-formed-looking but unconfidently-heard email/phone must not
+        # silently reach the confirm-back phase, where it would only get
+        # Claude's soft "spell out if it would help" discretion rather
+        # than a guaranteed ask to spell it out (backend.supervisor.graph.
+        # LOW_CONFIDENCE_CONFIRM_THRESHOLD; see docs/fixes/).
+        if not valid or extracted["confidence"] < LOW_CONFIDENCE_CONFIRM_THRESHOLD:
             return {"field": field, "success": False}
         return {
             "field": field, "success": True,
@@ -159,6 +171,59 @@ def _reconcile_field_verifications(state: CallState, call_id: str) -> None:
         state["verification_failed_field"] = min(failed_fields, key=FIELD_PRIORITY.index)
 
 
+async def _search_statutes_in_background(repos: Repositories, call_id: str, area: str, utterance: str) -> dict | None:
+    """Phase 8 (case research) — the background half of the research node's
+    latency-hiding pattern: BM25-search the area's corpus, and only if the
+    top candidate clears BM25_RELEVANCE_FLOOR, spend one Claude call
+    grounding a citation against that closed candidate set. Returns None
+    (never raises) for "nothing relevant," "search failed," and "grounding
+    call failed" alike — a failed or empty search degrades silently, it
+    never escalates the call (Decision 4,
+    docs/phases/phase-8-legal-research.md). Deliberately never touches
+    CALL_STATES or acquires get_lock(call_id), same reasoning as
+    _verify_field_in_background above.
+    """
+    candidates = await asyncio.to_thread(
+        traced_call, repos.trace, call_id, "research", "search_statute_candidates",
+        tools.search_statute_candidates, area, utterance,
+    )
+    if not candidates or candidates[0]["score"] < tools.BM25_RELEVANCE_FLOOR:
+        return None
+    try:
+        grounded = await asyncio.to_thread(
+            call_claude_tool, repos.trace, call_id, "research", "ground_statute_citation",
+            tools.ground_statute_citation, utterance, candidates,
+        )
+    except LLMCallFailed:
+        return None
+    candidate_ids = {c["id"] for c in candidates}
+    selected_id = grounded.get("selected_id")
+    if not selected_id or selected_id not in candidate_ids:
+        # Defensive guard (Decision 3): never trust a returned id that
+        # isn't actually one of the candidates offered, even though the
+        # prompt already forbids it.
+        return None
+    entry = next(c for c in candidates if c["id"] == selected_id)
+    return {"citation": entry["citation"], "text": entry["text"], "spoken_framing": grounded["spoken_framing"]}
+
+
+def _reconcile_statute_search(state: CallState, call_id: str) -> None:
+    """Non-blocking, mirrors _reconcile_field_verifications: merges an
+    already-finished background search result into state['statute_citation']
+    if one is ready. Never awaits an in-flight task — if it isn't done yet
+    by the time node_research_deliver runs, state['statute_citation'] simply
+    stays whatever it already was (None by default), which that node
+    already treats as "nothing to say" (Decision 4)."""
+    task = STATUTE_SEARCHES.get(call_id)
+    if task is not None and task.done():
+        STATUTE_SEARCHES.pop(call_id, None)
+        try:
+            state["statute_citation"] = task.result()
+        except Exception:
+            logger.exception("background statute search crashed call_id=%s", call_id)
+            state["statute_citation"] = None
+
+
 def _reconcile_before_capture_turn(state: CallState, call_id: str) -> None:
     """Called immediately before invoking GRAPH.invoke for every turn
     (cheap no-op — FIELD_VERIFICATIONS is empty — outside stage ==
@@ -191,6 +256,13 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             # _reconcile_before_capture_turn's docstring for why no field
             # ever needs a real wait here.
             _reconcile_before_capture_turn(state, call_id)
+            # Phase 8 (case research): fold in a finished background statute
+            # search BEFORE the graph runs, so node_research_deliver sees a
+            # real, up-to-date result rather than a stale None. Always
+            # non-blocking, same shape as the capture-verification
+            # reconciliation above — see _reconcile_statute_search's
+            # docstring for why no call ever needs a real wait here.
+            _reconcile_statute_search(state, call_id)
             stage_before = state["stage"]
             # GRAPH.invoke is synchronous and its node functions make real
             # blocking Claude/Anthropic SDK calls with no internal await —
@@ -243,6 +315,17 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
                     _verify_field_in_background(repos, call_id, verify_field, utterance)
                 )
                 updated["background_verify_field"] = None
+            # Phase 8 (case research): node_research_gather's own "spawn the
+            # search, ask the filler question" branch is the only place a
+            # background statute search should be spawned — signaled
+            # explicitly via state["background_search_query"], same reason
+            # background_verify_field is signal-based rather than diffed
+            # (see the comment above).
+            if query := updated.get("background_search_query"):
+                STATUTE_SEARCHES[call_id] = asyncio.create_task(
+                    _search_statutes_in_background(repos, call_id, updated["practice_area"], query)
+                )
+                updated["background_search_query"] = None
             # Tag the deferred reply with the stage it resulted in, not the
             # stage it started from — a node that naturally advances the
             # stage (e.g. greeting -> routing) must not have its own reply

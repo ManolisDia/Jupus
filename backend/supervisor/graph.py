@@ -19,6 +19,61 @@ FIELD_LABELS = {
     "phone": "phone number",
 }
 
+# Below this, an email/phone extraction is treated the same as an invalid
+# one — re-asked rather than sent to Claude's soft "spell out ambiguous
+# characters if it would help" confirm-back instruction, which live testing
+# showed doesn't reliably trigger (see docs/fixes/ for this session's
+# write-up). Same 0.75 bar apply_extraction already treats as "confident"
+# elsewhere, for consistency. Deliberately deterministic/code-driven, not
+# another soft prompt instruction — the project's own history
+# (docs/DECISIONS.md's Haiku->Sonnet entry) is that this class of "the
+# model should reliably do X" instruction needs to be enforced in code
+# when X actually matters, not hoped for.
+LOW_CONFIDENCE_CONFIRM_THRESHOLD = 0.75
+
+SPELL_OUT_REPLIES = {
+    "email": "I want to make sure I've got that exactly right — could you spell out your email address for me, one character at a time?",
+    "phone": "I want to make sure I've got that exactly right — could you read out your phone number one digit at a time?",
+}
+
+# Phase 8 (case research) — the intro question is asked as part of the
+# SAME turn that transitions capture -> research (see _enter_research
+# below), not a separate chained turn — the transitioning node already has
+# everything it needs (practice_area) to ask it directly.
+RESEARCH_INTRO_QUESTIONS = {
+    "employment": "Before we get you booked in — can you tell me a bit more about what's been going on at work?",
+    "tenancy": "Before we get you booked in — can you tell me a bit more about what's been happening with your landlord?",
+    "immigration": "Before we get you booked in — can you walk me through a bit more of what's going on with your case?",
+}
+
+# Asked immediately after the caller answers the intro question, with zero
+# Claude calls — this is what buys the background statute search its time
+# (the caller's answer to THIS question is a whole extra turn of wall-clock
+# time before node_research_deliver ever runs). See
+# docs/phases/phase-8-legal-research.md.
+RESEARCH_FILLER_QUESTIONS = {
+    "employment": "Got it — did they give you a reason, in writing or otherwise?",
+    "tenancy": "Got it — did they give you anything in writing, or was it just said to you?",
+    "immigration": "Got it — do you know what type of visa or status you're currently on?",
+}
+
+STATUTE_DISCLAIMER = "Just so you know — this is general information, not legal advice, but it's worth mentioning to the attorney."
+
+# The line that used to live directly in node_capture's "all fields
+# confirmed" branches, now spoken once research is done (found a citation
+# or not) instead of at the moment capture finishes.
+BOOKING_INVITE_REPLY = "What day and time works for you?"
+
+
+def _enter_research(state: CallState) -> dict:
+    area = state["practice_area"]
+    return {
+        "stage": "research",
+        "research_phase": "gather",
+        "consecutive_llm_failures": 0,
+        **_agent_turn(RESEARCH_INTRO_QUESTIONS[area]),
+    }
+
 
 def _repos(config: RunnableConfig):
     return config["configurable"]["repos"]
@@ -92,6 +147,8 @@ def route_by_stage(state: CallState) -> str:
         # never touched outside stage == "capture" so this is a clean split,
         # not a new top-level stage.
         return "capture_confirm" if state["capture_phase"] == "confirm" else "capture_fast"
+    if stage == "research":
+        return "research_deliver" if state["research_phase"] == "deliver" else "research_gather"
     return stage
 
 
@@ -191,7 +248,31 @@ def node_routing(state: CallState, config: RunnableConfig) -> dict:
     }
 
 
-def node_capture(state: CallState, config: RunnableConfig) -> dict:
+def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field: str = None) -> dict:
+    """`allowed_pending_field` restricts which field this call may treat the
+    current utterance as a confirm-back answer for. None (the default, used
+    by node_capture_confirm's drain phase) means "any field currently
+    pending_confirm, in FIELD_PRIORITY order" — safe there because the
+    drain phase asks about pending fields strictly in that order, so
+    whichever one is pending genuinely was just asked about out loud.
+
+    That assumption is UNSAFE when node_capture is reached via
+    _fallback_to_real_capture mid-fast-pass (capture_phase == "fast"):
+    Phase 7's background verification can mark an EARLIER field
+    pending_confirm before its own confirm-back has ever been spoken —
+    only the currently fast-asked field (last_asked_field) has actually
+    been put to the caller this turn. Without this restriction, an
+    unrelated utterance that merely happens to restate an earlier field's
+    value (e.g. the caller repeating their email right as the fast pass
+    had already moved on to asking for their phone number) gets
+    interpreted by confirm_field_answer as answering THAT earlier field's
+    (never-spoken) confirm-back and silently marks it "confirmed" — no
+    confirm-back was ever heard, and the caller's actual answer to the
+    field really asked about is discarded. Confirmed live, see
+    docs/fixes/ for the write-up. When set, only that one field is ever
+    treated as "currently pending confirmation" for this call; any other
+    pending field is left untouched, to be asked about for real later.
+    """
     repos = _repos(config)
     call_id = state["call_id"]
     repos.trace.record_event(call_id, "node_entered", node="capture")
@@ -241,7 +322,10 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
         return f"That doesn't look like a valid {FIELD_LABELS[field_name]} — could you say it again?"
 
     try:
-        pending_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
+        if allowed_pending_field is not None:
+            pending_field = allowed_pending_field if profile[allowed_pending_field]["status"] == "pending_confirm" else None
+        else:
+            pending_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
 
         if pending_field:
             answer = call_claude_tool(
@@ -276,24 +360,29 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
         else:
             target_field = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "missing"), None)
             if target_field is None:
-                reply = "Thanks, I've got everything I need. What day and time works for you?"
+                result = _enter_research(state)
                 repos.trace.record_event(
                     call_id, "node_exited", node="capture",
-                    stage_from="capture", stage_to="booking", pending_reply=reply,
+                    stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
                 )
-                return {"stage": "booking", "consecutive_llm_failures": 0, **_agent_turn(reply)}
+                return result
             extracted = call_claude_tool(
                 repos.trace, call_id, "capture", "extract_field", tools.extract_field, utterance, target_field
             )
             if target_field in ("email", "phone"):
                 # handled fully explicitly, not through apply_extraction's
                 # confidence thresholds: any outcome that isn't a genuinely
-                # valid value — including confidence 0 (nothing recognizable
-                # said at all) — must explain why and re-ask, not silently
-                # repeat the same question with no indication anything was wrong
+                # valid, confidently-heard value — including confidence 0
+                # (nothing recognizable said at all) or a well-formed value
+                # heard with low confidence — must explain why and re-ask,
+                # not silently repeat the same question with no indication
+                # anything was wrong, and not proceed to a confirm-back that
+                # can't be trusted to actually surface the uncertainty.
                 candidate = extracted["value"] or None
                 if candidate is None or not _is_valid_format(target_field, candidate):
-                    return _deny_and_reprompt(target_field, _invalid_format_reply(target_field))
+                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field])
+                if extracted["confidence"] < LOW_CONFIDENCE_CONFIRM_THRESHOLD:
+                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field])
                 new_value, new_status = candidate, "pending_confirm"
             else:
                 new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
@@ -318,12 +407,12 @@ def node_capture(state: CallState, config: RunnableConfig) -> dict:
 
     remaining = [f for f in FIELD_PRIORITY if new_profile[f]["status"] != "confirmed"]
     if not remaining:
-        reply = "Thanks, I've got everything I need. What day and time works for you?"
+        result = {"caller_profile": new_profile, **_enter_research(state)}
         repos.trace.record_event(
             call_id, "node_exited", node="capture",
-            stage_from="capture", stage_to="booking", pending_reply=reply,
+            stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
         )
-        return {"stage": "booking", "caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+        return result
 
     next_target = remaining[0]
     if new_profile[next_target]["status"] == "pending_confirm":
@@ -396,7 +485,10 @@ def _sync_last_asked_field(result: dict, current_asked_field):
 
 
 def _fallback_to_real_capture(state: CallState, config: RunnableConfig) -> dict:
-    result = node_capture(state, config)
+    # Restricted to last_asked_field — see node_capture's allowed_pending_field
+    # docstring for why an earlier, not-yet-spoken-about pending field must
+    # never be treated as what this utterance is answering.
+    result = node_capture(state, config, allowed_pending_field=state["last_asked_field"])
     result["last_asked_field"] = _sync_last_asked_field(result, state["last_asked_field"])
     return result
 
@@ -498,7 +590,8 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
     # THIS turn's utterance (the answer to asked_field, the last fast-asked
     # field) for real before deciding the first drain item.
     result = _finish_fast_pass(state, config, asked_field)
-    result["capture_phase"] = "confirm"
+    if result.get("stage") != "research":
+        result["capture_phase"] = "confirm"
     return result
 
 
@@ -546,7 +639,10 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
                 "validate_email" if asked_field == "email" else "validate_phone",
                 tools.validate_email if asked_field == "email" else tools.validate_phone, candidate,
             )
-            new_value, new_status = (candidate, "pending_confirm") if valid else (None, "missing")
+            # Low confidence is treated the same as invalid — see
+            # LOW_CONFIDENCE_CONFIRM_THRESHOLD above.
+            confident_enough = valid and extracted["confidence"] >= LOW_CONFIDENCE_CONFIRM_THRESHOLD
+            new_value, new_status = (candidate, "pending_confirm") if confident_enough else (None, "missing")
         else:
             new_value, new_status = apply_extraction(asked_field, extracted["value"], extracted["confidence"])
     except LLMCallFailed:
@@ -567,7 +663,10 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
                 "consecutive_llm_failures": 0,
                 **_agent_turn(reply),
             }
-        reply = f"That doesn't look like a valid {FIELD_LABELS[asked_field]} — could you say it again?"
+        if asked_field in ("email", "phone"):
+            reply = SPELL_OUT_REPLIES[asked_field]
+        else:
+            reply = f"That doesn't look like a valid {FIELD_LABELS[asked_field]} — could you say it again?"
         repos.trace.record_event(
             call_id, "node_exited", node="capture_fast",
             stage_from="capture", stage_to="capture", pending_reply=reply,
@@ -582,12 +681,12 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
 
     pending_field = next((f for f in FIELD_PRIORITY if new_profile[f]["status"] == "pending_confirm"), None)
     if pending_field is None:
-        reply = "Thanks, I've got everything I need. What day and time works for you?"
+        result = {"caller_profile": new_profile, **_enter_research(state)}
         repos.trace.record_event(
             call_id, "node_exited", node="capture_fast",
-            stage_from="capture", stage_to="booking", pending_reply=reply,
+            stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
         )
-        return {"stage": "booking", "caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+        return result
 
     try:
         confirm_back = call_claude_tool(
@@ -818,7 +917,16 @@ def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: st
     (relevant when called from node_capture_confirm — the fast pass isn't
     "done" again until this field is actually resolved).
     """
-    reply = f"Sorry, I need to double check something — what's your {FIELD_LABELS[failed_field]} again?"
+    if failed_field in ("email", "phone"):
+        # A background verification for email/phone now fails on low
+        # confidence too, not just invalid format (see
+        # LOW_CONFIDENCE_CONFIRM_THRESHOLD above) — either way, asking the
+        # caller to spell/read it out character-by-character is a better
+        # re-ask than "say it again", which tends to reproduce the same
+        # ambiguity in natural speech.
+        reply = SPELL_OUT_REPLIES[failed_field]
+    else:
+        reply = f"Sorry, I need to double check something — what's your {FIELD_LABELS[failed_field]} again?"
     repos.trace.record_event(call_id, "capture_fast_delayed_failure_reask", node=node_name, field=failed_field)
     repos.trace.record_event(
         call_id, "node_exited", node=node_name,
@@ -851,6 +959,102 @@ def node_capture_confirm(state: CallState, config: RunnableConfig) -> dict:
     return node_capture(state, config)
 
 
+def node_research_gather(state: CallState, config: RunnableConfig) -> dict:
+    """Phase 8 (case research) — handles the turn answering the research
+    intro question (asked by _enter_research as part of capture's own
+    completion). A caller who explicitly declines to elaborate skips
+    research entirely and goes straight to booking, with no search ever
+    spawned; a bare affirmation/leftover reaction (heuristics.
+    looks_like_bare_affirmation — e.g. a trailing "yep, that's correct"
+    still reacting to the PREVIOUS question, since the capture->research
+    handoff has no extra round-trip for the caller to catch up on a fresh
+    question) gets one re-ask rather than being silently treated as the
+    substantive answer, since it never plausibly is one. Otherwise this
+    turn spawns the background statute search (signaled via
+    background_search_query for dispatcher.py to pick up, same pattern as
+    Phase 7's background_verify_field) and replies with a templated
+    filler question — zero Claude calls on this turn, which is what buys
+    the search its time. See docs/phases/phase-8-legal-research.md."""
+    repos = _repos(config)
+    call_id = state["call_id"]
+    repos.trace.record_event(call_id, "node_entered", node="research_gather")
+    utterance = state["transcript"][-1]["text"] if state["transcript"] else ""
+    area = state["practice_area"]
+
+    if heuristics.looks_like_research_skip(utterance):
+        repos.trace.record_event(
+            call_id, "node_exited", node="research_gather",
+            stage_from="research", stage_to="booking", pending_reply=BOOKING_INVITE_REPLY,
+        )
+        return {
+            "stage": "booking", "research_phase": "gather",
+            "consecutive_llm_failures": 0, **_agent_turn(BOOKING_INVITE_REPLY),
+        }
+
+    if heuristics.looks_like_bare_affirmation(utterance):
+        attempts = state["retry_counts"].get("research_gather", 0) + 1
+        if attempts >= 2:
+            # Best-effort enrichment only (Decision 4) — never loops or
+            # escalates over this; give up gracefully after one re-ask.
+            repos.trace.record_event(
+                call_id, "node_exited", node="research_gather",
+                stage_from="research", stage_to="booking", pending_reply=BOOKING_INVITE_REPLY,
+            )
+            return {
+                "stage": "booking", "research_phase": "gather",
+                "retry_counts": {**state["retry_counts"], "research_gather": attempts},
+                "consecutive_llm_failures": 0, **_agent_turn(BOOKING_INVITE_REPLY),
+            }
+        reply = "Sorry, I don't think I quite caught that — can you tell me a bit more about what's actually been happening?"
+        repos.trace.record_event(
+            call_id, "research_gather_bare_affirmation_fallback", node="research_gather", utterance=utterance
+        )
+        repos.trace.record_event(
+            call_id, "node_exited", node="research_gather",
+            stage_from="research", stage_to="research", pending_reply=reply,
+        )
+        return {
+            "retry_counts": {**state["retry_counts"], "research_gather": attempts},
+            "consecutive_llm_failures": 0, **_agent_turn(reply),
+        }
+
+    reply = RESEARCH_FILLER_QUESTIONS[area]
+    repos.trace.record_event(
+        call_id, "node_exited", node="research_gather",
+        stage_from="research", stage_to="research", pending_reply=reply,
+    )
+    return {
+        "research_phase": "deliver",
+        "background_search_query": utterance,
+        "consecutive_llm_failures": 0,
+        **_agent_turn(reply),
+    }
+
+
+def node_research_deliver(state: CallState, config: RunnableConfig) -> dict:
+    """Phase 8 (case research) — handles the turn after the filler
+    question. state["statute_citation"] was merged in (if resolved) by
+    dispatcher._reconcile_statute_search immediately before this node ran;
+    a still-in-flight or never-run search is indistinguishable here from
+    "nothing found" (Decision 4, docs/phases/phase-8-legal-research.md) —
+    either way this turn moves on to booking, with or without a citation."""
+    repos = _repos(config)
+    call_id = state["call_id"]
+    repos.trace.record_event(call_id, "node_entered", node="research_deliver")
+
+    citation = state.get("statute_citation")
+    if citation:
+        reply = f"{citation['spoken_framing']} {STATUTE_DISCLAIMER} {BOOKING_INVITE_REPLY}"
+    else:
+        reply = BOOKING_INVITE_REPLY
+
+    repos.trace.record_event(
+        call_id, "node_exited", node="research_deliver",
+        stage_from="research", stage_to="booking", pending_reply=reply,
+    )
+    return {"stage": "booking", "research_phase": "gather", "consecutive_llm_failures": 0, **_agent_turn(reply)}
+
+
 def build_graph():
     g = StateGraph(CallState)
     for name, fn in [
@@ -858,6 +1062,8 @@ def build_graph():
         ("routing", node_routing),
         ("capture_fast", node_capture_fast),
         ("capture_confirm", node_capture_confirm),
+        ("research_gather", node_research_gather),
+        ("research_deliver", node_research_deliver),
         ("booking", node_booking),
         ("escalation", node_escalation),
     ]:
@@ -870,6 +1076,8 @@ def build_graph():
             "routing": "routing",
             "capture_fast": "capture_fast",
             "capture_confirm": "capture_confirm",
+            "research_gather": "research_gather",
+            "research_deliver": "research_deliver",
             "booking": "booking",
             "escalation": "escalation",
         },

@@ -1,0 +1,65 @@
+[
+  {
+    "id": "tenancy-poe1977-s5",
+    "citation": "Protection from Eviction Act 1977, s.5",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["eviction", "notice to quit", "notice", "landlord", "kicked out", "no warning", "residential tenancy"],
+    "text": "A notice to quit given by either landlord or tenant of premises let as a dwelling is not valid unless it is in writing and given not less than four weeks before the date on which it is to take effect."
+  },
+  {
+    "id": "tenancy-poe1977-s1",
+    "citation": "Protection from Eviction Act 1977, s.1",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["unlawful eviction", "harassment", "landlord", "locked out", "changed the locks", "illegal eviction", "criminal offence"],
+    "text": "It is a criminal offence for a landlord (or anyone acting on their behalf) to unlawfully deprive a residential occupier of their home, or to harass them with intent to make them leave, without following the proper legal process for eviction through the courts."
+  },
+  {
+    "id": "tenancy-ha1988-s21",
+    "citation": "Housing Act 1988, s.21",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["section 21", "no fault eviction", "notice period", "assured shorthold tenancy", "landlord wants me out", "possession"],
+    "text": "A landlord seeking possession of an assured shorthold tenancy without alleging any fault (a 'Section 21' notice) must give the tenant at least two months' written notice, cannot use this route within the first four months of the tenancy, and cannot rely on it if the deposit was not properly protected or certain prescribed documents (gas safety certificate, EPC, How to Rent guide) were not provided."
+  },
+  {
+    "id": "tenancy-ha1988-s8",
+    "citation": "Housing Act 1988, s.8",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["section 8", "rent arrears", "fault eviction", "grounds for possession", "behind on rent", "possession notice"],
+    "text": "A landlord seeking possession on a specific fault-based ground (e.g. rent arrears) must serve a 'Section 8' notice citing the statutory ground relied on, with a notice period that depends on the ground — as short as two weeks for the mandatory rent-arrears ground."
+  },
+  {
+    "id": "tenancy-ha2004-deposit",
+    "citation": "Housing Act 2004, ss.212-215",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["deposit protection", "tenancy deposit scheme", "deposit not protected", "security deposit"],
+    "text": "A deposit taken for an assured shorthold tenancy must be protected in a government-authorised tenancy deposit scheme within 30 days of receipt, with prescribed information given to the tenant. Failure to protect the deposit can bar the landlord from serving a valid Section 21 notice and can expose them to a court-ordered penalty of one to three times the deposit amount."
+  },
+  {
+    "id": "tenancy-tfa2019",
+    "citation": "Tenant Fees Act 2019",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["tenant fees", "holding deposit", "letting fees", "deposit cap", "charged extra fees"],
+    "text": "Landlords and letting agents are prohibited from charging most fees to tenants in connection with a new or existing tenancy. A holding deposit is capped at one week's rent, and the security deposit is capped at five weeks' rent (six weeks if the annual rent exceeds fifty thousand pounds)."
+  },
+  {
+    "id": "tenancy-lta1985-s11",
+    "citation": "Landlord and Tenant Act 1985, s.11",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["repairs", "landlord's repairing obligations", "disrepair", "not fixing", "broken boiler", "damp", "mould"],
+    "text": "A landlord of a residential tenancy has an implied obligation to keep the structure and exterior of the property, and installations for the supply of water, gas, electricity, and space/water heating, in repair and proper working order, regardless of what the tenancy agreement says."
+  },
+  {
+    "id": "tenancy-hfhha2018",
+    "citation": "Homes (Fitness for Human Habitation) Act 2018",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["fitness for human habitation", "unfit housing", "disrepair", "sue landlord", "unsafe housing"],
+    "text": "A tenant can bring a claim directly against their landlord if the rented home is not fit for human habitation at the start of, or during, the tenancy — allowing court action for disrepair independent of, and without waiting for, local authority enforcement."
+  },
+  {
+    "id": "tenancy-da2015-s33",
+    "citation": "Deregulation Act 2015, s.33",
+    "jurisdiction": "England & Wales",
+    "topic_tags": ["retaliatory eviction", "complained about repairs", "revenge eviction", "section 21 invalid"],
+    "text": "A landlord cannot validly serve a Section 21 no-fault eviction notice within six months of a local authority improvement notice or emergency remedial action being taken in response to the tenant's complaint about disrepair — protection against 'retaliatory' or 'revenge' evictions."
+  }
+]
