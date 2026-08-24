@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jupus — Admin</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1a1d21; }
+  header { padding: 16px 24px; background: #1a1d21; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { margin: 0; font-size: 18px; }
+  main { display: flex; height: calc(100vh - 57px); }
+  #calls-panel { width: 420px; overflow-y: auto; border-right: 1px solid #ddd; background: #fff; }
+  #detail-panel { flex: 1; overflow-y: auto; padding: 20px; }
+  #summary { padding: 12px 24px; background: #fff; border-bottom: 1px solid #ddd; font-size: 13px; display: flex; gap: 24px; flex-wrap: wrap; }
+  #summary .stat { display: flex; flex-direction: column; }
+  #summary .stat .label { color: #666; }
+  #summary .stat .value { font-size: 16px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  tr.call-row { cursor: pointer; }
+  tr.call-row:hover { background: #f0f4ff; }
+  tr.call-row.selected { background: #dbe6ff; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.booked { background: #d6f5d6; color: #146b14; }
+  .badge.escalated { background: #ffe1d6; color: #a1401a; }
+  .badge.info_only { background: #e4e4e4; color: #444; }
+  .badge.abandoned { background: #f0e0f0; color: #6a2d6a; }
+  .error-badge { display: inline-block; padding: 1px 6px; margin: 1px 2px 0 0; border-radius: 8px; font-size: 10px; background: #fff3cd; color: #8a6400; }
+  .reviewed-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .reviewed-dot.yes { background: #2ea043; }
+  .reviewed-dot.no { background: #d0d0d0; }
+  #taxonomy-panel { padding: 12px 24px; background: #fff; border-bottom: 1px solid #ddd; }
+  #taxonomy-panel h3 { margin: 0 0 8px; font-size: 14px; }
+  .suggestion-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  .suggestion-row button { margin-left: 6px; font-size: 12px; padding: 3px 8px; }
+  .transcript-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 6px; }
+  .transcript-turn.caller { background: #eef2ff; }
+  .transcript-turn.agent { background: #f4f4f4; }
+  .transcript-turn .role { font-size: 11px; text-transform: uppercase; color: #888; }
+  #trace-toggle { margin: 16px 0 8px; padding: 6px 14px; cursor: pointer; }
+  .trace-event { font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 8px; border-bottom: 1px solid #eee; }
+  .trace-event .seq { color: #999; margin-right: 8px; }
+  .trace-event .event-type { font-weight: 600; margin-right: 8px; }
+  .trace-event .node { color: #6a6ae0; margin-right: 8px; }
+  .empty-state { color: #888; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Jupus — Admin</h1>
+  <a href="/admin/annotate" style="color:#9cf;font-size:13px;">Benevolent Dictator annotation queue →</a>
+</header>
+<div id="summary"></div>
+<div id="taxonomy-panel"></div>
+<main>
+  <div id="calls-panel"><table id="calls-table"><thead>
+    <tr><th>Call</th><th>Area</th><th>Outcome</th><th>Errors</th><th>Reviewed</th></tr>
+  </thead><tbody id="calls-tbody"></tbody></table></div>
+  <div id="detail-panel"><div class="empty-state">Select a call on the left to view its transcript.</div></div>
+</main>
+<script src="/admin/app.js"></script>
+</body>
+</html>

@@ -1,9 +1,18 @@
 from dataclasses import dataclass
+from typing import Optional
 
 from backend.config import Settings
-from backend.db.repositories.base import CallRepository, SlotRepository, TraceRepository
+from backend.db.repositories.base import (
+    AnnotationRepository,
+    CallRepository,
+    EvalRepository,
+    SlotRepository,
+    TraceRepository,
+)
 from backend.db.repositories.connection import connect
+from backend.db.repositories.sqlite_annotations import SQLiteAnnotationRepository
 from backend.db.repositories.sqlite_calls import SQLiteCallRepository
+from backend.db.repositories.sqlite_eval import SQLiteEvalRepository
 from backend.db.repositories.sqlite_slots import SQLiteSlotRepository
 from backend.db.repositories.sqlite_trace import SQLiteTraceRepository
 
@@ -13,6 +22,8 @@ class Repositories:
     calls: CallRepository
     slots: SlotRepository
     trace: TraceRepository
+    evals: Optional[EvalRepository] = None
+    annotations: Optional[AnnotationRepository] = None
 
 
 def get_repositories(settings: Settings) -> Repositories:
@@ -22,6 +33,8 @@ def get_repositories(settings: Settings) -> Repositories:
             calls=SQLiteCallRepository(conn),
             slots=SQLiteSlotRepository(conn),
             trace=SQLiteTraceRepository(conn),
+            evals=SQLiteEvalRepository(conn),
+            annotations=SQLiteAnnotationRepository(conn),
         )
     raise NotImplementedError(
         f"db_backend={settings.db_backend!r} — implement Postgres*Repository "

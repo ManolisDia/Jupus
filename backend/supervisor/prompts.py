@@ -81,3 +81,36 @@ If their reply isn't actually an answer at all — e.g. "what?", "can you repeat
 back, or anything else showing they didn't hear or understand the proposal rather than answering
 it — set "needs_clarification" to true and leave "accepted" false; the proposal will simply be
 repeated, so don't guess at what they meant."""
+
+CLASSIFY_CALL_ERRORS_PROMPT = """You are an eval judge reviewing one completed call to a law
+firm's voice intake agent, looking for conversation-quality problems against a fixed error
+taxonomy. You are given the call's outcome/escalation_reason and its full trace — an ordered
+record of every user message, agent reply, tool call (with arguments, result, duration, and
+success/failure), retry, and stage transition. The trace is stronger evidence than the transcript
+alone: e.g. two tool_call_start events for update_caller_profile targeting the same
+already-confirmed field is a much stronger repetition signal than guessing from surface text.
+
+Error classes (only flag a call against one of these — do not invent new ones):
+{error_class_descriptions}
+
+For each error class that genuinely applies to this call, return a flag with a confidence and a
+short evidence string that cites the specific trace event(s) supporting it where possible (e.g.
+"duplicate tool_call_start for update_caller_profile on field=email at seq 4 and seq 9"), not just
+a transcript quote. Return an empty flags list if none apply — that is valid and expected, not a
+failure to find something."""
+
+PROPOSE_TAXONOMY_UPDATES_PROMPT = """You are critiquing an error taxonomy used to judge a batch of
+law-firm voice-intake calls, given this batch's own classification results and — where available
+— a human reviewer's (the "Benevolent Dictator") annotations for some of those calls.
+
+Current error classes:
+{error_class_descriptions}
+
+Weight the human reviewer's judgment more heavily than your own self-critique: a human flag of
+error_class_id=null with a note (an issue that doesn't fit any current class) is strong evidence
+for a new_class suggestion, using their note as the rationale. A single disagreement between your
+classification and the human's for one call is evidence for a misclassification suggestion; the
+same disagreement pattern recurring across multiple calls is evidence for refine_existing instead
+(the class's description is probably ambiguous, not that you made one mistake).
+
+Return an empty suggestions list if nothing stands out — that is valid and expected."""

@@ -1,5 +1,6 @@
 """Tool implementations for the LangGraph supervisor."""
 
+import json
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -67,6 +68,60 @@ CONFIRM_BOOKING_SCHEMA = {
 
 def _format_transcript(transcript: list[dict]) -> str:
     return "\n".join(f"{turn['role'].upper()}: {turn['text']}" for turn in transcript)
+
+
+def _format_error_classes(error_classes: list[dict]) -> str:
+    return "\n".join(f"- {c['id']} ({c['name']}): {c['description']}" for c in error_classes)
+
+
+CLASSIFY_CALL_ERRORS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "flags": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "error_class_id": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["error_class_id", "confidence", "evidence"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["flags"],
+    "additionalProperties": False,
+}
+
+PROPOSE_TAXONOMY_UPDATES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "suggestion_type": {
+                        "type": "string",
+                        "enum": ["new_class", "misclassification", "refine_existing"],
+                    },
+                    "call_id": {"type": ["string", "null"]},
+                    "related_error_class_id": {"type": ["string", "null"]},
+                    "suggested_name": {"type": ["string", "null"]},
+                    "rationale": {"type": "string"},
+                },
+                "required": [
+                    "suggestion_type", "call_id", "related_error_class_id", "suggested_name", "rationale",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["suggestions"],
+    "additionalProperties": False,
+}
 
 
 def classify_practice_area(transcript: list[dict]) -> dict:
@@ -212,4 +267,51 @@ def confirm_booking_answer(utterance: str) -> dict:
         system=prompts.CONFIRM_BOOKING_ANSWER_PROMPT,
         user_content=utterance,
         json_schema=CONFIRM_BOOKING_SCHEMA,
+    )
+
+
+def classify_call_errors(call_row: dict, trace: list[dict], error_classes: list[dict]) -> dict:
+    """Phase 6b — the LLM judge. Classifies one completed call against the
+    editable error taxonomy (eval/error_classes.py), using its outcome/
+    escalation_reason plus its full trace (not just the flat transcript) as
+    evidence. Returns {"flags": [...]}; an empty list is valid and expected.
+    """
+    user_content = json.dumps(
+        {
+            "outcome": call_row.get("outcome"),
+            "escalation_reason": call_row.get("escalation_reason"),
+            "trace": trace,
+        },
+        default=str,
+    )
+    return call_claude_json(
+        system=prompts.CLASSIFY_CALL_ERRORS_PROMPT.format(
+            error_class_descriptions=_format_error_classes(error_classes)
+        ),
+        user_content=user_content,
+        json_schema=CLASSIFY_CALL_ERRORS_SCHEMA,
+    )
+
+
+def propose_taxonomy_updates(
+    batch_results: list[dict], human_annotations_by_call: dict[str, dict], error_classes: list[dict]
+) -> dict:
+    """Phase 6c — the taxonomy-critique pass. Takes this eval batch's own
+    classify_call_errors output PLUS any Benevolent Dictator annotations for
+    calls in the batch (human_annotations_by_call[call_id] is None for calls
+    with no call_reviews row — most calls, especially early on, and that's
+    fine). Returns {"suggestions": [...]}, each destined for a "pending"
+    taxonomy_suggestions row — only a human's approval should ever precede a
+    hand-edit to eval/error_classes.py.
+    """
+    user_content = json.dumps(
+        {"batch_results": batch_results, "human_annotations_by_call": human_annotations_by_call},
+        default=str,
+    )
+    return call_claude_json(
+        system=prompts.PROPOSE_TAXONOMY_UPDATES_PROMPT.format(
+            error_class_descriptions=_format_error_classes(error_classes)
+        ),
+        user_content=user_content,
+        json_schema=PROPOSE_TAXONOMY_UPDATES_SCHEMA,
     )
