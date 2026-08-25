@@ -2,8 +2,9 @@ import json
 
 from backend.db.repositories.sqlite_annotations import SQLiteAnnotationRepository
 from backend.db.repositories.sqlite_calls import SQLiteCallRepository
+from backend.db.repositories.sqlite_escalations import SQLiteEscalationRepository
 from backend.db.repositories.testing import create_in_memory_connection
-from backend.db.seed_demo_calls import seed, seed_annotations
+from backend.db.seed_demo_calls import demo_states, seed, seed_annotations, seed_escalations
 from eval.error_classes import get_active_error_classes
 
 
@@ -103,3 +104,28 @@ def test_seed_annotations_populates_two_reviews():
     unconfirmed_review = annotations.get_review("demo-unconfirmed-action-1")
     assert unconfirmed_review is not None
     assert any(a["error_class_id"] == "unconfirmed_action" for a in unconfirmed_review["annotations"])
+
+
+def test_seed_escalations_creates_a_handoff_row_per_escalated_call():
+    conn = create_in_memory_connection()
+    seed(conn)
+    seed_escalations(conn)
+
+    rows = {row["call_id"]: row for row in SQLiteEscalationRepository(conn).list()}
+
+    assert set(rows) == {s["call_id"] for s in demo_states() if s["escalation_reason"]}
+    row = rows["demo-escalated-1"]
+    assert row["escalation_reason"] == "unable_to_classify"
+    assert row["practice_area"] == "immigration"
+    assert row["caller_name"] == "Jordan Lee"
+    assert row["reason_for_call"]
+    assert row["escalation_explanation"]
+
+
+def test_seed_escalations_is_idempotent():
+    conn = create_in_memory_connection()
+    seed(conn)
+    seed_escalations(conn)
+    seed_escalations(conn)
+
+    assert len(SQLiteEscalationRepository(conn).list()) == 2
