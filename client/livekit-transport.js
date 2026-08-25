@@ -90,7 +90,19 @@ function registerTranscriptHandlers(room) {
       const isAgent = participant?.identity !== "caller";
       const text = await reader.readAll();
       if (!text) return;
-      if (isAgent) removeThinkingBubble();
+      if (isAgent) {
+        removeThinkingBubble();
+      } else {
+        // The caller's final transcript is the start of a turn, and the
+        // supervisor round trip begins right after it — so this is where the
+        // "…" indicator belongs now. Under the old transport it hung off
+        // response.function_call_arguments.done, a Realtime data-channel event
+        // this page no longer sees. Deliberately driven by transcripts rather
+        // than the agent's published state attribute: these are the same two
+        // signals the transcript itself uses, so the bubble can never be left
+        // stranded by an attribute name changing between SDK versions.
+        showThinkingBubble();
+      }
       appendTranscriptTurn(isAgent ? "agent" : "caller", text);
     });
   } catch (err) {
