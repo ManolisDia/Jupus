@@ -73,16 +73,23 @@ unmocked pipeline, not assumed):
   Fixed by constraining the prompt, not raising the token ceiling (`docs/fixes/2026-08-25-002.md`).
 - **Per-tool model choice** — `select_offered_slot` (closed-set index selection, not free-text
   extraction) moved to Haiku after showing identical behavior to Sonnet on an ambiguous case and
-  1092-1782ms vs. Sonnet's 3500ms on clear ones. `confirm_field_answer`/`confirm_booking_answer`/
-  `classify_practice_area` remain untested candidates for the same treatment.
+  1092-1782ms vs. Sonnet's 3500ms on clear ones. `ground_statute_citation` (same closed-set shape,
+  Phase 8's legal-citation grounding call) moved to Haiku next after identifying it as the single
+  longest individual call remaining — identical statute selected by both models, 4090ms (Sonnet) vs.
+  1367ms (Haiku). `confirm_field_answer`/`confirm_booking_answer`/`classify_practice_area` remain
+  untested candidates for the same treatment.
 
 **Net effect across the 6 canonical scenarios + 2 research variants** (total Claude tool-call time
-across all 8 scenario calls, `phase13-baseline` vs. `phase13-final` labels, real API):
-**132,991ms → 120,958ms total (16,624ms → 15,120ms average per call, ~9%)**, with zero error-class
-regression (`eval/compare_runs.py`). Reported as total/average tool-call duration rather than
-through the `stt_and_dialogue_decision`/`supervisor_processing` stage breakdown above, because that
-breakdown depends on bridge-level events (`speech_stopped`, `ask_supervisor_received`) that
-`eval/replay_scenarios.py` doesn't emit — it drives `process_supervisor_call` directly, bypassing
+across all 8 scenario calls, `phase13-baseline` vs. `phase13-final-v2` labels, real API, including
+both Haiku swaps above): **132,991ms → 116,124ms total (16,624ms → 14,516ms average per call,
+~12.7%)**, with zero error-class regression (`eval/compare_runs.py`). An earlier measurement
+(`phase13-final`, before the `ground_statute_citation` swap) showed ~9% — kept in
+`docs/phases/phase-13-latency-reduction.md`'s DoD as the historical record of what that phase's
+original four items achieved on their own; this figure is the current combined total. Reported as
+total/average tool-call duration rather than through the `stt_and_dialogue_decision`/`supervisor_processing`
+stage breakdown above, because that breakdown depends on bridge-level events (`speech_stopped`,
+`ask_supervisor_received`) that `eval/replay_scenarios.py` doesn't emit — it drives
+`process_supervisor_call` directly, bypassing
 the WebSocket bridge entirely (see that script's own docstring). The two metrics measure the same
 underlying thing (the graph/Claude round-trip), just via different instrumentation; a live-call
 re-measurement through the real bridge would be needed to update the stage-breakdown table itself.

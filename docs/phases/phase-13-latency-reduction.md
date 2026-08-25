@@ -89,3 +89,10 @@ itself: the background statute-search task it spawns intermittently never comple
 through the full scripted S7a/S7b conversation, with no error or trace signal at all — not
 reproducible when the same utterances are driven directly. See
 `docs/known-issues/2026-08-25-003.md`.
+
+**Updated combined total, `--label phase13-final-v2` vs. the original `phase13-baseline`, including
+this follow-up**: **132,991ms → 116,124ms total (16,624ms → 14,516ms average per call, ~12.7%)**,
+zero error-class regression (`eval/compare_runs.py`). This supersedes this doc's own DoD line above
+(`phase13-final`, ~9%) as the current combined number — that line is kept unchanged as the honest
+record of what this phase's original four items achieved on their own, before this follow-up
+shipped. Written up in `docs/answers.md`'s Q1.
