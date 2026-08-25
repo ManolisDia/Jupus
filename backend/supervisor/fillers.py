@@ -42,17 +42,44 @@ from backend.supervisor.state import CallState, FIELD_PRIORITY
 VOICE = "marin"
 VOICE_SPEED = 1.1
 
-# One phrase per target site, not the "one or two" Decision 1 allows: a single
-# phrase per site keeps selection fully deterministic with no per-call counter
-# to carry around, and these turns are rare enough within one call that a
-# caller is unlikely to hear the same line twice.
+# Two lines per target site — the upper end of the "one or two short,
+# hand-written filler lines" Decision 1 allows — spoken in order as the wait
+# drags on. The second line exists to answer a specific, already-learned
+# objection, not for variety's sake.
 #
-# Keys are also the WAV basenames under backend/transport/filler_audio/.
-FILLER_PHRASES: dict[str, str] = {
-    "confirm_field": "Okay, one sec.",
-    "confirm_booking": "Let me check that.",
-    "propose_slot": "Let me get that booked.",
+# docs/DECISIONS.md records that a spoken filler was tried in Phase 2 and
+# REMOVED after live testing: "the actual caller experience of a spoken promise
+# ('one moment') followed by dead air until the real reply eventually lands
+# reads as *more* broken than a brief, unannounced pause." That finding still
+# stands, and a single filler in front of a slow turn would walk straight back
+# into it — confirm_field_answer's measured max is 10.2s, against which one
+# 1.5s line is a promise followed by nine seconds of nothing.
+#
+# So the wait is re-acknowledged rather than announced once and abandoned,
+# which is what a human receptionist actually does. The second line is
+# deliberately reassurance with no new promise in it ("Still with you." not
+# "Almost done!") — a second promise would compound the original complaint
+# instead of answering it.
+#
+# Ordering is by index: entry [0] fires first, [1] only if the supervisor is
+# still working FILLER_REPEAT_SECONDS later. Most turns never reach [1].
+#
+# Keys + index are the WAV basenames under backend/transport/filler_audio/,
+# e.g. confirm_field_0.wav.
+FILLER_PHRASES: dict[str, tuple[str, ...]] = {
+    "confirm_field": ("Okay, one sec.", "Still with you."),
+    "confirm_booking": ("Let me check that.", "Still checking."),
+    "propose_slot": ("Let me get that booked.", "Still working on it."),
 }
+
+# How long the session must stay continuously idle before the FIRST line fires.
+# Under this, the caller hears nothing at all — a fast turn should never be
+# narrated, which is the half of the Phase 2 finding that was always right.
+FILLER_IDLE_DELAY_SECONDS = 0.4
+
+# Cooldown before the second line is considered. Long enough that a normal
+# ~2s turn finishes first and only line [0] is ever heard.
+FILLER_REPEAT_SECONDS = 4.0
 
 
 def filler_for_state(state: CallState) -> Optional[str]:

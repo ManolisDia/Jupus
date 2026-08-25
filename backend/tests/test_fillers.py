@@ -83,11 +83,25 @@ def test_research_turn_gets_no_filler():
 # --- the phrases and their pre-rendered audio must stay in lockstep ---------
 
 
+def _audio_paths():
+    for key, phrases in FILLER_PHRASES.items():
+        for index in range(len(phrases)):
+            yield key, index, FILLER_AUDIO_DIR / f"{key}_{index}.wav"
+
+
 def test_every_phrase_has_committed_audio():
     # A phrase added without regenerating the WAVs would raise at call time,
     # inside a live call, on the one path meant to prevent dead air.
-    for key in FILLER_PHRASES:
-        assert (FILLER_AUDIO_DIR / f"{key}.wav").exists(), f"missing filler audio for {key!r}"
+    for key, index, path in _audio_paths():
+        assert path.exists(), f"missing filler audio for {key!r} line {index}"
+
+
+def test_every_site_has_a_long_wait_line():
+    # The second line is what keeps a slow turn from reproducing the Phase 2
+    # finding recorded in docs/DECISIONS.md — a spoken promise followed by dead
+    # air. A site with only one line would silently regress to exactly that.
+    for key, phrases in FILLER_PHRASES.items():
+        assert len(phrases) >= 2, f"{key!r} has no follow-up line for a long wait"
 
 
 def test_filler_audio_is_the_format_the_generator_writes():
@@ -96,8 +110,8 @@ def test_filler_audio_is_the_format_the_generator_writes():
     # the committed WAVs actually came from scripts/generate_filler_audio.py
     # (mono s16 @ 24kHz, straight from OpenAI's response_format="pcm") rather
     # than being hand-dropped in some other format that happens to decode.
-    for key in FILLER_PHRASES:
-        with wave.open(str(FILLER_AUDIO_DIR / f"{key}.wav"), "rb") as wav:
+    for _key, _index, path in _audio_paths():
+        with wave.open(str(path), "rb") as wav:
             assert wav.getnchannels() == 1
             assert wav.getsampwidth() == 2
             assert wav.getframerate() == 24_000

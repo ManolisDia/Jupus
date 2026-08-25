@@ -50,23 +50,24 @@ def generate() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     client = OpenAI(api_key=settings.openai_api_key)
 
-    for key, phrase in FILLER_PHRASES.items():
-        response = client.audio.speech.create(
-            model=TTS_MODEL,
-            voice=VOICE,
-            speed=VOICE_SPEED,
-            input=phrase,
-            response_format="pcm",
-        )
-        pcm = response.content
-        path = OUTPUT_DIR / f"{key}.wav"
-        with wave.open(str(path), "wb") as out:
-            out.setnchannels(1)
-            out.setsampwidth(2)
-            out.setframerate(SAMPLE_RATE)
-            out.writeframes(pcm)
-        seconds = len(pcm) / 2 / SAMPLE_RATE
-        print(f"{key:18} {seconds:5.2f}s  {phrase!r} -> {path.name}")
+    for key, phrases in FILLER_PHRASES.items():
+        for index, phrase in enumerate(phrases):
+            response = client.audio.speech.create(
+                model=TTS_MODEL,
+                voice=VOICE,
+                speed=VOICE_SPEED,
+                input=phrase,
+                response_format="pcm",
+            )
+            pcm = response.content
+            path = OUTPUT_DIR / f"{key}_{index}.wav"
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(SAMPLE_RATE)
+                out.writeframes(pcm)
+            seconds = len(pcm) / 2 / SAMPLE_RATE
+            print(f"{path.name:24} {seconds:5.2f}s  {phrase!r}")
 
 
 if __name__ == "__main__":
