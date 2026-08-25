@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,26 @@ from eval.insights_agent import run_deterministic_pass
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Phase 14 — the LiveKit agent worker runs inside this process, on this
+    # loop, so it can reach CALL_STATES and the per-call locks directly (see
+    # backend/transport/livekit_agent.py on why in-process rather than a
+    # separate `lk agent` process). Nothing starts under the legacy webrtc
+    # transport, so the default path is byte-for-byte unchanged.
+    if settings.transport == "livekit":
+        from backend.transport.livekit_agent import start_agent_server, stop_agent_server
+
+        start_agent_server(REPOS)
+        try:
+            yield
+        finally:
+            await stop_agent_server()
+    else:
+        yield
+
+
+app = FastAPI(lifespan=lifespan)
 REPOS = get_repositories(settings)
 
 ADMIN_DIR = Path(__file__).resolve().parents[1] / "admin"
@@ -132,6 +152,47 @@ async def create_session(request: SessionRequest):
             status_code=502,
             content={"error": "unexpected response shape from OpenAI Realtime API"},
         )
+
+
+@app.post("/livekit-token", dependencies=[Depends(verify_access_token)])
+async def create_livekit_token(request: SessionRequest):
+    """Phase 14's replacement for /session's role of "get the browser what it
+    needs to start talking".
+
+    Same request shape (a client-generated call_id), different token type: this
+    mints a LiveKit room token rather than an OpenAI Realtime client secret.
+    The browser no longer holds any OpenAI credential at all — the Realtime
+    session is opened server-side by the agent worker, which is a real
+    reduction in what's exposed to the caller's machine.
+
+    The room name IS the call_id. That's what carries the id end to end with no
+    side channel: the agent reads it back off the job (ctx.job.room.name) and
+    every trace event, CallState, and DB row keys off the same string.
+    """
+    if not (settings.livekit_url and settings.livekit_api_key and settings.livekit_api_secret):
+        return JSONResponse(
+            status_code=503,
+            content={"error": "LiveKit is not configured (set LIVEKIT_URL/API_KEY/API_SECRET)"},
+        )
+
+    from livekit.api import AccessToken, VideoGrants
+
+    token = (
+        AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
+        .with_identity("caller")
+        .with_name("Caller")
+        .with_grants(
+            VideoGrants(
+                room_join=True,
+                room=request.call_id,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+            )
+        )
+        .to_jwt()
+    )
+    return {"url": settings.livekit_url, "token": token, "room": request.call_id}
 
 
 class BridgeMessage(BaseModel):
