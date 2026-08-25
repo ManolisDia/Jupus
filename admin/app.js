@@ -151,6 +151,15 @@ async function loadCalls() {
     tr.addEventListener("click", () => selectCall(call.call_id));
     callsTbody.appendChild(tr);
   }
+  // ?call=<id> deep-links straight into one call's detail — how the handoff
+  // queue (admin/escalations.html) hands off to the transcript.
+  const requested = new URLSearchParams(location.search).get("call");
+  if (requested && calls.some((c) => c.call_id === requested)) {
+    selectCall(requested);
+    document
+      .querySelector(`tr.call-row[data-call-id="${CSS.escape(requested)}"]`)
+      ?.scrollIntoView({ block: "center" });
+  }
 }
 
 function _mean(values) {

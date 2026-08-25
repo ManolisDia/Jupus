@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jupus — Handoff queue</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --border: #e6e8ec;
+    --text: #14171c;
+    --text-dim: #6b7280;
+    --text-faint: #9aa1ab;
+    --accent: #4338ca;
+    --accent-soft: #eef0ff;
+    --header-bg: #101216;
+    --radius-lg: 14px;
+    --radius-md: 10px;
+    --radius-sm: 7px;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+    --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+    font-variant-numeric: tabular-nums;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+  }
+  header {
+    padding: 13px 28px;
+    background: var(--header-bg);
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  header .brand { display: flex; align-items: center; gap: 10px; }
+  header .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, #6366f1, #4338ca);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #fff;
+    flex-shrink: 0;
+  }
+  header h1 { margin: 0; font-size: 14.5px; font-weight: 600; }
+  header .subtitle { font-size: 11.5px; color: #9299a6; font-weight: 400; margin-top: 1px; }
+  header .header-right { display: flex; align-items: center; gap: 14px; }
+  header a {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: #d7dbfa; font-size: 12.5px; font-weight: 500; text-decoration: none;
+    padding: 7px 13px; border-radius: 7px;
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.09);
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  header a:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.16); }
+  #queue-count {
+    font-size: 12px; font-weight: 650; color: #d7dbfa;
+    background: rgba(255,255,255,0.09); border: 1px solid rgba(255,255,255,0.1);
+    padding: 5px 12px; border-radius: 999px; white-space: nowrap;
+  }
+
+  main { max-width: 900px; margin: 30px auto 70px; padding: 0 16px; }
+  .lede { font-size: 13px; color: var(--text-dim); margin: 0 0 20px; line-height: 1.55; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 20px 24px 22px; box-shadow: var(--shadow-md); margin-bottom: 16px;
+  }
+  .card.unreachable { border-left: 3px solid #c2410c; }
+
+  .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .card-head h2 {
+    margin: 0; font-size: 15px; font-weight: 650;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+  }
+  .card-head .when { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 2px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 650; white-space: nowrap;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
+  }
+  .badge.reason { background: #fde8de; border-color: #f6cdb8; color: #c2410c; }
+  .badge.area { background: var(--accent-soft); border-color: #d5d9fb; color: var(--accent); text-transform: capitalize; }
+  .badge.undetermined { border-style: dashed; color: var(--text-faint); font-style: italic; font-weight: 500; }
+  .badge.unreachable { background: #fdeceb; border-color: #f3c8c4; color: #b3261e; }
+
+  h3 {
+    margin: 18px 0 7px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-faint);
+    display: flex; align-items: center; gap: 8px;
+  }
+  h3::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .prose { font-size: 13.5px; line-height: 1.55; margin: 0; }
+  .prose.missing { color: var(--text-faint); font-style: italic; }
+
+  .contact { display: flex; flex-wrap: wrap; gap: 0; margin-top: 4px; }
+  .contact .field { padding: 8px 22px 8px 0; margin-right: 22px; border-right: 1px solid var(--border); }
+  .contact .field:last-child { border-right: none; margin-right: 0; }
+  .contact .k {
+    display: block; font-size: 10px; font-weight: 650; text-transform: uppercase;
+    letter-spacing: 0.045em; color: var(--text-faint); margin-bottom: 3px;
+  }
+  .contact .v { font-size: 13.5px; font-weight: 550; overflow-wrap: anywhere; }
+  .contact .v.missing { color: var(--text-faint); font-weight: 400; font-style: italic; }
+
+  .card-foot { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .card-foot a {
+    font-size: 12.5px; font-weight: 600; text-decoration: none; color: var(--accent);
+    padding: 6px 13px; border-radius: var(--radius-sm);
+    background: var(--accent-soft); border: 1px solid #d5d9fb;
+  }
+  .card-foot a:hover { background: #e2e5fd; }
+
+  .empty-state { text-align: center; color: var(--text-faint); padding: 90px 0; font-size: 15px; }
+  .empty-state .big { font-size: 34px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark">J</div>
+    <div>
+      <h1>Handoff queue</h1>
+      <div class="subtitle">Calls the agent escalated to a human</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="queue-count"></span>
+    <a href="/admin">← Admin</a>
+  </div>
+</header>
+<main id="app"><div class="empty-state">Loading…</div></main>
+<script src="/admin/escalations.js"></script>
+</body>
+</html>
