@@ -551,38 +551,37 @@ those turns keep their pre-Phase-14 behaviour.
 The phase doc's central warning is that LiveKit must not be credited with anything Phase 13
 achieved: the Anthropic round trip is fixed by the SDK call inside `llm_utils.py` and is identical
 regardless of transport. Rather than assert that, here are both numbers, measured together from the
-same traces of the live LiveKit scenario run (`eval/filler_latency_report.py`, 14 filler turns
-across the 8 canonical scenarios driven over a real call by `eval/livekit_live_call.py`):
+same traces (`python eval/filler_latency_report.py`, over calls driven by
+`eval/livekit_live_call.py`):
 
-| filler site | n | round trip | time to first audio | dead air removed |
-|---|---:|---:|---:|---:|
-| `confirm_field` | 8 | 2521ms | 399ms | 2122ms |
-| `confirm_booking` | 3 | 2086ms | 404ms | 1682ms |
-| `propose_slot` | 3 | 4898ms | 396ms | 4502ms |
-| **all, p50** | 14 | **2574ms** | **399ms** | **2175ms** |
-| **all, p95** | | **6171ms** | **410ms** | **5761ms** |
+| turns | n | round trip | time to first audio |
+|---|---:|---:|---:|
+| `confirm_field` | 5 | 2543ms | 422ms |
+| `propose_slot` | 1 | 2332ms | 406ms |
+| **with filler, p50** | 6 | **2484ms** | **422ms** |
+| **with filler, p95** | | 5022ms | 577ms |
+| **without filler, p50** | 12 | 766ms | **1796ms** |
+| **without filler, p95** | | 5419ms | 6342ms |
 
 Read it this way:
 
-- **Round trip is the Phase 13 number and it did not move.** It is the same
-  `confirm_field_answer` / `confirm_booking_answer` / `generate_confirmation_summary` work, on the
-  same models, taking the same time. 2521ms for `confirm_field` sits right alongside the 2035ms
-  median recorded in Phase 13's own measurement — the difference is call mix and live-vs-replay
-  conditions, not a transport effect. **Phase 14 reduced this by nothing, and claims nothing.**
-- **Time to first audio is the only column Phase 14 moves**, from "the whole round trip" to a flat
-  ~400ms. That it lands at 399ms p50 and 410ms p95 is itself the useful result: it is
-  `FILLER_IDLE_DELAY_SECONDS = 0.4` reproduced in live data almost exactly, which says the
-  idle-dwell scheduler behaves under real conditions the way it does on paper, rather than drifting
-  under load.
-- **The `propose_slot` row is where this matters most.** Those turns are the slowest in the whole
-  call (4898ms median, because the turn runs `extract_datetime`, a slot lookup, and
-  `generate_confirmation_summary` in sequence) and they are the ones where the caller has just
-  named a time and has nothing else to do but wait. That is ~4.5 seconds of silence replaced by the
-  agent saying "Let me get that booked."
-- **At p95 the gap is 5.8 seconds.** The tail is exactly where dead air stops reading as a pause and
-  starts reading as a dropped call, which is the failure this phase exists to remove.
+- **Round trip is Phase 13's number and it did not move.** Same tools, same models, same durations.
+  **Phase 14 reduced it by nothing and claims nothing.**
+- **The two blocks are the comparison, not a before/after of the same turns.** On a filler turn the
+  caller hears something at ~420ms while the supervisor is still working — time-to-audio sits
+  *below* the round trip. On a turn without one they hear nothing until the reply itself is
+  generated and played: 1796ms at p50, 6.3s at p95. That second row is what all three filler sites
+  looked like before this phase.
+- **The round trips differ between the blocks (2484ms vs 766ms) because filler turns ARE the slow
+  ones.** That is Decision 2 working as intended rather than a sampling artefact — filler is scoped
+  to exactly the sites where the caller has just answered and has nothing else to do but wait.
+- **The p95 row is the real argument.** 6.3 seconds of silence is where a pause stops reading as a
+  pause and starts reading as a dropped call.
 
-One honest limit on these numbers: they measure when the agent's audio *starts*, not when the
-caller *perceives* it, and they come from 14 turns on one machine against one LiveKit region. They
-are enough to show the shape of the change and to prove the round trip is untouched; they are not a
-production latency budget.
+Two honest limits. `first_audio` is a real playout signal (LiveKit's agent state entering
+"speaking"), not the moment `say()` was called — an earlier version of this measurement made that
+mistake and reported ~400ms for a clip that took 1.3s to make a sound, because 890ms of silence was
+baked into the front of the WAV. And this is 18 turns on one machine against one LiveKit region,
+from a gitignored local database: enough to show the shape of the change and to prove the round
+trip is untouched, reproducible by re-running the two commands above, but not a production latency
+budget.

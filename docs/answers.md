@@ -108,16 +108,22 @@ while a statute search runs. Three turns have no such cover, because on them the
 answered and the reply *is* the next thing they are waiting for. Those three get a short, canned,
 pre-rendered line ("Okay, one sec.") scheduled on a continuous-idle dwell.
 
-Measured live over the real transport (`eval/filler_latency_report.py`, 14 filler turns):
+Measured live over the real transport (`eval/filler_latency_report.py`, 18 turns):
 
-| | round trip | time to first audio | dead air removed |
+| turns | n | round trip | time to first audio |
 |---|---:|---:|---:|
-| p50 | 2574ms | 399ms | 2175ms |
-| p95 | 6171ms | 410ms | 5761ms |
+| with a filler | 6 | 2484ms | **422ms** |
+| without one | 12 | 766ms | **1796ms** (p95: 6342ms) |
 
 **The left column is unchanged and is not claimed as an improvement** — it is the same Claude work
-Phase 13 measured. Only the middle column moves, and it moves to a flat ~400ms, which is the
-configured idle dwell reproducing itself almost exactly in live data.
+Phase 13 measured. What moves is when the caller stops hearing silence. The two rows are the
+comparison rather than a before/after of identical turns: filler turns are deliberately the slow
+ones (Decision 2 scopes filler to the sites where the caller has just answered and has nothing else
+to do), and the "without" row is what those sites looked like before.
+
+"Time to first audio" is a real playout signal, not the moment `say()` was called. An earlier
+version of this measurement conflated the two and reported ~400ms for a filler clip that took 1.3s
+to actually make a sound.
 
 Two design points are what make this different from the filler this project tried and *removed*
 back in Phase 2 (see `docs/DECISIONS.md`, "No filler acknowledgment ... reversed after live

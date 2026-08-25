@@ -65,11 +65,30 @@ def _payload(event: dict) -> dict:
 
 
 def analyze_call(events: list[dict]) -> list[dict]:
-    """One row per completed turn: time to audio, round trip, and whether a
-    filler covered the gap. Turns missing either boundary are skipped rather
-    than guessed at."""
+    """One row per completed turn.
+
+    Order-independent on purpose: on a filler turn `first_audio` arrives BEFORE
+    `reply_ready` (that is the entire point — the caller hears something while
+    the supervisor is still working), and on a plain turn it arrives after. An
+    earlier version required reply_ready first and silently dropped every
+    filler turn, which is precisely the population being measured.
+    """
     rows: list[dict] = []
     turns: dict[str, dict] = {}
+
+    def _emit_if_complete(tool_call_id: str) -> None:
+        turn = turns.get(tool_call_id)
+        if turn is None or "round_trip_ms" not in turn or "time_to_audio_ms" not in turn:
+            return
+        rows.append(
+            {
+                "site": turn.get("site"),
+                "filler_played": turn.get("filler_played", False),
+                "round_trip_ms": turn["round_trip_ms"],
+                "time_to_audio_ms": turn["time_to_audio_ms"],
+            }
+        )
+        turns.pop(tool_call_id, None)
 
     for event in events:
         kind = event["event_type"]
@@ -77,29 +96,22 @@ def analyze_call(events: list[dict]) -> list[dict]:
         tool_call_id = payload.get("tool_call_id")
 
         if kind == "ask_supervisor_received":
-            turns[tool_call_id] = {"start": _ts(event["ts"]), "site": None}
+            turns[tool_call_id] = {"start": _ts(event["ts"])}
         elif kind == "filler_spoken":
             # filler_spoken carries no tool_call_id — it belongs to whichever
-            # turn is open, and in practice only one is mid-filler at a time.
+            # turn is open, and only one is ever mid-filler at a time.
             for turn in turns.values():
-                if turn["site"] is None:
-                    turn["site"] = payload.get("filler")
+                turn.setdefault("site", payload.get("filler"))
         elif kind == "reply_ready" and tool_call_id in turns:
             turn = turns[tool_call_id]
             turn["round_trip_ms"] = (_ts(event["ts"]) - turn["start"]).total_seconds() * 1000
             turn["filler_played"] = bool(payload.get("filler_played"))
+            _emit_if_complete(tool_call_id)
         elif kind == "first_audio" and tool_call_id in turns:
-            turn = turns.pop(tool_call_id)
-            if "round_trip_ms" not in turn:
-                continue
-            rows.append(
-                {
-                    "site": turn["site"],
-                    "filler_played": turn["filler_played"],
-                    "round_trip_ms": turn["round_trip_ms"],
-                    "time_to_audio_ms": float(payload.get("ms_since_turn_start") or 0.0),
-                }
+            turns[tool_call_id]["time_to_audio_ms"] = float(
+                payload.get("ms_since_turn_start") or 0.0
             )
+            _emit_if_complete(tool_call_id)
 
     return rows
 
@@ -116,7 +128,13 @@ def _row(label: str, subset: list[dict]) -> None:
         return
     trip = median(r["round_trip_ms"] for r in subset)
     audio = median(r["time_to_audio_ms"] for r in subset)
-    print(f"{label:<22}{len(subset):>4}{trip:>11.0f}ms{audio:>13.0f}ms{trip - audio:>15.0f}ms")
+    print(f"{label:<24}{len(subset):>4}{trip:>11.0f}ms{audio:>19.0f}ms")
+
+
+def _pct_row(label: str, subset: list[dict]) -> None:
+    trip = _p([r["round_trip_ms"] for r in subset], 95)
+    audio = _p([r["time_to_audio_ms"] for r in subset], 95)
+    print(f"{label:<24}{'':>4}{trip:>11.0f}ms{audio:>19.0f}ms")
 
 
 def main() -> int:
@@ -134,35 +152,35 @@ def main() -> int:
         print("  python eval/livekit_live_call.py --all")
         return 1
 
-    header = f"{'turns':<22}{'n':>4}{'round trip':>14}{'time to audio':>16}{'silence removed':>18}"
+    with_filler = [r for r in rows if r["filler_played"]]
+    without = [r for r in rows if not r["filler_played"]]
+
+    header = f"{'turns':<24}{'n':>4}{'round trip':>14}{'time to first audio':>22}"
     print(f"{len(rows)} turns across {len(call_ids)} calls")
     print()
     print(header)
     print("-" * len(header))
 
-    with_filler = [r for r in rows if r["filler_played"]]
-    without = [r for r in rows if not r["filler_played"]]
-
     for site in FILLER_SITES:
         _row(f"  {site}", [r for r in with_filler if r["site"] == site])
     _row("WITH filler (p50)", with_filler)
     if with_filler:
-        trips = [r["round_trip_ms"] for r in with_filler]
-        audios = [r["time_to_audio_ms"] for r in with_filler]
-        print(
-            f"{'WITH filler (p95)':<22}{'':>4}{_p(trips, 95):>11.0f}ms"
-            f"{_p(audios, 95):>13.0f}ms{_p(trips, 95) - _p(audios, 95):>15.0f}ms"
-        )
+        _pct_row("WITH filler (p95)", with_filler)
     print("-" * len(header))
-    _row("without filler", without)
+    _row("without filler (p50)", without)
+    if without:
+        _pct_row("without filler (p95)", without)
 
     print()
     print("Round trip is the supervisor turn - Phase 13's territory, untouched here.")
-    print("Time to audio is when the caller first HEARS something: a real playout")
-    print("signal, not the moment say() was called.")
-    print("The 'without filler' row is the same measurement on turns Decision 2")
-    print("leaves alone. There the two columns converge - which is what the three")
-    print("filler sites looked like before this phase.")
+    print("Time to first audio is when the caller actually HEARS something: a real")
+    print("playout signal, not the moment say() was called.")
+    print()
+    print("The two blocks are the comparison. On a filler turn the caller hears")
+    print("something while the supervisor is still working, so time-to-audio is")
+    print("BELOW the round trip. On a turn without one they hear nothing until the")
+    print("reply itself is synthesised and played, which is what all three filler")
+    print("sites looked like before this phase.")
     return 0
 
 
