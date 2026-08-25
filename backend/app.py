@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,13 @@ from pydantic import BaseModel, ValidationError
 from backend import dispatcher
 from backend.config import settings
 from backend.db.repositories import Repositories, get_repositories
+from eval.concurrency_stress_test import (
+    DEFAULT_N_LEVELS,
+    LIVE_SAFETY_CAP,
+    build_stress_repos,
+    compute_verdict,
+    run_all_levels,
+)
 from eval.insights_agent import run_deterministic_pass
 
 logging.basicConfig(level=logging.INFO)
@@ -203,6 +211,110 @@ async def admin_trace_stream(websocket: WebSocket, call_id: str, repos: Reposito
 
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=TRACE_STREAM_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Admin panel stress-test page (ad hoc addition alongside Phase 12's
+# eval/concurrency_stress_test.py CLI script — same underlying logic, just
+# watchable live instead of read off a terminal). A run is fire-and-forget
+# (POST returns immediately with a run_id, same shape as dispatcher.py's own
+# fire-and-forget pattern for long supervisor work), and the WS below polls
+# STRESS_RUNS the same way admin_trace_stream polls TraceRepository —
+# structured JSON, not the CLI's printed table.
+#
+# One run at a time, by design: all runs share eval.concurrency_stress_test's
+# STRESS_DB_PATH (never backend/db/calendar.db — see that module's own
+# comment on why), and build_stress_repos() resets that file at the start of
+# each run. This is a local, single-operator admin tool; starting a second
+# run before the first finishes would race on that reset and isn't guarded
+# against, since nothing else in this project's admin panel supports
+# concurrent operators either.
+# ---------------------------------------------------------------------------
+
+STRESS_RUNS: dict[str, dict] = {}
+STRESS_STREAM_POLL_SECONDS = 0.3
+
+
+class StressRunRequest(BaseModel):
+    mode: str = "mocked"
+    n_levels: list[int] = list(DEFAULT_N_LEVELS)
+
+
+@app.post("/api/stress-test/run")
+async def api_start_stress_run(request: StressRunRequest):
+    if request.mode not in ("mocked", "live"):
+        raise HTTPException(status_code=400, detail="mode must be 'mocked' or 'live'")
+    if not request.n_levels:
+        raise HTTPException(status_code=400, detail="n_levels must be non-empty")
+    if request.mode == "live" and any(n > LIVE_SAFETY_CAP for n in request.n_levels):
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode=live refuses any N > {LIVE_SAFETY_CAP} (bounds real API spend, see eval/concurrency_stress_test.py)",
+        )
+
+    run_id = uuid.uuid4().hex[:12]
+    STRESS_RUNS[run_id] = {
+        "status": "running",
+        "mode": request.mode,
+        "n_levels": request.n_levels,
+        "results": [],
+        "verdict": None,
+        "error": None,
+    }
+    asyncio.create_task(_execute_stress_run(run_id, request.mode, request.n_levels))
+    return {"run_id": run_id}
+
+
+async def _execute_stress_run(run_id: str, mode: str, n_levels: list[int]) -> None:
+    run = STRESS_RUNS[run_id]
+
+    def _on_level_done(result: dict) -> None:
+        run["results"].append(result)
+
+    try:
+        repos = build_stress_repos()
+        await run_all_levels(tuple(n_levels), mode, repos, on_level_done=_on_level_done)
+        run["verdict"] = compute_verdict(run["results"]) if run["results"] else None
+        run["status"] = "done"
+    except Exception as exc:  # noqa: BLE001 — surfaced to the admin page, not swallowed
+        run["status"] = "error"
+        run["error"] = str(exc)
+
+
+@app.websocket("/admin/stress-test-stream/{run_id}")
+async def admin_stress_test_stream(websocket: WebSocket, run_id: str):
+    await websocket.accept()
+    sent = 0
+    try:
+        while True:
+            run = STRESS_RUNS.get(run_id)
+            if run is None:
+                await websocket.send_json({"type": "error", "error": "unknown run_id"})
+                break
+
+            results = run["results"]
+            if len(results) > sent:
+                for result in results[sent:]:
+                    await websocket.send_json({"type": "level_result", "result": result})
+                sent = len(results)
+
+            if run["status"] in ("done", "error"):
+                await websocket.send_json(
+                    {
+                        "type": "run_finished",
+                        "status": run["status"],
+                        "verdict": run["verdict"],
+                        "error": run["error"],
+                    }
+                )
+                break
+
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=STRESS_STREAM_POLL_SECONDS)
             except asyncio.TimeoutError:
                 pass
     except WebSocketDisconnect:
