@@ -232,3 +232,47 @@ makes load-bearing rather than theoretical.
 
 ### Realtime (OpenAI) + Supervisor (Claude) — two vendors, deliberately
 OpenAI Realtime has the most mature WebRTC/tool-calling/interrupt handling of the available realtime voice APIs. Claude powers the supervisor's reasoning (extraction, classification, summarization). Two API keys is an accepted tradeoff, documented clearly in the README since the brief requires documenting exactly what's needed to run the project.
+
+### Phase 11: latency split into four stages, `deferred_wait` kept separate from `supervisor_processing`
+Chosen to match where a caller actually perceives delay, not where the code happens to have a
+convenient boundary: `stt_and_dialogue_decision` (caller stops talking → `ask_supervisor` received
+by the backend — Realtime's own STT/turn-decision pipeline, a black box from this project's side),
+`supervisor_processing` (the graph/Claude round-trip itself), `deferred_wait` (Phase 5's "caller
+was still talking" queue delay), and `tts_first_audio` (reply handed to Realtime → caller hears
+the first bit of the spoken response). `deferred_wait` is deliberately never folded into
+`supervisor_processing` — conflating "how long did Claude take" with "how long did we wait for a
+natural gap to speak" would misattribute a scheduling artifact as model latency, and the two have
+completely different fixes if either turns out to be the bottleneck (a slow `supervisor_processing`
+p95 points at prompt/model tuning; a slow `deferred_wait` p95 points at how aggressively the
+dispatcher waits for a pause). This replaced a metric (`processing_latency_percentiles`) that had
+been silently dead since Phase 6a — see `docs/fixes/2026-08-24-011.md`.
+
+**Revised after live testing**: the phase doc's original plan for `tts_first_audio` was a
+`response.audio.delta`/`response.output_audio.delta` data-channel event. Confirmed live that this
+never arrives over WebRTC — zero `tts_first_audio` events recorded across a real call despite every
+other new event type (including `realtime_usage`, wired the same way) firing correctly. OpenAI's
+own WebRTC guide notes the peer connection handles audio playback for you rather than surfacing
+per-chunk events the way the WebSocket transport does. `client/app.js` now detects first-audio
+instead via the remote-stream amplitude analyser the caller-facing visualizer already runs every
+animation frame (Phase 7) — the first frame where `remoteAmp` crosses the same `agentSpeaking`
+threshold already driving the "Agent speaking…" UI state, while `awaitingFirstAudioDelta` is still
+true, is reported as `tts_first_audio`. Trades a little precision (one frame's worth of latency,
+plus the analyser's own smoothing) for actually working under this project's real transport.
+
+### Phase 11: cost captured at the source, never estimated from duration or turn count
+Claude token usage is captured server-side, right where the Anthropic API response already arrives
+(`call_claude_json`/`call_claude_text` in `llm_utils.py`, stashed in a `threading.local()` and read
+by `call_claude_tool` — chosen over threading `call_id`/`trace_repo` through every `tools.py`
+function that calls them, which would be a much bigger diff for the same result; safe because
+`call_claude_tool`'s call to `fn` and any nested Claude call inside it always run synchronously in
+the same OS thread, and the stash is cleared before every attempt, not just after a successful
+read, so a failed-then-retried call can never leak a stale value into an unrelated later call on a
+reused worker thread). Realtime token usage is only ever visible to whichever side holds the OpenAI
+session (`client/app.js` for WebRTC today), since `response.done`'s `usage` object is a property of
+that session — relayed to `/bridge` as a `realtime_usage` message for *every* response, including
+ones that never touched `ask_supervisor` (the opening greeting still costs real tokens). Neither
+source is ever inferred from `duration_ms` or turn count — a slow turn isn't necessarily an
+expensive one. `eval/pricing.py`'s $/million-token constants are hardcoded and must be
+re-verified against current published pricing before trusting any dollar figure this project
+displays — every place a cost is shown is labeled "estimated" in the UI/text itself, not just a
+footnote.
