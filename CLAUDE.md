@@ -121,12 +121,12 @@ Admin panel: open `http://localhost:8000/admin` (backend must be running).
 
 ## File map
 
-- `backend/app.py` — FastAPI: `POST /session` (ephemeral Realtime token), `WS /bridge` (tool-call bridge), `GET /admin` + `/api/calls[/{id}]` + `/api/eval/summary`
+- `backend/app.py` — FastAPI: `POST /session` (ephemeral Realtime token), `WS /bridge` (tool-call bridge), `GET /admin` + `/api/calls[/{id}]` + `/api/escalations` + `/api/eval/summary`
 - `backend/dispatcher.py` — async supervisor dispatch, deferred delivery, staleness checks
 - `backend/supervisor/` — `state.py` (CallState/CallerProfile), `graph.py` (LangGraph nodes/edges), `tools.py` (tool implementations), `prompts.py` (per-node system prompts)
 - `backend/db/` — `schema.sql`, `seed_slots.py`, `seed_demo_calls.py`, `calendar.db` (gitignored)
 - `backend/tests/` — pytest suite, no live API calls required
 - `client/` — caller-facing browser page (WebRTC + mic)
-- `admin/` — calls list with error-class badges/transcript drill-in/eval summary/taxonomy-suggestion approval, plus `annotate.html` — the Benevolent Dictator's dedicated annotation page
+- `admin/` — calls list with error-class badges/transcript drill-in/eval summary/taxonomy-suggestion approval, plus `annotate.html` (the Benevolent Dictator's dedicated annotation page) and `escalations.html` (the handoff queue — every escalated call, read from the `escalations` table)
 - `eval/` — `error_classes.py` (the editable taxonomy registry), `insights_agent.py`, `run_eval.py`, `replay_scenarios.py`, `compare_runs.py`, `calibrate_judge.py`
 - `docs/` — `PLAN.md`, `architecture.md`, `DECISIONS.md`, `workflow.md`, `diagrams.md`, `error_taxonomy.md`, `benevolent_dictator.md`, `scenarios.md`, `answers.md` (the 4 required written answers), `handoffs/` (one file per escalated call — a readable view of the `escalations` table, not the system of record), `phases/` (per-phase specs + `cross-cutting.md`), `fixes/`, `known-issues/`
