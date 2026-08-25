@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from typing import Callable
 
@@ -28,6 +29,18 @@ class LLMCallFailed(Exception):
     pass
 
 
+# Phase 11 (latency + cost instrumentation), Decision 8 — a thread-local
+# stash rather than threading call_id/trace_repo through every tools.py
+# function that calls call_claude_json/call_claude_text. Safe because
+# call_claude_tool's call to `fn` and any nested call_claude_json/
+# call_claude_text call inside it always run synchronously in the same OS
+# thread (each asyncio.to_thread invocation owns one worker thread for its
+# own duration) — there is no cross-thread read of the stashed value, and
+# it's cleared immediately after being read in call_claude_tool below, so a
+# thread later reused by the pool never sees a stale value.
+_last_usage = threading.local()
+
+
 def call_claude_json(system: str, user_content: str, json_schema: dict, max_tokens: int = 512) -> dict:
     response = _client.messages.create(
         model=MODEL_ID,
@@ -36,6 +49,11 @@ def call_claude_json(system: str, user_content: str, json_schema: dict, max_toke
         messages=[{"role": "user", "content": user_content}],
         output_config={"format": {"type": "json_schema", "schema": json_schema}},
     )
+    _last_usage.value = {
+        "model": MODEL_ID,
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+    }
     text = next(block.text for block in response.content if block.type == "text")
     return json.loads(text)
 
@@ -47,19 +65,41 @@ def call_claude_text(system: str, user_content: str, max_tokens: int = 512) -> s
         system=system,
         messages=[{"role": "user", "content": user_content}],
     )
+    _last_usage.value = {
+        "model": MODEL_ID,
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+    }
     return next(block.text for block in response.content if block.type == "text")
+
+
+def _run_and_record_usage(
+    trace_repo: TraceRepository, call_id: str, node: str, tool_name: str, fn: Callable, *args, **kwargs
+):
+    # Cleared before every attempt (not just read-then-cleared after a
+    # success) so a failed attempt whose exception propagates past this
+    # point can never leave a stale value sitting in threading.local for
+    # this worker thread's NEXT, unrelated call_claude_tool invocation to
+    # pick up.
+    _last_usage.value = None
+    result = traced_call(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
+    usage = getattr(_last_usage, "value", None)
+    if usage is not None:
+        trace_repo.record_event(call_id, "llm_usage", node=node, tool_name=tool_name, **usage)
+        _last_usage.value = None
+    return result
 
 
 def call_claude_tool(
     trace_repo: TraceRepository, call_id: str, node: str, tool_name: str, fn: Callable, *args, **kwargs
 ):
     try:
-        return traced_call(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
+        return _run_and_record_usage(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
     except RETRYABLE_ERRORS as e:
         trace_repo.record_event(call_id, "llm_retry", node=node, tool_name=tool_name, attempt=1, error=str(e))
         time.sleep(RETRY_BACKOFF_SECONDS)
         try:
-            return traced_call(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
+            return _run_and_record_usage(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
         except RETRYABLE_ERRORS as retry_error:
             trace_repo.record_event(call_id, "llm_call_failed", node=node, tool_name=tool_name, error=str(retry_error))
             raise LLMCallFailed(retry_error) from retry_error

@@ -51,6 +51,11 @@ def derive_outcome_label(state: CallState) -> str:
 async def on_bridge_message(repos: Repositories, call_id: str, msg: dict) -> None:
     msg_type = msg.get("type")
     if msg_type == "ask_supervisor":
+        # Recorded synchronously, before the task is spawned, so the
+        # timestamp reflects actual receipt time rather than whenever the
+        # task happens to start running (Phase 11 latency instrumentation —
+        # closes the stt_and_dialogue_decision stage's end boundary).
+        repos.trace.record_event(call_id, "ask_supervisor_received", tool_call_id=msg["tool_call_id"])
         asyncio.create_task(
             process_supervisor_call(repos, call_id, msg["tool_call_id"], msg["last_caller_utterance"])
         )
@@ -58,7 +63,29 @@ async def on_bridge_message(repos: Repositories, call_id: str, msg: dict) -> Non
         SPEAKING[call_id] = True
     elif msg_type == "speech_stopped":
         SPEAKING[call_id] = False
+        # Phase 11: this event was always the intended start boundary for
+        # the stt_and_dialogue_decision latency stage, but the record_event
+        # call to actually emit it was never added — silently zeroing every
+        # latency stat computed since Phase 6a. See docs/fixes/.
+        repos.trace.record_event(call_id, "speech_stopped")
         drain_deferred(repos, call_id)
+    elif msg_type == "tts_first_audio":
+        # Phase 11: client-reported (client/app.js is the only side that can
+        # observe when Realtime actually started playing audio back).
+        # Fire-and-forget — never blocks caller audio.
+        repos.trace.record_event(
+            call_id, "tts_first_audio",
+            tool_call_id=msg["tool_call_id"], ms_since_reply_delivered=msg["ms_since_reply_delivered"],
+        )
+    elif msg_type == "realtime_usage":
+        # Phase 11: client-reported per response.done, including responses
+        # that never went through ask_supervisor at all (e.g. the opening
+        # greeting) — those still cost real Realtime tokens.
+        repos.trace.record_event(
+            call_id, "realtime_usage", tool_call_id=msg.get("tool_call_id"),
+            input_audio_tokens=msg["input_audio_tokens"], output_audio_tokens=msg["output_audio_tokens"],
+            input_text_tokens=msg["input_text_tokens"], output_text_tokens=msg["output_text_tokens"],
+        )
     else:
         logger.warning("unknown /bridge message type=%r call_id=%s", msg_type, call_id)
 
