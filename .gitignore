@@ -13,3 +13,4 @@ docs/.obsidian/
 .coverage
 client/config.js
 .firebase/
+.claude/worktrees/
