@@ -215,6 +215,44 @@ async def test_filler_spoken_is_traced(repos):
     assert len(events) == len(FILLER_PHRASES["confirm_booking"])
 
 
+async def test_turn_is_bracketed_by_latency_boundary_events(repos):
+    # These two events are what the phase's "perceived latency changed,
+    # round-trip latency did not" claim is computed from. Without both, the
+    # DoD's side-by-side numbers would be an assertion rather than a
+    # measurement.
+    _seed("call-1", "booking", proposed_slot_id=7)
+    agent = JupusAgent("call-1", repos)
+    ctx = _FakeRunContext()
+
+    async def fake_turn(*_a, **_kw):
+        return "You're booked.", "ended"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        await agent.ask_supervisor(ctx, {"reason": "r", "last_caller_utterance": "yes"})
+
+    kinds = [e["event_type"] for e in repos.trace.get_trace("call-1")]
+    assert kinds.index("ask_supervisor_received") < kinds.index("filler_spoken")
+    assert kinds.index("filler_spoken") < kinds.index("reply_ready")
+
+
+async def test_reply_ready_records_whether_a_filler_played(repos):
+    # Lets the eval layer separate filler turns from non-filler turns without
+    # re-deriving the selection logic.
+    _seed("call-1", "routing")
+    agent = JupusAgent("call-1", repos)
+    ctx = _FakeRunContext()
+
+    async def fake_turn(*_a, **_kw):
+        return "ok", "routing"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        await agent.ask_supervisor(ctx, {"reason": "r", "last_caller_utterance": "hi"})
+
+    ready = [e for e in repos.trace.get_trace("call-1") if e["event_type"] == "reply_ready"]
+    assert len(ready) == 1
+    assert ready[0]["payload"]["filler_played"] is False
+
+
 # --- Decision 3: interrupt policy -------------------------------------------
 
 

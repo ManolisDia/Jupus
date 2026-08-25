@@ -165,6 +165,20 @@ class JupusAgent(Agent):
     async def ask_supervisor(self, ctx: RunContext, raw_arguments: dict[str, object]) -> str:
         utterance = str(raw_arguments.get("last_caller_utterance") or "")
 
+        # Phase 11's stage boundary, kept under the new transport: recorded
+        # before any work so the timestamp reflects actual receipt. Paired with
+        # reply_ready below, these two bracket the supervisor round trip, and
+        # the gap between this and filler_spoken is what the caller actually
+        # experiences as the wait. Both are needed for Phase 14's DoD to show
+        # perceived latency and round-trip latency side by side rather than
+        # asserting the distinction.
+        self._repos.trace.record_event(
+            self._call_id,
+            "ask_supervisor_received",
+            node="transport",
+            tool_call_id=ctx.function_call.call_id,
+        )
+
         # Decision 3: a caller talking over the filler purely to acknowledge it
         # ("mhm", "okay") must not become a turn of its own. Without this guard
         # every backchannel would reach the graph as a real utterance and
@@ -213,6 +227,21 @@ class JupusAgent(Agent):
             run_supervisor_turn(
                 self._repos, self._call_id, ctx.function_call.call_id, utterance
             )
+        )
+        reply, dispatch_stage = result
+        # The round-trip end boundary. Under the /bridge transport this was
+        # reply_delivered, emitted by deliver_or_defer once it decided the
+        # caller wasn't mid-sentence; here LiveKit's own turn-taking makes that
+        # decision, so the honest thing to record is simply "the supervisor
+        # answered", with no deferral bookkeeping attached to it.
+        self._repos.trace.record_event(
+            self._call_id,
+            "reply_ready",
+            node="transport",
+            tool_call_id=ctx.function_call.call_id,
+            reply=reply,
+            dispatch_stage=dispatch_stage,
+            filler_played=bool(self._filler_handles),
         )
         await self._publish_call_state()
         return result
