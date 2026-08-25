@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 backend/db/calendar.db
+backend/db/calendar_stress_test.db
 backend.log
 *.egg-info/
 .venv/
