@@ -11,7 +11,7 @@ from backend.db.repositories.base import (
     SlotRepository,
     TraceRepository,
 )
-from backend.db.repositories.connection import connect
+from backend.db.repositories.connection import connect, ensure_schema
 from backend.db.repositories.sqlite_annotations import SQLiteAnnotationRepository
 from backend.db.repositories.sqlite_calls import SQLiteCallRepository
 from backend.db.repositories.sqlite_dev import SQLiteDevRepository
@@ -41,6 +41,10 @@ class Repositories:
 def get_repositories(settings: Settings) -> Repositories:
     if settings.db_backend == "sqlite":
         conn = connect(settings.db_path)
+        # The one seam every process goes through, so a database predating
+        # a newly-added table picks it up here instead of dying on the
+        # first write to it — see ensure_schema on why not reset_schema.
+        ensure_schema(conn)
         return Repositories(
             calls=SQLiteCallRepository(conn),
             slots=SQLiteSlotRepository(conn),
