@@ -17,9 +17,9 @@ For each scenario: the scripted caller utterances, the mocked tool responses tha
 - Assert: `stage == "ended"`, `booking_confirmed is True`, `calls.outcome == "booked"`, the corresponding `slots.is_booked` flipped to `1`.
 
 ### S3 — Slot-conflict booking
-- Utterances: same as S2 but requests the deterministically pre-booked 10am/day-1 slot, then accepts the offered alternative.
-- Mocked: `check_availability` → `None` for the requested slot; `suggest_alternative_slots` → one alternative; `confirm_booking_answer` → accepted on the second proposal.
-- Assert: booking succeeds against the **alternative** slot's id, not the originally requested one; `declined_slot_ids` is empty (they accepted the first alternative offered, never declined).
+- Utterances: same as S2 but requests the deterministically pre-booked 10am/day-1 slot, then accepts one of the offered alternatives.
+- Mocked: `check_availability` → `None` for the requested slot; `suggest_alternative_slots` → up to three alternatives, offered together in one turn (not proposed one at a time); `select_offered_slot` → the caller's pick among the offered alternatives.
+- Assert: booking succeeds against the **alternative** slot's id, not the originally requested one; `declined_slot_ids` is empty (they accepted one of the offered alternatives, never declined all of them).
 
 ### S4 — Low-confidence capture
 - Utterances: garbled name, then a clear correction; garbled email at confidence `0.6`, then — since that's below `graph.LOW_CONFIDENCE_CONFIRM_THRESHOLD` (0.75) — a spelled-out re-attempt at confidence `0.9`, then a confirm-back "yes that's right."

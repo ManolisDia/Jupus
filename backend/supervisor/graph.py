@@ -754,6 +754,106 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
             result["declined_slot_ids"] = declined_delta
         return result
 
+    def _offer_alternatives(alternatives, requested_date, requested_window, unavailable_time=None, declined_delta=None):
+        # Deterministic formatting, not an LLM call — see
+        # tools.generate_alternative_offer's docstring comment — but still
+        # traced, per CLAUDE.md rule 8 (every tools.py call is traced,
+        # LLM-backed or not).
+        reply = traced_call(
+            repos.trace, call_id, "booking", "generate_alternative_offer",
+            tools.generate_alternative_offer, state["caller_profile"], alternatives, unavailable_time,
+        )
+        repos.trace.record_event(
+            call_id, "node_exited", node="booking",
+            stage_from="booking", stage_to="booking", pending_reply=reply,
+        )
+        result = {
+            "offered_slots": alternatives,
+            "requested_date": requested_date,
+            "requested_window": requested_window,
+            "consecutive_llm_failures": 0,
+            **_agent_turn(reply),
+        }
+        if declined_delta is not None:
+            result["declined_slot_ids"] = declined_delta
+        return result
+
+    if state.get("offered_slots"):
+        offered = state["offered_slots"]
+        try:
+            answer = call_claude_tool(
+                repos.trace, call_id, "booking", "select_offered_slot",
+                tools.select_offered_slot, utterance, offered,
+            )
+        except LLMCallFailed:
+            return _llm_failure_fallback(repos, state, "booking")
+
+        if answer.get("needs_clarification"):
+            repeat_reply = _last_agent_reply(state["transcript"], "Sorry, do any of those times work for you?")
+            repos.trace.record_event(
+                call_id, "node_exited", node="booking",
+                stage_from="booking", stage_to="booking", pending_reply=repeat_reply,
+            )
+            return {"consecutive_llm_failures": 0, **_agent_turn(repeat_reply)}
+
+        selected_index = answer.get("selected_index")
+        # Defensive guard, same shape as node_research_gather's grounding
+        # check: never trust an index the offered list doesn't actually
+        # contain, even though the prompt already forbids it.
+        if selected_index is not None and 0 <= selected_index < len(offered):
+            chosen = offered[selected_index]
+            try:
+                traced_call(repos.trace, call_id, "booking", "book_consultation", repos.slots.book, chosen["id"])
+            except SlotAlreadyBookedError:
+                # rare race — someone else took it between offer and pick;
+                # re-suggest fresh alternatives excluding everything already
+                # offered rather than crash the call or double-book
+                requested_date, requested_window = state["requested_date"], state["requested_window"]
+                exclude = state["declined_slot_ids"] + [s["id"] for s in offered]
+                alternatives = traced_call(
+                    repos.trace, call_id, "booking", "suggest_alternative_slots",
+                    repos.slots.suggest_alternatives, requested_date, state["practice_area"], exclude,
+                )
+                if not alternatives:
+                    return _escalate_no_slot(
+                        requested_date, requested_window, declined_delta=[s["id"] for s in offered]
+                    )
+                return _offer_alternatives(
+                    alternatives, requested_date, requested_window,
+                    declined_delta=[s["id"] for s in offered],
+                )
+            reply = "You're booked — you'll get a confirmation shortly."
+            repos.trace.record_event(
+                call_id, "node_exited", node="booking",
+                stage_from="booking", stage_to="ended", pending_reply=reply,
+            )
+            return {
+                "stage": "ended", "booking_confirmed": True, "offered_slots": None,
+                # sqlite_calls.py's upsert reads proposed_slot_id as "the slot
+                # that got booked" whenever booking_confirmed is True — this
+                # path never goes through the propose/confirm cycle that
+                # normally sets it, so it must be set explicitly here or the
+                # persisted booking_slot_id would silently come out NULL.
+                "proposed_slot_id": chosen["id"],
+                "consecutive_llm_failures": 0, **_agent_turn(reply),
+            }
+
+        # Declined all offered alternatives (or an out-of-range/null index,
+        # treated the same way) — ask what else would work and loop, rather
+        # than capping at a fixed number of declines. Excludes every offered
+        # slot from the next round's search so none of them get re-suggested.
+        reply = "No problem — what other day or time would work for you?"
+        repos.trace.record_event(
+            call_id, "node_exited", node="booking",
+            stage_from="booking", stage_to="booking", pending_reply=reply,
+        )
+        return {
+            "offered_slots": None,
+            "declined_slot_ids": [s["id"] for s in offered],
+            "consecutive_llm_failures": 0,
+            **_agent_turn(reply),
+        }
+
     if state["proposed_slot_id"] is None:
         try:
             parsed = call_claude_tool(
@@ -790,8 +890,8 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
         )
         if not alternatives:
             return _escalate_no_slot(requested_date, requested_window)
-        return _propose_slot(
-            alternatives[0], requested_date, requested_window, unavailable_time=requested_time
+        return _offer_alternatives(
+            alternatives, requested_date, requested_window, unavailable_time=requested_time
         )
 
     try:
@@ -836,8 +936,8 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
                 return _escalate_no_slot(
                     requested_date, requested_window, declined_delta=[state["proposed_slot_id"]]
                 )
-            return _propose_slot(
-                alternatives[0], requested_date, requested_window,
+            return _offer_alternatives(
+                alternatives, requested_date, requested_window,
                 declined_delta=[state["proposed_slot_id"]],
             )
 

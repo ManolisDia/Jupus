@@ -276,15 +276,15 @@ async def test_scenario_s3_slot_conflict_booking(booking_repos):
             "backend.supervisor.tools.extract_datetime",
             return_value={"date": "2026-09-03", "window": "morning", "time": "10:00", "confidence": 0.9},
         ),
-        patch("backend.supervisor.tools.generate_confirmation_summary", return_value="3pm instead, sound right?"),
+        patch("backend.supervisor.tools.generate_alternative_offer", return_value="3pm instead, sound right?"),
     ):
         await _turn(repos, call_id, "tool-8", "10am tomorrow please.")
-    # proposed the alternative, not the originally-requested (taken) slot
-    assert CALL_STATES[call_id]["proposed_slot_id"] == SLOT_B["id"]
+    # offered the alternative(s), not the originally-requested (taken) slot
+    assert CALL_STATES[call_id]["offered_slots"] == [SLOT_B]
 
     with patch(
-        "backend.supervisor.tools.confirm_booking_answer",
-        return_value={"accepted": True, "needs_clarification": False},
+        "backend.supervisor.tools.select_offered_slot",
+        return_value={"selected_index": 0, "declined_all": False, "needs_clarification": False},
     ):
         await _turn(repos, call_id, "tool-9", "Sure, that works.")
 

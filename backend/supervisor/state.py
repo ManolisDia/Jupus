@@ -34,6 +34,14 @@ class CallState(TypedDict):
     declined_slot_ids: Annotated[list[int], operator.add]
     requested_date: Optional[str]
     requested_window: Optional[str]
+    # Set when the caller's exact requested slot wasn't available and up to
+    # three nearest alternatives were offered instead (node_booking's
+    # _offer_alternatives) — the full slot dicts, not just ids, so the next
+    # turn can hand them straight to select_offered_slot without a DB
+    # round-trip. None whenever no offer is outstanding (including after the
+    # caller picks one, declines all of them, or an exact-match single slot
+    # is proposed instead via proposed_slot_id/_propose_slot).
+    offered_slots: Optional[list[dict]]
     # Phase 7 (optimistic capture) — only meaningful while stage == "capture".
     # "fast": node_capture_fast is asking through FIELD_PRIORITY optimistically,
     # zero Claude calls on the hot path. "confirm": the batched drain phase,
@@ -105,6 +113,7 @@ def new_call_state(call_id: str) -> CallState:
         declined_slot_ids=[],
         requested_date=None,
         requested_window=None,
+        offered_slots=None,
         capture_phase="fast",
         last_asked_field=None,
         verification_failed_field=None,

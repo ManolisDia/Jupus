@@ -82,6 +82,24 @@ back, or anything else showing they didn't hear or understand the proposal rathe
 it — set "needs_clarification" to true and leave "accepted" false; the proposal will simply be
 repeated, so don't guess at what they meant."""
 
+SELECT_OFFERED_SLOT_PROMPT = """The caller was just offered {count} alternative consultation slots
+and asked if any of them work. The offered slots, in order, are:
+
+{slot_list}
+
+Interpret their reply:
+- If they picked one of the offered slots (by time, by ordinal like "the first one" / "the second
+  one", or any other way of referring to one of the options above), return its zero-based position
+  in the list above as "selected_index".
+- If they explicitly said none of those work / declined all of them, set "declined_all" to true and
+  leave "selected_index" null.
+- If their reply isn't actually an answer at all — e.g. "what?", "can you repeat that?", a question
+  back, or anything else showing they didn't hear or understand the offer rather than answering it
+  — set "needs_clarification" to true and leave "selected_index" null and "declined_all" false; the
+  offer will simply be repeated, so don't guess at what they meant.
+
+Never return an index outside the offered list above."""
+
 GROUND_STATUTE_CITATION_PROMPT = """You are helping a law firm's voice intake agent decide whether
 to cite a specific statute back to a caller who has just described their situation, from a small
 fixed set of candidate statutes already selected by keyword search.

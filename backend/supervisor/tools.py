@@ -67,6 +67,17 @@ CONFIRM_BOOKING_SCHEMA = {
     "additionalProperties": False,
 }
 
+SELECT_OFFERED_SLOT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "selected_index": {"type": ["integer", "null"]},
+        "declined_all": {"type": "boolean"},
+        "needs_clarification": {"type": "boolean"},
+    },
+    "required": ["selected_index", "declined_all", "needs_clarification"],
+    "additionalProperties": False,
+}
+
 
 def _format_transcript(transcript: list[dict]) -> str:
     return "\n".join(f"{turn['role'].upper()}: {turn['text']}" for turn in transcript)
@@ -269,6 +280,46 @@ def confirm_booking_answer(utterance: str) -> dict:
         system=prompts.CONFIRM_BOOKING_ANSWER_PROMPT,
         user_content=utterance,
         json_schema=CONFIRM_BOOKING_SCHEMA,
+    )
+
+
+def _format_time_list(items: list[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + f" and {items[-1]}"
+
+
+def _format_alternative_slots(alternatives: list[dict]) -> str:
+    parsed = [datetime.fromisoformat(s["start_time"]) for s in alternatives]
+    if len({dt.date() for dt in parsed}) == 1:
+        day_label = f"{parsed[0].strftime('%A %B')} {parsed[0].day}"
+        times = _format_time_list([_format_time_of_day(dt.strftime("%H:%M")) for dt in parsed])
+        return f"on {day_label} at {times}"
+    return _format_time_list([_format_slot_time(s["start_time"]) for s in alternatives])
+
+
+def generate_alternative_offer(
+    caller_profile: dict, alternatives: list[dict], unavailable_requested_time: str = None
+) -> str:
+    # Deterministic, unlike generate_confirmation_summary's Claude call —
+    # this is just formatting known data (a name and up to three exact
+    # times) into a fixed sentence, with no interpretation required, so a
+    # template is both simpler and safer than trusting an LLM to reproduce
+    # three precise times correctly.
+    name = caller_profile["name"]["value"]
+    requested_str = f" at {_format_time_of_day(unavailable_requested_time)}" if unavailable_requested_time else ""
+    return (
+        f"Sorry {name} — that time{requested_str} is already booked. I do have availability "
+        f"{_format_alternative_slots(alternatives)} — do any of those work for you?"
+    )
+
+
+def select_offered_slot(utterance: str, offered_slots: list[dict]) -> dict:
+    slot_list = "\n".join(f"{i}. {_format_slot_time(s['start_time'])}" for i, s in enumerate(offered_slots))
+    return call_claude_json(
+        system=prompts.SELECT_OFFERED_SLOT_PROMPT.format(count=len(offered_slots), slot_list=slot_list),
+        user_content=utterance,
+        json_schema=SELECT_OFFERED_SLOT_SCHEMA,
     )
 
 
