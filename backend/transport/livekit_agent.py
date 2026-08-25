@@ -435,20 +435,45 @@ async def entrypoint(ctx: JobContext) -> None:
 
     @session.on("session_usage_updated")
     def _on_usage(event) -> None:  # noqa: ANN001 — LiveKit event type
+        # model_usage is keyed per (provider, model), so SUM across entries
+        # rather than overwriting — with one model today that's the same
+        # number, but silently discarding a second model's cost later would
+        # be exactly the kind of quiet under-reporting this event exists to
+        # prevent. Cached audio/text tokens are folded into their uncached
+        # counterparts because pricing.estimate_cost_usd has no cached-audio
+        # rate; counting them is closer to the truth than dropping them.
+        totals = {k: 0 for k in
+                  ("input_audio_tokens", "output_audio_tokens",
+                   "input_text_tokens", "output_text_tokens")}
         for usage in getattr(event.usage, "model_usage", []):
             if getattr(usage, "type", None) != "llm_usage":
                 continue
-            latest_usage.update(
-                input_audio_tokens=getattr(usage, "input_audio_tokens", 0),
-                output_audio_tokens=getattr(usage, "output_audio_tokens", 0),
-                input_text_tokens=getattr(usage, "input_text_tokens", 0),
-                output_text_tokens=getattr(usage, "output_text_tokens", 0),
+            totals["input_audio_tokens"] += (
+                getattr(usage, "input_audio_tokens", 0)
+                + getattr(usage, "input_cached_audio_tokens", 0)
             )
+            totals["output_audio_tokens"] += getattr(usage, "output_audio_tokens", 0)
+            totals["input_text_tokens"] += (
+                getattr(usage, "input_text_tokens", 0)
+                + getattr(usage, "input_cached_text_tokens", 0)
+            )
+            totals["output_text_tokens"] += getattr(usage, "output_text_tokens", 0)
+        latest_usage.clear()
+        latest_usage.update(totals)
 
     async def _on_shutdown() -> None:
         if latest_usage:
             repos.trace.record_event(
                 call_id, "realtime_usage", node="transport", **latest_usage
+            )
+        else:
+            # Loud on purpose: silently recording nothing here is exactly the
+            # "$0 forever" outcome this handler exists to prevent, and it would
+            # look identical to a genuinely free call.
+            logger.warning(
+                "no Realtime usage captured for call_id=%s — its OpenAI cost "
+                "will read as zero in the eval/admin views",
+                call_id,
             )
         # The disconnect-cleanup contract from docs/phases/cross-cutting.md
         # section 2, moved off the retired /bridge WebSocketDisconnect handler.
@@ -487,8 +512,21 @@ _server_task: Optional[asyncio.Task] = None
 
 
 def start_agent_server(repos: Repositories) -> None:
-    """Launch the worker as a background task on the current (FastAPI) loop."""
+    """Launch the worker as a background task on the current (FastAPI) loop.
+
+    A no-op (with a warning) when LiveKit isn't configured. Without that guard
+    the worker raises ValueError("ws_url is required") inside a bare
+    create_task, where nothing awaits it — the backend appears to boot fine,
+    /livekit-token returns a helpful 503, and the agent is simply dead with no
+    message anywhere.
+    """
     global MAIN_LOOP, _REPOS, _server, _server_task
+    if not (settings.livekit_url and settings.livekit_api_key and settings.livekit_api_secret):
+        logger.warning(
+            "LiveKit is not configured (LIVEKIT_URL/API_KEY/API_SECRET) — the agent worker "
+            "will NOT start and no call can connect. Admin and eval endpoints still work."
+        )
+        return
     # Automatic dispatch means EVERY worker registered against this LiveKit
     # project is a candidate for every call. A second backend left running with
     # JUPUS_TRANSPORT=livekit — a stale terminal, a forgotten --reload — will
@@ -508,6 +546,16 @@ def start_agent_server(repos: Repositories) -> None:
     # an await — it registers outbound with LiveKit Cloud and then serves jobs
     # for the process's lifetime.
     _server_task = asyncio.create_task(_server.run(), name="livekit_agent_server")
+
+    def _log_if_it_dies(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        if exc := task.exception():
+            logger.error("LiveKit agent worker stopped: %s", exc, exc_info=exc)
+
+    # Without this the worker's exception sits on an un-awaited task and
+    # surfaces, if at all, as an "exception was never retrieved" warning at GC.
+    _server_task.add_done_callback(_log_if_it_dies)
     logger.info("LiveKit agent worker starting (url=%s)", settings.livekit_url)
 
 
@@ -515,13 +563,17 @@ async def stop_agent_server() -> None:
     global _server, _server_task
     if _server is None:
         return
+    global MAIN_LOOP
     try:
         # Explicit timeout: drain_timeout defaults to a full hour, which would
         # hang shutdown on any still-connected call.
         await _server.drain(timeout=10)
-    except (asyncio.TimeoutError, Exception):  # noqa: B014 — shutdown is best-effort
-        logger.warning("LiveKit worker drain did not complete cleanly", exc_info=True)
-    await _server.aclose()
+        await _server.aclose()
+    except Exception:  # noqa: BLE001 — shutdown is best-effort, and this runs
+        # inside the lifespan's finally, where raising would mask whatever
+        # actually caused the shutdown.
+        logger.warning("LiveKit worker did not shut down cleanly", exc_info=True)
     if _server_task is not None:
         _server_task.cancel()
-    _server, _server_task = None, None
+    # Cleared so a restarted lifespan can't marshal work onto a closed loop.
+    _server, _server_task, MAIN_LOOP = None, None, None

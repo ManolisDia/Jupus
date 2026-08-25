@@ -290,6 +290,26 @@ def test_session_pins_transcription_model_voice_and_turn_detection():
     assert captured["input_audio_noise_reduction"] == "near_field"
 
 
+# --- worker startup ---------------------------------------------------------
+
+
+def test_worker_does_not_start_without_credentials(repos, monkeypatch, caplog):
+    # Unguarded, the worker raises ValueError("ws_url is required") inside a
+    # bare create_task where nothing awaits it: the backend looks healthy,
+    # /livekit-token returns a tidy 503, and the agent is dead with no message
+    # anywhere. config.py promises the backend still boots for admin/eval work
+    # without these, so the failure has to be loud instead of silent.
+    from backend.config import settings as real_settings
+
+    monkeypatch.setattr(real_settings, "livekit_api_key", None)
+    built = []
+    with patch.object(livekit_agent, "build_server", lambda: built.append(1)):
+        livekit_agent.start_agent_server(repos)
+
+    assert built == [], "worker must not be built without credentials"
+    assert any("not configured" in r.message for r in caplog.records)
+
+
 # --- the reply path ---------------------------------------------------------
 
 
