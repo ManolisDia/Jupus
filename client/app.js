@@ -17,6 +17,16 @@ let dataChannel = null;
 let localStream = null;
 let ws = null;
 let lastVerbatimTranscript = null;
+// True from speech_stopped until this segment's matching
+// conversation.item.input_audio_transcription.completed arrives. ASR
+// completion is async and not guaranteed to land before the Realtime model
+// decides to call ask_supervisor for that same utterance — without this,
+// response.function_call_arguments.done can fire while lastVerbatimTranscript
+// still holds the PREVIOUS turn's text, silently sending stale text as
+// last_caller_utterance (confirmed live: this produced a call stuck
+// re-asking name/email in a loop, one turn behind). See docs/fixes/.
+let transcriptionPending = false;
+let awaitingToolCall = null; // { tool_call_id, reason } queued until the fresh transcript lands
 
 // Response.create collision avoidance (see docs/known-issues/2026-08-22-001.md
 // and docs/fixes/ for the write-up this session added). true between a
@@ -124,6 +134,17 @@ function appendTranscriptTurn(role, text) {
   div.textContent = text;
   transcriptEl.appendChild(div);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function sendAskSupervisor(toolCallId, reason, lastCallerUtterance) {
+  ws.send(
+    JSON.stringify({
+      type: "ask_supervisor",
+      tool_call_id: toolCallId,
+      reason,
+      last_caller_utterance: lastCallerUtterance,
+    })
+  );
 }
 
 function showThinkingBubble() {
@@ -292,6 +313,9 @@ function teardown(statusMessage) {
   callerSpeaking = false;
   responseActive = false;
   pendingResponseCreate = false;
+  lastVerbatimTranscript = null;
+  transcriptionPending = false;
+  awaitingToolCall = null;
   startBtn.disabled = false;
   endBtn.disabled = true;
   setStatus(statusMessage);
@@ -573,7 +597,13 @@ async function startCall() {
         // malformed input (e.g. inventing an "@domain.com" the caller
         // never said). See docs/DECISIONS.md.
         lastVerbatimTranscript = parsed.transcript;
+        transcriptionPending = false;
         appendTranscriptTurn("caller", parsed.transcript);
+        if (awaitingToolCall) {
+          const queued = awaitingToolCall;
+          awaitingToolCall = null;
+          sendAskSupervisor(queued.tool_call_id, queued.reason, lastVerbatimTranscript);
+        }
         return;
       }
       if (parsed.type === "input_audio_buffer.speech_started") {
@@ -583,20 +613,23 @@ async function startCall() {
       }
       if (parsed.type === "input_audio_buffer.speech_stopped") {
         callerSpeaking = false;
+        transcriptionPending = true;
         ws.send(JSON.stringify({ type: "speech_stopped" }));
         return;
       }
       if (parsed.type === "response.function_call_arguments.done") {
         const args = JSON.parse(parsed.arguments);
         showThinkingBubble();
-        ws.send(
-          JSON.stringify({
-            type: "ask_supervisor",
-            tool_call_id: parsed.call_id,
-            reason: args.reason,
-            last_caller_utterance: lastVerbatimTranscript ?? args.last_caller_utterance,
-          })
-        );
+        if (transcriptionPending) {
+          // The verbatim ASR transcript for the utterance this call is
+          // about hasn't landed yet — queue it rather than sending
+          // whatever lastVerbatimTranscript still holds from the PREVIOUS
+          // turn. Delivered as soon as the matching transcription.completed
+          // event arrives, above.
+          awaitingToolCall = { tool_call_id: parsed.call_id, reason: args.reason };
+          return;
+        }
+        sendAskSupervisor(parsed.call_id, args.reason, lastVerbatimTranscript ?? args.last_caller_utterance);
         return;
       }
       if (
