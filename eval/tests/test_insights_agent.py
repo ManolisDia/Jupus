@@ -9,11 +9,15 @@ from backend.tests.fakes import (
     FakeTraceRepository,
 )
 from eval.insights_agent import (
+    LATENCY_STAGES,
+    _cost_for_call,
+    _stage_durations_for_call,
+    average_cost_per_call,
     average_turns_per_call,
     booking_success_rate,
     compute_error_rates,
     escalation_reason_histogram,
-    processing_latency_percentiles,
+    latency_breakdown_percentiles,
     run_classification_pass,
     run_taxonomy_critique,
 )
@@ -65,37 +69,133 @@ def test_average_turns_per_call_empty_list():
     assert average_turns_per_call([]) == 0.0
 
 
-def test_latency_percentiles_from_trace_events():
-    trace_repo = FakeTraceRepository()
-    # call-1: immediate delivery (0 wait), call-2: a deferred delivery.
-    # record_event() stamps "now" for ts — this test needs known,
+def _push(trace_repo, call_id, event_type, ts, **payload):
+    # record_event() stamps "now" for ts — these tests need known,
     # deterministic gaps, so events are pushed directly instead.
-
-    def _push(call_id, event_type, ts, **payload):
-        seq = trace_repo._seq_counters.get(call_id, 0)
-        trace_repo._seq_counters[call_id] = seq + 1
-        trace_repo.events.append(
-            {"call_id": call_id, "seq": seq, "event_type": event_type, "node": None, "ts": ts, "payload": payload}
-        )
-
-    _push("call-1", "user_message", "2026-01-01T00:00:00+00:00")
-    _push("call-1", "reply_delivered", "2026-01-01T00:00:00.200000+00:00", wait_ms=0)  # 200ms
-    _push("call-2", "user_message", "2026-01-01T00:00:00+00:00")
-    _push("call-2", "reply_delivered", "2026-01-01T00:00:01.000000+00:00", wait_ms=800)  # 1000ms, deferred
-
-    result = processing_latency_percentiles(trace_repo, ["call-1", "call-2"])
-
-    assert result["p50"] > 0
-    assert result["p95"] >= result["p50"]
-    # exact pooled values: [200, 1000] -> p50 halfway = 600, p95 close to 1000
-    assert result["p50"] == 600.0
-    assert round(result["p95"], 1) == 960.0
+    seq = trace_repo._seq_counters.get(call_id, 0)
+    trace_repo._seq_counters[call_id] = seq + 1
+    trace_repo.events.append(
+        {"call_id": call_id, "seq": seq, "event_type": event_type, "node": None, "ts": ts, "payload": payload}
+    )
 
 
-def test_latency_percentiles_no_data_returns_zeros():
+def test_stage_durations_computed_for_complete_turn():
     trace_repo = FakeTraceRepository()
-    assert processing_latency_percentiles(trace_repo, []) == {"p50": 0.0, "p95": 0.0}
-    assert processing_latency_percentiles(trace_repo, ["nonexistent"]) == {"p50": 0.0, "p95": 0.0}
+    _push(trace_repo, "c1", "speech_stopped", "2026-01-01T00:00:00.000000+00:00")
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:00.100000+00:00", tool_call_id="t1")  # 100ms
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:00.400000+00:00", tool_call_id="t1", was_deferred=False, wait_ms=0)  # 300ms
+    _push(trace_repo, "c1", "tts_first_audio", "2026-01-01T00:00:00.400000+00:00", tool_call_id="t1", ms_since_reply_delivered=150)
+
+    stages = _stage_durations_for_call(trace_repo.get_trace("c1"))
+
+    assert stages["stt_and_dialogue_decision"] == [100.0]
+    assert stages["supervisor_processing"] == [300.0]
+    assert stages["deferred_wait"] == [0.0]
+    assert stages["tts_first_audio"] == [150.0]
+    assert stages["total_perceived"] == [550.0]
+
+
+def test_immediate_delivery_has_zero_deferred_wait():
+    trace_repo = FakeTraceRepository()
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:00.000000+00:00", tool_call_id="t1")
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:00.100000+00:00", tool_call_id="t1", was_deferred=False, wait_ms=0)
+
+    stages = _stage_durations_for_call(trace_repo.get_trace("c1"))
+
+    assert stages["deferred_wait"] == [0.0]
+
+
+def test_deferred_delivery_uses_existing_wait_ms_field():
+    trace_repo = FakeTraceRepository()
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:00.000000+00:00", tool_call_id="t1")
+    _push(trace_repo, "c1", "reply_deferred", "2026-01-01T00:00:00.100000+00:00", tool_call_id="t1")
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:05.000000+00:00", tool_call_id="t1", was_deferred=True, wait_ms=777)
+
+    stages = _stage_durations_for_call(trace_repo.get_trace("c1"))
+
+    # deferred_wait must come from the reply_delivered payload's own wait_ms
+    # field (Phase 5's single source of truth), not recomputed from the
+    # timestamp gap (which would be ~4900ms here, not 777).
+    assert stages["deferred_wait"] == [777.0]
+    assert stages["supervisor_processing"] == [100.0]  # ask_supervisor_received -> reply_deferred
+
+
+def test_missing_boundary_event_yields_no_data_for_that_stage_not_a_crash():
+    trace_repo = FakeTraceRepository()
+    # No speech_stopped at all for this turn (e.g. caller was already
+    # mid-utterance when the call started).
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:00.000000+00:00", tool_call_id="t1")
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:00.100000+00:00", tool_call_id="t1", was_deferred=False, wait_ms=0)
+
+    stages = _stage_durations_for_call(trace_repo.get_trace("c1"))
+
+    assert stages["stt_and_dialogue_decision"] == []
+    assert stages["supervisor_processing"] == [100.0]
+
+
+def test_multiple_turns_in_one_call_all_contribute():
+    trace_repo = FakeTraceRepository()
+    _push(trace_repo, "c1", "speech_stopped", "2026-01-01T00:00:00.000000+00:00")
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:00.100000+00:00", tool_call_id="t1")
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:00.200000+00:00", tool_call_id="t1", was_deferred=False, wait_ms=0)
+    _push(trace_repo, "c1", "speech_stopped", "2026-01-01T00:00:01.000000+00:00")
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:01.300000+00:00", tool_call_id="t2")
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:01.500000+00:00", tool_call_id="t2", was_deferred=False, wait_ms=0)
+
+    stages = _stage_durations_for_call(trace_repo.get_trace("c1"))
+
+    assert stages["stt_and_dialogue_decision"] == [100.0, 300.0]
+    assert stages["supervisor_processing"] == [100.0, 200.0]
+
+
+def test_latency_breakdown_percentiles_empty_calls_returns_zeroed_stages():
+    trace_repo = FakeTraceRepository()
+    result = latency_breakdown_percentiles(trace_repo, [])
+    assert result == {stage: {"p50": 0.0, "p95": 0.0, "avg": 0.0} for stage in LATENCY_STAGES}
+
+
+def test_latency_breakdown_percentiles_pools_across_multiple_calls():
+    trace_repo = FakeTraceRepository()
+    _push(trace_repo, "c1", "ask_supervisor_received", "2026-01-01T00:00:00.000000+00:00", tool_call_id="t1")
+    _push(trace_repo, "c1", "reply_delivered", "2026-01-01T00:00:00.200000+00:00", tool_call_id="t1", was_deferred=False, wait_ms=0)  # 200ms
+    _push(trace_repo, "c2", "ask_supervisor_received", "2026-01-01T00:00:00.000000+00:00", tool_call_id="t2")
+    _push(trace_repo, "c2", "reply_delivered", "2026-01-01T00:00:01.000000+00:00", tool_call_id="t2", was_deferred=False, wait_ms=0)  # 1000ms
+
+    result = latency_breakdown_percentiles(trace_repo, ["c1", "c2"])
+
+    assert result["supervisor_processing"]["p50"] == 600.0
+    assert round(result["supervisor_processing"]["p95"], 1) == 960.0
+
+
+def test_cost_for_call_sums_multiple_llm_usage_events():
+    trace_repo = FakeTraceRepository()
+    _push(trace_repo, "c1", "llm_usage", "2026-01-01T00:00:00+00:00", node="routing", input_tokens=100, output_tokens=50)
+    _push(trace_repo, "c1", "llm_usage", "2026-01-01T00:00:01+00:00", node="capture", input_tokens=200, output_tokens=75)
+
+    cost = _cost_for_call(trace_repo.get_trace("c1"))
+
+    assert cost["claude_input_tokens"] == 300
+    assert cost["claude_output_tokens"] == 125
+    assert cost["cost_usd"] > 0
+
+
+def test_cost_for_call_includes_realtime_usage_even_without_supervisor_call():
+    trace_repo = FakeTraceRepository()
+    _push(
+        trace_repo, "c1", "realtime_usage", "2026-01-01T00:00:00+00:00",
+        tool_call_id=None, input_audio_tokens=1000, output_audio_tokens=500,
+        input_text_tokens=10, output_text_tokens=5,
+    )
+
+    cost = _cost_for_call(trace_repo.get_trace("c1"))
+
+    assert cost["realtime_audio_input_tokens"] == 1000
+    assert cost["cost_usd"] > 0
+
+
+def test_average_cost_per_call_empty_input_returns_zero():
+    trace_repo = FakeTraceRepository()
+    assert average_cost_per_call([], trace_repo) == {"average_usd": 0.0, "p50_usd": 0.0, "p95_usd": 0.0}
 
 
 # -- Phase 6b: classification pass ------------------------------------------

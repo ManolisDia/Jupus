@@ -19,6 +19,7 @@ from backend.db.repositories.base import TraceRepository
 from backend.supervisor import tools
 from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from eval.error_classes import get_active_error_classes
+from eval.pricing import estimate_cost_usd
 
 logger = logging.getLogger(__name__)
 
@@ -78,30 +79,7 @@ def _percentile(sorted_values: list[float], pct: float) -> float:
     return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac
 
 
-def processing_latency_percentiles(trace_repo: TraceRepository, call_ids: list[str]) -> dict[str, float]:
-    """Round-trip latency (ms) for every ask_supervisor turn, pooled across
-    the given call_ids: for each "reply_delivered" trace event, the gap
-    between it and the closest preceding "user_message" event in the same
-    call's sequence order. Returns {"p50": 0.0, "p95": 0.0} if there is no
-    latency data at all — never raises."""
-    latencies_ms: list[float] = []
-    for call_id in call_ids:
-        events = trace_repo.get_trace(call_id)
-        last_user_message_ts: Optional[datetime] = None
-        for event in events:
-            if event["event_type"] == "user_message":
-                last_user_message_ts = _parse_ts(event["ts"])
-            elif event["event_type"] == "reply_delivered" and last_user_message_ts is not None:
-                delivered_ts = _parse_ts(event["ts"])
-                if delivered_ts is not None:
-                    delta_ms = (delivered_ts - last_user_message_ts).total_seconds() * 1000
-                    latencies_ms.append(max(delta_ms, 0.0))
-
-    if not latencies_ms:
-        return {"p50": 0.0, "p95": 0.0}
-
-    ordered = sorted(latencies_ms)
-    return {"p50": _percentile(ordered, 0.50), "p95": _percentile(ordered, 0.95)}
+LATENCY_STAGES = ("stt_and_dialogue_decision", "supervisor_processing", "deferred_wait", "tts_first_audio", "total_perceived")
 
 
 def _parse_ts(raw: str) -> Optional[datetime]:
@@ -109,6 +87,168 @@ def _parse_ts(raw: str) -> Optional[datetime]:
         return datetime.fromisoformat(raw)
     except (ValueError, TypeError):
         return None
+
+
+def _payload(event: dict) -> dict:
+    """Normalizes the two shapes a trace_events row can arrive in: the real
+    SQLiteTraceRepository's raw row (payload as a `payload_json` string) and
+    FakeTraceRepository's in-memory row (payload already a dict) — both are
+    valid `TraceRepository.get_trace` results and this module must read
+    either without caring which repo produced it."""
+    if "payload" in event:
+        return event["payload"] or {}
+    raw = event.get("payload_json")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _stage_durations_for_call(events: list[dict]) -> dict[str, list[float]]:
+    """Walks one call's trace_events in order, matching each ask_supervisor
+    turn's boundary events into stage durations (ms). A turn missing an
+    expected boundary (e.g. a telephony call before Phase 10 wired up the
+    same events, or a turn where the caller never paused so speech_stopped
+    never fired before ask_supervisor) simply contributes no data for that
+    stage on that turn — never raises, never fabricates a number. Returns
+    per-stage lists of durations found across every turn in this one call's
+    trace (a call can have many ask_supervisor turns)."""
+    stages: dict[str, list[float]] = {stage: [] for stage in LATENCY_STAGES}
+    last_speech_stopped_ts: Optional[datetime] = None
+    open_turns: dict[str, dict] = {}
+
+    for event in events:
+        event_type = event["event_type"]
+        payload = _payload(event)
+        ts = _parse_ts(event["ts"])
+
+        if event_type == "speech_stopped":
+            last_speech_stopped_ts = ts
+        elif event_type == "ask_supervisor_received":
+            tool_call_id = payload.get("tool_call_id")
+            stt_ms = None
+            if last_speech_stopped_ts is not None and ts is not None:
+                stt_ms = max((ts - last_speech_stopped_ts).total_seconds() * 1000, 0.0)
+            open_turns[tool_call_id] = {"ask_ts": ts, "stt_ms": stt_ms}
+        elif event_type == "reply_deferred":
+            turn = open_turns.get(payload.get("tool_call_id"))
+            if turn is not None:
+                turn["supervisor_end_ts"] = ts
+        elif event_type == "reply_delivered":
+            tool_call_id = payload.get("tool_call_id")
+            turn = open_turns.get(tool_call_id)
+            if turn is None:
+                continue
+            was_deferred = payload.get("was_deferred", False)
+            supervisor_end_ts = turn.get("supervisor_end_ts") if was_deferred else ts
+            deferred_wait_ms = float(payload.get("wait_ms", 0)) if was_deferred else 0.0
+
+            supervisor_ms = None
+            if turn.get("ask_ts") is not None and supervisor_end_ts is not None:
+                supervisor_ms = max((supervisor_end_ts - turn["ask_ts"]).total_seconds() * 1000, 0.0)
+
+            if turn.get("stt_ms") is not None:
+                stages["stt_and_dialogue_decision"].append(turn["stt_ms"])
+            if supervisor_ms is not None:
+                stages["supervisor_processing"].append(supervisor_ms)
+            stages["deferred_wait"].append(deferred_wait_ms)
+
+            turn["supervisor_ms"] = supervisor_ms
+            turn["deferred_wait_ms"] = deferred_wait_ms
+        elif event_type == "tts_first_audio":
+            tool_call_id = payload.get("tool_call_id")
+            ms = payload.get("ms_since_reply_delivered")
+            if ms is None:
+                continue
+            stages["tts_first_audio"].append(float(ms))
+            turn = open_turns.pop(tool_call_id, None)
+            if turn is not None:
+                total = float(ms)
+                for key in ("stt_ms", "supervisor_ms", "deferred_wait_ms"):
+                    value = turn.get(key)
+                    if value is not None:
+                        total += value
+                stages["total_perceived"].append(total)
+
+    return stages
+
+
+def latency_breakdown_percentiles(trace_repo: TraceRepository, call_ids: list[str]) -> dict[str, dict[str, float]]:
+    """Pools _stage_durations_for_call's output across every given call_id,
+    then computes {stage: {"p50": ..., "p95": ..., "avg": ...}} for each of
+    LATENCY_STAGES, degrading any stage with zero data points to
+    {"p50": 0.0, "p95": 0.0, "avg": 0.0} — same never-raises contract the
+    function it replaces had. Reuses _percentile unchanged. "avg" (mean
+    latency per turn) is a distinct, simpler-to-reason-about number from the
+    p50/p95 pair — admin panel headline stat, not a replacement for the
+    percentile view."""
+    pooled: dict[str, list[float]] = {stage: [] for stage in LATENCY_STAGES}
+    for call_id in call_ids:
+        durations = _stage_durations_for_call(trace_repo.get_trace(call_id))
+        for stage in LATENCY_STAGES:
+            pooled[stage].extend(durations[stage])
+
+    result = {}
+    for stage in LATENCY_STAGES:
+        values = pooled[stage]
+        ordered = sorted(values)
+        result[stage] = {
+            "p50": _percentile(ordered, 0.50),
+            "p95": _percentile(ordered, 0.95),
+            "avg": (sum(values) / len(values)) if values else 0.0,
+        }
+    return result
+
+
+def _cost_for_call(events: list[dict]) -> dict:
+    """Sums every llm_usage and realtime_usage event in one call's trace
+    into token totals, then converts via pricing.estimate_cost_usd. A call
+    with zero usage events (e.g. abandoned before any real turn) returns
+    all-zero totals and $0.00 — never raises."""
+    claude_input_tokens = claude_output_tokens = 0
+    realtime_audio_in = realtime_audio_out = realtime_text_in = realtime_text_out = 0
+
+    for event in events:
+        payload = _payload(event)
+        if event["event_type"] == "llm_usage":
+            claude_input_tokens += payload.get("input_tokens", 0)
+            claude_output_tokens += payload.get("output_tokens", 0)
+        elif event["event_type"] == "realtime_usage":
+            realtime_audio_in += payload.get("input_audio_tokens", 0)
+            realtime_audio_out += payload.get("output_audio_tokens", 0)
+            realtime_text_in += payload.get("input_text_tokens", 0)
+            realtime_text_out += payload.get("output_text_tokens", 0)
+
+    return {
+        "claude_input_tokens": claude_input_tokens,
+        "claude_output_tokens": claude_output_tokens,
+        "realtime_audio_input_tokens": realtime_audio_in,
+        "realtime_audio_output_tokens": realtime_audio_out,
+        "realtime_text_input_tokens": realtime_text_in,
+        "realtime_text_output_tokens": realtime_text_out,
+        "cost_usd": estimate_cost_usd(
+            claude_input_tokens, claude_output_tokens,
+            realtime_audio_in, realtime_audio_out, realtime_text_in, realtime_text_out,
+        ),
+    }
+
+
+def average_cost_per_call(calls: list[dict], trace_repo: TraceRepository) -> dict:
+    """{"average_usd": ..., "p50_usd": ..., "p95_usd": ...} pooled across
+    every given call via _cost_for_call + _percentile — same
+    never-raises-on-empty-input contract as every other stat in this
+    module."""
+    costs = [_cost_for_call(trace_repo.get_trace(call["call_id"]))["cost_usd"] for call in calls]
+    if not costs:
+        return {"average_usd": 0.0, "p50_usd": 0.0, "p95_usd": 0.0}
+    ordered = sorted(costs)
+    return {
+        "average_usd": sum(costs) / len(costs),
+        "p50_usd": _percentile(ordered, 0.50),
+        "p95_usd": _percentile(ordered, 0.95),
+    }
 
 
 def run_classification_pass(repos: Repositories, calls: list[dict], eval_run_label: str) -> list[dict]:
@@ -203,5 +343,6 @@ def run_deterministic_pass(repos: Repositories, calls: list[dict]) -> dict:
         "booking_success_rate": booking_success_rate(calls),
         "escalation_reason_histogram": escalation_reason_histogram(calls),
         "average_turns_per_call": average_turns_per_call(calls),
-        "latency": processing_latency_percentiles(repos.trace, call_ids),
+        "latency": latency_breakdown_percentiles(repos.trace, call_ids),
+        "cost": average_cost_per_call(calls, repos.trace),
     }

@@ -173,7 +173,7 @@ def test_api_eval_summary_includes_error_rates(client_with, seeded_sqlite_repos)
     body = response.json()
     assert set(body.keys()) == {
         "booking_success_rate", "escalation_reason_histogram", "average_turns_per_call",
-        "latency", "error_rates",
+        "latency", "cost", "error_rates",
     }
     assert "repetition" in body["error_rates"]
 
@@ -226,6 +226,53 @@ def test_api_eval_compare_returns_delta_table(client_with, seeded_sqlite_repos):
     assert body["candidate"] == "candidate"
     row = next(r for r in body["rows"] if r["error_class_id"] == "repetition")
     assert row["delta"] == 1.0
+
+
+def test_call_latency_endpoint_returns_stage_breakdown(client_with, seeded_sqlite_repos):
+    repos, _ = seeded_sqlite_repos
+    repos.trace.record_event("demo-booked-1", "speech_stopped")
+    repos.trace.record_event("demo-booked-1", "ask_supervisor_received", tool_call_id="t1")
+    repos.trace.record_event(
+        "demo-booked-1", "reply_delivered", tool_call_id="t1", was_deferred=False, wait_ms=0
+    )
+    client = client_with(repos)
+
+    response = client.get("/api/calls/demo-booked-1/latency")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["stages"].keys()) == {
+        "stt_and_dialogue_decision", "supervisor_processing", "deferred_wait",
+        "tts_first_audio", "total_perceived",
+    }
+    assert body["stages"]["supervisor_processing"] != []
+    assert "cost_usd" in body["cost"]
+
+
+def test_call_latency_endpoint_404s_for_unknown_call(client_with, seeded_sqlite_repos):
+    repos, _ = seeded_sqlite_repos
+    client = client_with(repos)
+
+    response = client.get("/api/calls/does-not-exist/latency")
+
+    assert response.status_code == 404
+
+
+def test_call_latency_endpoint_includes_cost(client_with, seeded_sqlite_repos):
+    repos, _ = seeded_sqlite_repos
+    repos.trace.record_event("demo-booked-1", "llm_usage", node="capture", tool_name="extract_field", model="claude-sonnet-5", input_tokens=100, output_tokens=50)
+    repos.trace.record_event(
+        "demo-booked-1", "realtime_usage", tool_call_id=None,
+        input_audio_tokens=1000, output_audio_tokens=500, input_text_tokens=10, output_text_tokens=5,
+    )
+    client = client_with(repos)
+
+    response = client.get("/api/calls/demo-booked-1/latency")
+
+    body = response.json()
+    assert body["cost"]["claude_input_tokens"] == 100
+    assert body["cost"]["realtime_audio_input_tokens"] == 1000
+    assert body["cost"]["cost_usd"] > 0
 
 
 def test_admin_page_serves_html():

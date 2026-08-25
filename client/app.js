@@ -29,6 +29,18 @@ let lastVerbatimTranscript = null;
 // wait for the active one to finish rather than racing it.
 let responseActive = false;
 let pendingResponseCreate = false;
+let pendingResponseCreateToolCallId = null;
+
+// Phase 11 (latency + cost instrumentation). activeResponseToolCallId is
+// the tool_call_id of the ask_supervisor turn that triggered the response
+// currently in flight (null for a response Realtime auto-created on its
+// own, e.g. small talk that never touched ask_supervisor — those still
+// cost real Realtime tokens and are still reported, just without a
+// tool_call_id). awaitingFirstAudioDelta/replySentAt time the gap between
+// sending response.create and the first audio actually starting.
+let activeResponseToolCallId = null;
+let replySentAt = null;
+let awaitingFirstAudioDelta = false;
 
 // ---------------------------------------------------------------------------
 // Presentational-only state (Phase 7 caller-facing visual polish stretch).
@@ -189,6 +201,30 @@ function drawOrb() {
     const remoteAmp = averageAmplitude(remoteAnalyser);
     const agentSpeaking = remoteAmp > 0.05;
 
+    // Phase 11 (latency instrumentation), revised from the phase doc's
+    // original design: WebRTC transport delivers audio over the peer
+    // connection's media track, not as response.audio.delta/
+    // response.output_audio.delta events on the data channel (confirmed
+    // live — those events never arrived; OpenAI's own WebRTC guide notes
+    // the peer connection "will do all that work for you", i.e. per-chunk
+    // audio events aren't surfaced the way they are over a WebSocket
+    // connection). The remote analyser this visualizer already runs every
+    // frame is the only signal available for "audio actually started" —
+    // reused here as the tts_first_audio boundary instead of a dedicated
+    // data-channel event. This trades a little precision (this loop's
+    // frame rate, plus the analyser's own smoothing) for actually working
+    // under this project's real transport.
+    if (awaitingFirstAudioDelta && agentSpeaking) {
+      awaitingFirstAudioDelta = false;
+      ws.send(
+        JSON.stringify({
+          type: "tts_first_audio",
+          tool_call_id: activeResponseToolCallId,
+          ms_since_reply_delivered: Math.round(performance.now() - replySentAt),
+        })
+      );
+    }
+
     setSpeakerState(callerSpeaking ? "caller" : agentSpeaking ? "agent" : null);
 
     // base circle
@@ -272,11 +308,18 @@ function teardown(statusMessage) {
 // exposed to the per-response-ID race that sank the retry-on-cancel
 // mechanism this doc's known-issues entry describes. The error handler
 // below is still the backstop for whatever race slips through anyway.
-function requestResponse() {
+function requestResponse(toolCallId) {
   if (responseActive) {
     pendingResponseCreate = true;
+    pendingResponseCreateToolCallId = toolCallId ?? null;
     return;
   }
+  // Phase 11: record the exact moment this response.create actually goes
+  // out (not when it was merely requested/queued) — that's the true start
+  // of the tts_first_audio stage.
+  activeResponseToolCallId = toolCallId ?? null;
+  replySentAt = performance.now();
+  awaitingFirstAudioDelta = activeResponseToolCallId !== null;
   dataChannel.send(JSON.stringify({ type: "response.create" }));
 }
 
@@ -437,7 +480,7 @@ async function startCall() {
           },
         })
       );
-      requestResponse();
+      requestResponse(parsed.tool_call_id);
     };
     ws.onerror = () => teardown("error: lost connection to backend");
     ws.onclose = () => {
@@ -495,10 +538,31 @@ async function startCall() {
         return;
       }
       if (parsed.type === "response.done") {
+        // Phase 11: relayed for EVERY response, not just ones following a
+        // supervisor round-trip — the opening greeting and small-talk turns
+        // the model handles itself (rule 1 of SUPERVISOR_INSTRUCTIONS) also
+        // consume real Realtime tokens. tool_call_id is only included when
+        // this response followed an ask_supervisor turn (Decision 9).
+        const usage = parsed.response?.usage;
+        if (usage) {
+          ws.send(
+            JSON.stringify({
+              type: "realtime_usage",
+              ...(activeResponseToolCallId ? { tool_call_id: activeResponseToolCallId } : {}),
+              input_audio_tokens: usage.input_token_details?.audio_tokens ?? 0,
+              output_audio_tokens: usage.output_token_details?.audio_tokens ?? 0,
+              input_text_tokens: usage.input_token_details?.text_tokens ?? 0,
+              output_text_tokens: usage.output_token_details?.text_tokens ?? 0,
+            })
+          );
+        }
         responseActive = false;
+        activeResponseToolCallId = null;
+        awaitingFirstAudioDelta = false;
         if (pendingResponseCreate) {
           pendingResponseCreate = false;
-          requestResponse();
+          requestResponse(pendingResponseCreateToolCallId);
+          pendingResponseCreateToolCallId = null;
         }
         return;
       }

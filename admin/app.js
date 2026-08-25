@@ -28,6 +28,33 @@ function chipRow(entries, formatValue) {
     .join("")}</div>`;
 }
 
+// Phase 11 (latency + cost instrumentation) — stage keys match
+// eval.insights_agent.LATENCY_STAGES exactly.
+const LATENCY_STAGE_LABELS = {
+  stt_and_dialogue_decision: "STT + dialogue decision",
+  supervisor_processing: "Supervisor processing",
+  deferred_wait: "Deferred wait",
+  tts_first_audio: "TTS first audio",
+  total_perceived: "Total perceived",
+};
+
+function latencyAndCostCard(latency, cost) {
+  const stageRows = Object.entries(LATENCY_STAGE_LABELS)
+    .map(([key, label]) => {
+      const s = (latency && latency[key]) || { p50: 0, p95: 0, avg: 0 };
+      return `<div class="meta-item"><span class="k">${label}</span><span class="v">${s.avg.toFixed(0)}ms avg &middot; ${s.p50.toFixed(0)}ms p50 &middot; ${s.p95.toFixed(0)}ms p95</span></div>`;
+    })
+    .join("");
+  const c = cost || { average_usd: 0, p50_usd: 0, p95_usd: 0 };
+  const costRow = `<div class="meta-item"><span class="k">Est. cost / call</span><span class="v">$${c.average_usd.toFixed(4)} avg &middot; p50 $${c.p50_usd.toFixed(4)} &middot; p95 $${c.p95_usd.toFixed(4)}</span></div>`;
+  return `
+    <div class="breakdown-card">
+      <span class="label">Latency &amp; cost (estimated)</span>
+      <div class="meta-card">${stageRows}${costRow}</div>
+    </div>
+  `;
+}
+
 async function loadSummary() {
   const res = await fetch("/api/eval/summary");
   const summary = await res.json();
@@ -45,13 +72,10 @@ async function loadSummary() {
       <span class="value">${summary.average_turns_per_call.toFixed(1)}</span>
     </div>
     <div class="stat-card">
-      <span class="label">Latency p50</span>
-      <span class="value">${summary.latency.p50.toFixed(0)}<span class="unit">ms</span></span>
+      <span class="label">Avg latency / turn</span>
+      <span class="value">${(summary.latency?.total_perceived?.avg ?? 0).toFixed(0)}<span class="unit">ms</span></span>
     </div>
-    <div class="stat-card">
-      <span class="label">Latency p95</span>
-      <span class="value">${summary.latency.p95.toFixed(0)}<span class="unit">ms</span></span>
-    </div>
+    ${latencyAndCostCard(summary.latency, summary.cost)}
     <div class="breakdown-card">
       <span class="label">Escalation reasons</span>
       ${chipRow(escalationEntries, (v) => v)}
@@ -129,18 +153,53 @@ async function loadCalls() {
   }
 }
 
+function _mean(values) {
+  return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+}
+
+function callLatencyCard(latency) {
+  // Real per-call breakdown for GET /api/calls/{call_id}/latency — this is
+  // the thing worth pointing at for one specific call (Q1's answer + the
+  // cost question), distinct from the aggregate panel above. A stage/call
+  // can have multiple turns worth of data; averaged here for a single
+  // display number per stage.
+  if (!latency) {
+    return `<div class="review-card empty">No latency data recorded for this call.</div>`;
+  }
+  const stageRows = Object.entries(LATENCY_STAGE_LABELS)
+    .map(([key, label]) => {
+      const values = (latency.stages && latency.stages[key]) || [];
+      const avg = _mean(values);
+      return `<div class="meta-item"><span class="k">${label}</span><span class="v">${
+        avg === null ? "no data" : `${avg.toFixed(0)}ms (${values.length} turn${values.length === 1 ? "" : "s"})`
+      }</span></div>`;
+    })
+    .join("");
+  const cost = latency.cost || {};
+  const costRow = `<div class="meta-item"><span class="k">Est. cost</span><span class="v">$${(cost.cost_usd ?? 0).toFixed(4)}</span></div>`;
+  return `<div class="meta-card">${stageRows}${costRow}</div>`;
+}
+
 async function selectCall(callId) {
   selectedCallId = callId;
   for (const row of callsTbody.querySelectorAll("tr")) {
     row.classList.toggle("selected", row.dataset.callId === callId);
   }
 
-  const res = await fetch(`/api/calls/${encodeURIComponent(callId)}`);
+  const [res, latencyRes] = await Promise.all([
+    fetch(`/api/calls/${encodeURIComponent(callId)}`),
+    fetch(`/api/calls/${encodeURIComponent(callId)}/latency`),
+  ]);
   if (!res.ok) {
     detailPanel.innerHTML = `<div class="empty-state">Call not found.</div>`;
     return;
   }
   const detail = await res.json();
+  // Phase 11 — a call with zero trace_events (shouldn't normally happen for
+  // a listed call, but degrade gracefully rather than breaking the rest of
+  // the detail view over it) 404s this endpoint independently of the call
+  // row above.
+  const latency = latencyRes.ok ? await latencyRes.json() : null;
 
   const transcriptHtml = (detail.transcript || [])
     .map(
@@ -167,6 +226,8 @@ async function selectCall(callId) {
        </div>`
     : `<div class="review-card empty">Not yet reviewed by the Benevolent Dictator.</div>`;
 
+  const callLatencyHtml = callLatencyCard(latency);
+
   detailPanel.innerHTML = `
     <h2>${detail.call_id}</h2>
     <div class="meta-card">
@@ -181,6 +242,8 @@ async function selectCall(callId) {
     ${errorFlagsHtml ? `<ul class="flag-list">${errorFlagsHtml}</ul>` : `<div class="flag-list none-flagged">None flagged.</div>`}
     <h3>Human review</h3>
     ${humanReviewHtml}
+    <h3>Latency &amp; cost (estimated)</h3>
+    ${callLatencyHtml}
     <h3>Transcript</h3>
     <div id="transcript">${transcriptHtml || "<em>No transcript.</em>"}</div>
     <button id="trace-toggle">Show full trace</button>

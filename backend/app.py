@@ -117,6 +117,12 @@ class BridgeMessage(BaseModel):
     tool_call_id: Optional[str] = None
     reason: Optional[str] = None
     last_caller_utterance: Optional[str] = None
+    # Phase 11 (latency + cost instrumentation)
+    ms_since_reply_delivered: Optional[int] = None
+    input_audio_tokens: Optional[int] = None
+    output_audio_tokens: Optional[int] = None
+    input_text_tokens: Optional[int] = None
+    output_text_tokens: Optional[int] = None
 
 
 @app.websocket("/bridge")
@@ -264,6 +270,16 @@ async def api_call_detail(call_id: str, repos: Repositories = Depends(get_repos)
 @app.get("/api/calls/{call_id}/trace")
 async def api_call_trace(call_id: str, repos: Repositories = Depends(get_repos)):
     return repos.trace.get_trace(call_id)
+
+
+@app.get("/api/calls/{call_id}/latency")
+async def api_call_latency(call_id: str, repos: Repositories = Depends(get_repos)):
+    from eval.insights_agent import _cost_for_call, _stage_durations_for_call
+
+    events = repos.trace.get_trace(call_id)
+    if not events:
+        raise HTTPException(status_code=404, detail="call not found")
+    return {"stages": _stage_durations_for_call(events), "cost": _cost_for_call(events)}
 
 
 @app.get("/api/eval/summary")
