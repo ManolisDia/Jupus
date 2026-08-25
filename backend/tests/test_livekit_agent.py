@@ -290,6 +290,53 @@ def test_session_pins_transcription_model_voice_and_turn_detection():
     assert captured["input_audio_noise_reduction"] == "near_field"
 
 
+# --- Phase 11 latency boundaries, re-produced under the new transport -------
+
+
+async def test_first_audio_is_timed_from_the_start_of_the_turn(repos):
+    # Both boundaries lost their producer when /bridge went (the browser
+    # reported them). Without them stt_and_dialogue_decision, tts_first_audio
+    # and total_perceived all read as no-data for every LiveKit call, which is
+    # Phase 11's latency view going dark without saying so.
+    _seed("call-1", "booking", proposed_slot_id=7)
+    agent = JupusAgent("call-1", repos)
+    ctx = _FakeRunContext()
+
+    with patch.object(livekit_agent, "run_supervisor_turn", _slow_turn("ok", "booking")):
+        await agent.ask_supervisor(ctx, {"reason": "r", "last_caller_utterance": "yes"})
+    agent.note_agent_started_speaking()
+
+    events = {e["event_type"]: e for e in repos.trace.get_trace("call-1")}
+    assert "tts_first_audio" in events
+    assert events["tts_first_audio"]["payload"]["ms_since_reply_delivered"] >= 0
+    assert events["tts_first_audio"]["payload"]["tool_call_id"] == "tool-1"
+
+
+async def test_first_audio_is_recorded_once_per_turn(repos):
+    # The agent enters "speaking" for the filler AND again for the reply. Only
+    # the first matters — that is when the caller's silence actually ends.
+    _seed("call-1", "booking", proposed_slot_id=7)
+    agent = JupusAgent("call-1", repos)
+
+    with patch.object(livekit_agent, "run_supervisor_turn", _slow_turn("ok", "booking")):
+        await agent.ask_supervisor(
+            _FakeRunContext(), {"reason": "r", "last_caller_utterance": "yes"}
+        )
+    agent.note_agent_started_speaking()
+    agent.note_agent_started_speaking()
+
+    kinds = [e["event_type"] for e in repos.trace.get_trace("call-1")]
+    assert kinds.count("tts_first_audio") == 1
+
+
+def test_caller_stopped_speaking_is_recorded(repos):
+    agent = JupusAgent("call-1", repos)
+
+    agent.note_caller_stopped_speaking()
+
+    assert [e["event_type"] for e in repos.trace.get_trace("call-1")] == ["speech_stopped"]
+
+
 # --- worker startup ---------------------------------------------------------
 
 

@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Awaitable, Optional, TypeVar
@@ -147,6 +148,9 @@ class JupusAgent(Agent):
         # turn it belongs to. See _verbatim_utterance for why this exists.
         self._transcript: Optional[str] = None
         self._transcript_ready = asyncio.Event()
+        # Set when a turn starts, cleared when the caller first hears anything
+        # for it. See note_agent_started_speaking.
+        self._awaiting_first_audio: Optional[tuple[str, float]] = None
 
     # -- verbatim transcript (docs/DECISIONS.md) ---------------------------
 
@@ -192,6 +196,43 @@ class JupusAgent(Agent):
                     self._transcript_ready.wait(), timeout=TRANSCRIPT_WAIT_SECONDS
                 )
         return self._claim_transcript() or model_argument
+
+    # -- latency boundaries (Phase 11) -------------------------------------
+
+    def note_caller_stopped_speaking(self) -> None:
+        """The `speech_stopped` boundary, which lost its producer with /bridge.
+
+        It used to be reported by client/app.js off Realtime's VAD events. It
+        opens the stt_and_dialogue_decision stage — without it that stage reads
+        as no-data for every call, which is how Phase 11's latency view
+        silently went dark under the new transport.
+        """
+        self._repos.trace.record_event(self._call_id, "speech_stopped", node="transport")
+
+    def note_agent_started_speaking(self) -> None:
+        """The `tts_first_audio` boundary: the caller can now hear something.
+
+        This is a real playout signal (LiveKit's agent state entering
+        "speaking"), which is strictly better than what it replaces — the old
+        client inferred it from the remote audio track's amplitude, because
+        WebRTC never surfaced per-chunk audio events.
+
+        It fires for whichever comes first, filler or real reply, because from
+        the caller's side that IS when the silence ends. That makes it the
+        honest measure of perceived latency, unlike timing the moment say() was
+        *called*, which excludes the speech queue and playout entirely.
+        """
+        if self._awaiting_first_audio is None:
+            return
+        tool_call_id, started = self._awaiting_first_audio
+        self._awaiting_first_audio = None
+        self._repos.trace.record_event(
+            self._call_id,
+            "tts_first_audio",
+            node="transport",
+            tool_call_id=tool_call_id,
+            ms_since_reply_delivered=int((time.monotonic() - started) * 1000),
+        )
 
     # -- filler ------------------------------------------------------------
 
@@ -277,6 +318,7 @@ class JupusAgent(Agent):
             node="transport",
             tool_call_id=ctx.function_call.call_id,
         )
+        self._awaiting_first_audio = (ctx.function_call.call_id, time.monotonic())
 
         # Decision 3: a caller talking over the filler purely to acknowledge it
         # ("mhm", "okay") must not become a turn of its own. Without this guard
@@ -411,6 +453,16 @@ async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     session = build_session()
     agent = JupusAgent(call_id, repos, ctx.room)
+
+    @session.on("user_state_changed")
+    def _on_user_state(event) -> None:  # noqa: ANN001 — LiveKit event type
+        if getattr(event, "new_state", None) == "listening":
+            agent.note_caller_stopped_speaking()
+
+    @session.on("agent_state_changed")
+    def _on_agent_state(event) -> None:  # noqa: ANN001 — LiveKit event type
+        if getattr(event, "new_state", None) == "speaking":
+            agent.note_agent_started_speaking()
 
     @session.on("user_input_transcribed")
     def _on_transcript(event) -> None:  # noqa: ANN001 — LiveKit event type

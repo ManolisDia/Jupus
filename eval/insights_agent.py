@@ -143,9 +143,15 @@ def _stage_durations_for_call(events: list[dict]) -> dict[str, list[float]]:
             # LiveKit (Phase 14) it's reply_ready: LiveKit's own turn-taking
             # owns that decision, so there is no deferral to account for and
             # deferred_wait is a real, honest zero rather than a missing
-            # measurement. Handling both here is what keeps Phase 11's whole
-            # latency view alive across the transport migration instead of
-            # silently reading zero for every LiveKit call.
+            # measurement.
+            #
+            # The other three stages depend on speech_stopped and
+            # tts_first_audio, which the browser used to report over /bridge.
+            # backend/transport/livekit_agent.py re-produces both agent-side
+            # from LiveKit's user_state_changed / agent_state_changed, so all
+            # five stages stay alive under the new transport. tts_first_audio
+            # is in fact more accurate now: a real playout signal rather than
+            # the old amplitude heuristic the browser had to infer it from.
             tool_call_id = payload.get("tool_call_id")
             turn = open_turns.get(tool_call_id)
             if turn is None:
