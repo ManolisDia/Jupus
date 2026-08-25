@@ -40,7 +40,7 @@ flowchart TB
     end
 
     subgraph Store["SQLite — swappable via the Repository pattern"]
-        Tables["calls · slots · trace_events · eval_runs<br/>call_error_flags · taxonomy_suggestions<br/>call_reviews · human_annotations"]
+        Tables["calls · slots · trace_events · eval_runs · escalations<br/>call_error_flags · taxonomy_suggestions<br/>call_reviews · human_annotations"]
     end
 
     subgraph AdminSide["Admin (Benevolent Dictator)"]
@@ -88,7 +88,7 @@ flowchart TD
     AnyStage{{"any stage, any time"}} -.->|explicit_request| Escalation
     AnyStage -.->|"system_error ×3 consecutive"| Escalation
 
-    Escalation -->|handoff note written| EscalatedEnd(("ended: escalated"))
+    Escalation -->|"escalations row + handoff note written"| EscalatedEnd(("ended: escalated"))
 ```
 `explicit_request` (a deterministic keyword match in `dispatcher.py`, checked before the current stage's node runs) and `system_error` (3 consecutive upstream API failures, any node) can fire from anywhere — the dashed `any stage, any time` node represents that, it isn't a real graph state.
 

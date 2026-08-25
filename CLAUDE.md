@@ -50,7 +50,7 @@ Also read `docs/phases/cross-cutting.md` before starting **Phase 2** — its sec
 6. **No telephony, no Docker, no Railway hosting** unless every phase through Phase 8 is done ahead of schedule — see `docs/DECISIONS.md` for why.
 7. **Every Claude API call inside a `tools.py` function goes through `call_claude_tool` in `backend/supervisor/llm_utils.py`, never the Anthropic SDK directly.** See `docs/phases/cross-cutting.md`. An unhandled upstream API failure must never propagate out of a node — it must become a graceful fallback reply, and 3 consecutive failures escalate with `escalation_reason="system_error"`.
 8. **Every call to a `tools.py` function — deterministic or LLM-backed — goes through `traced_call` (`backend/supervisor/tracing.py`), never invoked directly.** This is what makes "every tool call is traced" true by construction. `call_claude_tool` builds on top of `traced_call`, it doesn't duplicate it. See `docs/phases/cross-cutting.md` section 0.
-9. **No file outside `backend/db/repositories/` imports `sqlite3` or writes raw SQL.** `dispatcher.py`, `tools.py`, `tracing.py`, `eval/insights_agent.py`, and the admin routes all depend on the repository interfaces (`CallRepository`, `SlotRepository`, `TraceRepository`, `EvalRepository`, `AnnotationRepository`), never a connection object directly. See `docs/architecture.md`.
+9. **No file outside `backend/db/repositories/` imports `sqlite3` or writes raw SQL.** `dispatcher.py`, `tools.py`, `tracing.py`, `eval/insights_agent.py`, and the admin routes all depend on the repository interfaces (`CallRepository`, `SlotRepository`, `TraceRepository`, `EscalationRepository`, `EvalRepository`, `AnnotationRepository`), never a connection object directly. See `docs/architecture.md`.
 
 ---
 
@@ -129,4 +129,4 @@ Admin panel: open `http://localhost:8000/admin` (backend must be running).
 - `client/` — caller-facing browser page (WebRTC + mic)
 - `admin/` — calls list with error-class badges/transcript drill-in/eval summary/taxonomy-suggestion approval, plus `annotate.html` — the Benevolent Dictator's dedicated annotation page
 - `eval/` — `error_classes.py` (the editable taxonomy registry), `insights_agent.py`, `run_eval.py`, `replay_scenarios.py`, `compare_runs.py`, `calibrate_judge.py`
-- `docs/` — `PLAN.md`, `architecture.md`, `DECISIONS.md`, `workflow.md`, `diagrams.md`, `error_taxonomy.md`, `benevolent_dictator.md`, `scenarios.md`, `answers.md` (the 4 required written answers), `handoffs/` (one file per escalated call), `phases/` (per-phase specs + `cross-cutting.md`), `fixes/`, `known-issues/`
+- `docs/` — `PLAN.md`, `architecture.md`, `DECISIONS.md`, `workflow.md`, `diagrams.md`, `error_taxonomy.md`, `benevolent_dictator.md`, `scenarios.md`, `answers.md` (the 4 required written answers), `handoffs/` (one file per escalated call — a readable view of the `escalations` table, not the system of record), `phases/` (per-phase specs + `cross-cutting.md`), `fixes/`, `known-issues/`

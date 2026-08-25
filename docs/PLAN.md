@@ -273,7 +273,7 @@ Jupus/
     benevolent_dictator.md            # the human annotation/calibration role & process
     scenarios.md                      # the canonical test scenarios (S1-S6, plus S7 added in Phase 8)
     answers.md                        # 4 required written answers
-    handoffs/                         # one .md per escalated call
+    handoffs/                         # one .md per escalated call (readable view of `escalations`)
     phases/
       cross-cutting.md
       phase-1-raw-voice-loop.md ... phase-13-polish-submission.md
