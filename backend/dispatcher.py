@@ -378,10 +378,20 @@ async def run_supervisor_turn(
         # without this a crash-escalation would leave nothing for a human to
         # pick up. Deterministic summary only: no second Claude call right
         # after an unhandled failure.
-        record_escalation(
-            repos, call_id, "dispatcher", state,
-            tools.minimal_escalation_summary(f"Unhandled error: {e}"),
-        )
+        try:
+            record_escalation(
+                repos, call_id, "dispatcher", state,
+                tools.minimal_escalation_summary(f"Unhandled error: {e}"),
+            )
+        except Exception:
+            # The caller is on the line waiting. This handler exists to make
+            # sure they hear something instead of dead air, so a failure
+            # while recording the handoff must not take the reply down with
+            # it — especially since a broken DB or disk is exactly the kind
+            # of thing that lands us in this handler to begin with. Logged
+            # and traced, then carry on to speak.
+            logger.exception("failed to record escalation for call_id=%s", call_id)
+            repos.trace.record_event(call_id, "escalation_record_failed", node="dispatcher")
         return (
             "Sorry, something went wrong on my end — let me get you to someone who can help.",
             "escalation",

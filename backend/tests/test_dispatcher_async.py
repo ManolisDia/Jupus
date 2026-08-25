@@ -237,6 +237,24 @@ async def test_unexpected_exception_records_the_handoff(repos):
     assert "boom" in row["escalation_explanation"]
 
 
+async def test_failure_recording_the_escalation_still_delivers_the_fallback_reply(repos):
+    # A broken db or disk is exactly what lands a call in this handler, so
+    # the handoff write failing too must not cost the caller their reply.
+    _seed_state("call-1")
+
+    with (
+        patch("backend.dispatcher.GRAPH.invoke", side_effect=RuntimeError("boom")),
+        patch.object(repos.escalations, "record", side_effect=OSError("disk on fire")),
+    ):
+        reply, dispatch_stage = await run_supervisor_turn(repos, "call-1", "tool-1", "hi")
+
+    assert reply == "Sorry, something went wrong on my end — let me get you to someone who can help."
+    assert dispatch_stage == "escalation"
+    assert any(
+        e["event_type"] == "escalation_record_failed" for e in repos.trace.get_trace("call-1")
+    )
+
+
 async def test_unexpected_exception_records_trace_event(repos):
     _seed_state("call-1")
 

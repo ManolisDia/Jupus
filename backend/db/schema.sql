@@ -94,6 +94,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_events_call_seq ON trace_events(call
 -- deterministic fallback path (an escalation triggered BY an LLM failure)
 -- deliberately doesn't make another Claude call to fill them in — see
 -- node_escalation in backend/supervisor/graph.py.
+-- The call_id reference is documentation, not enforcement (foreign_keys is
+-- off, as it is for trace_events, which relies on the same thing): a call
+-- escalating on its very first utterance — "put me through to a person" —
+-- writes this row before dispatcher.py has upserted any `calls` row for it.
 CREATE TABLE IF NOT EXISTS escalations (
     call_id TEXT PRIMARY KEY REFERENCES calls(call_id),
     escalated_at TEXT NOT NULL,
