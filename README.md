@@ -158,6 +158,24 @@ Then **call it**: open [`client/index.html`](client/index.html) and talk. **Watc
 
 > Run only **one** backend at a time. LiveKit dispatches automatically to every registered worker, so a second one will silently take some of your calls — and because it keeps its own in-memory state, those calls vanish from the first one's admin panel. The backend warns about this at startup.
 
+### The hosted deployment
+
+A public deployment exists from Phase 9 — FastAPI on Railway (with a persistent volume for SQLite) and the client on Firebase Hosting at **https://jupus-5661c.web.app**, behind a shared-secret access token. Railway auto-deploys from `master`.
+
+To bring it up to date after a change:
+
+```bash
+# backend: nothing to do beyond pushing — Railway redeploys from master.
+# It also needs LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET set as
+# Railway variables, or /livekit-token returns a 503 saying exactly that.
+
+firebase deploy --only hosting        # client
+```
+
+The client works out its own backend from where it's served (`file://` or localhost → your local backend; anything else → Railway), so there's no config file to edit before deploying and change back afterwards. `client/config.js` is only needed to supply the hosted access token, or to point the local page somewhere unusual.
+
+> **Run the local backend or the hosted one, not both.** They register LiveKit workers against the same project, and LiveKit dispatches to *any* registered worker — so with both up, calls are split between them at random, and a call handled by the "wrong" one won't appear in the other's admin panel or database. Give production its own LiveKit project if you need both at once.
+
 ### Try it without talking
 
 ```bash
@@ -211,7 +229,7 @@ A scoped prototype, deliberately:
 - **The agent worker runs inside the backend process**, so it can reach in-memory call state directly. That's what keeps the live admin view working, but it does mean one process is doing real-time media work alongside serving HTTP.
 - **In-memory call state** — fine for one local process, not for horizontal scaling.
 - **SQLite**, not a hosted database. The repository layer exists so that's a contained change.
-- **The hosted deployment is stale.** A public deployment exists from Phase 9 (Railway backend + Firebase client) but predates the LiveKit migration and would need redeploying. The local setup above is the primary, always-works path.
+- **The hosted deployment is single-instance**, has no autoscaling, and its access token is a casual-discovery deterrent rather than a real auth boundary. The local setup is the primary, always-works path. Only one of local/hosted can serve calls at a time unless they use separate LiveKit projects (see above).
 - **No cap on call duration**, and the browser client has no automated test coverage.
 
 Every one of these is a documented tradeoff in `docs/DECISIONS.md`, not an oversight.

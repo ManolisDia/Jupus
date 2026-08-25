@@ -1,4 +1,26 @@
-const BACKEND_URL = window.JUPUS_BACKEND_URL;
+// Where the hosted client's backend lives (Railway, Phase 9).
+const HOSTED_BACKEND_URL = "https://jupus-production.up.railway.app";
+
+// The backend is derived from where this page is being served rather than
+// configured, because config.js is gitignored and Firebase deploys whatever
+// copy happens to be on the deploying machine's disk. Hand-editing it before
+// every deploy and remembering to change it back is a step that only has to be
+// half-forgotten once to leave the hosted client silently pointing at
+// localhost, or local dev pointing at production.
+//
+// An explicit window.JUPUS_BACKEND_URL still wins, for pointing the local page
+// at some other backend.
+function defaultBackendUrl() {
+  const host = window.location.hostname;
+  // A file:// page has an empty hostname — that's the documented local flow.
+  if (!host || host === "localhost" || host === "127.0.0.1") {
+    return "http://localhost:8000";
+  }
+  return HOSTED_BACKEND_URL;
+}
+
+const BACKEND_URL = window.JUPUS_BACKEND_URL || defaultBackendUrl();
+// Only the gated hosted deployment needs this; local dev leaves it empty.
 const ACCESS_TOKEN = window.JUPUS_ACCESS_TOKEN || "";
 
 const startBtn = document.getElementById("start-call");
