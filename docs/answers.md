@@ -57,6 +57,36 @@ the same batch (`GET /api/eval/summary`'s `cost.average_usd`), labeled "estimate
 shown per `docs/DECISIONS.md`'s pricing-verification caveat. Cost was raised directly as a concern
 in conversation — this is a real, measured answer to it, not a guess.
 
+**Phase 13 (latency reduction) update, 2026-08-25**: given `supervisor_processing` was confirmed the
+dominant cost above, this phase attacked it directly — see `docs/phases/phase-13-latency-reduction.md`
+and `docs/DECISIONS.md` for the full writeup of each change. Summary of what actually moved the
+number (all measured via `eval/replay_scenarios.py` + `eval/compare_runs.py` against the real,
+unmocked pipeline, not assumed):
+- **Prompt caching** — shipped, measured, confirmed to have **zero effect**: this project's system
+  prompts (~100-650 tokens per call) sit under Anthropic's 1024-token minimum cacheable length.
+  Kept in code (free, activates automatically if prompts ever grow) but contributed nothing here.
+- **Merging `extract_field`+`generate_confirm_back`** into one call (`tools.extract_and_confirm_field`)
+  — the same real turn shape went from two round trips (1522ms + 2552ms = 4074ms) to one (3221ms),
+  ~21% faster, with zero error-class regression.
+- **Root-causing `confirm_field_answer`'s 10s+ retry tail** — a live call showed its `corrected_value`
+  occasionally over-elaborating past `max_tokens=512`, truncating the JSON and forcing a retry.
+  Fixed by constraining the prompt, not raising the token ceiling (`docs/fixes/2026-08-25-002.md`).
+- **Per-tool model choice** — `select_offered_slot` (closed-set index selection, not free-text
+  extraction) moved to Haiku after showing identical behavior to Sonnet on an ambiguous case and
+  1092-1782ms vs. Sonnet's 3500ms on clear ones. `confirm_field_answer`/`confirm_booking_answer`/
+  `classify_practice_area` remain untested candidates for the same treatment.
+
+**Net effect across the 6 canonical scenarios + 2 research variants** (total Claude tool-call time
+across all 8 scenario calls, `phase13-baseline` vs. `phase13-final` labels, real API):
+**132,991ms → 120,958ms total (16,624ms → 15,120ms average per call, ~9%)**, with zero error-class
+regression (`eval/compare_runs.py`). Reported as total/average tool-call duration rather than
+through the `stt_and_dialogue_decision`/`supervisor_processing` stage breakdown above, because that
+breakdown depends on bridge-level events (`speech_stopped`, `ask_supervisor_received`) that
+`eval/replay_scenarios.py` doesn't emit — it drives `process_supervisor_call` directly, bypassing
+the WebSocket bridge entirely (see that script's own docstring). The two metrics measure the same
+underlying thing (the graph/Claude round-trip), just via different instrumentation; a live-call
+re-measurement through the real bridge would be needed to update the stage-breakdown table itself.
+
 ## Q2 — Turn-taking / interruptions
 
 *TBD — Phase 15 (polish/submission), updated with Phase 14's real filler/interrupt-handling design.*
