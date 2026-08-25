@@ -303,7 +303,40 @@ async def entrypoint(ctx: JobContext) -> None:
     assert _REPOS is not None, "start_agent_server() must run before any job"
     repos = _REPOS
 
+    await ctx.connect()
+    session = build_session()
+
+    # Phase 11's cost accounting covers BOTH vendors, and the OpenAI Realtime
+    # half used to arrive as client-reported `realtime_usage` bridge messages
+    # (client/app.js read them off response.done). With /bridge gone that half
+    # would silently read $0 forever, which is worse than not tracking it at
+    # all. LiveKit reports the same token counts itself, so they're captured
+    # here instead and written in the exact payload shape
+    # eval/insights_agent.py's _cost_for_call already sums.
+    #
+    # session_usage_updated carries CUMULATIVE session totals, not per-response
+    # deltas, so the latest value is stashed and emitted once at shutdown —
+    # recording every update would multiply the real cost by the number of
+    # turns.
+    latest_usage: dict[str, int] = {}
+
+    @session.on("session_usage_updated")
+    def _on_usage(event) -> None:  # noqa: ANN001 — LiveKit event type
+        for usage in getattr(event.usage, "model_usage", []):
+            if getattr(usage, "type", None) != "llm_usage":
+                continue
+            latest_usage.update(
+                input_audio_tokens=getattr(usage, "input_audio_tokens", 0),
+                output_audio_tokens=getattr(usage, "output_audio_tokens", 0),
+                input_text_tokens=getattr(usage, "input_text_tokens", 0),
+                output_text_tokens=getattr(usage, "output_text_tokens", 0),
+            )
+
     async def _on_shutdown() -> None:
+        if latest_usage:
+            repos.trace.record_event(
+                call_id, "realtime_usage", node="transport", **latest_usage
+            )
         # The disconnect-cleanup contract from docs/phases/cross-cutting.md
         # section 2, moved off the retired /bridge WebSocketDisconnect handler.
         # Marshalled onto the FastAPI loop because it takes the same per-call
@@ -312,8 +345,6 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_on_shutdown)
 
-    await ctx.connect()
-    session = build_session()
     await session.start(agent=JupusAgent(call_id, repos, ctx.room), room=ctx.room)
 
 

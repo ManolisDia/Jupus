@@ -15,7 +15,7 @@ See docs/phases/phase-6c-benevolent-dictator.md.
 Phase 4/5 are now merged (real booking node, real multiple_areas
 classification value, real is_explicit_human_request heuristic), so all 6
 scenarios run against the real pipeline end to end, live Claude/OpenAI
-calls and all. `dispatcher.process_supervisor_call` (the real dispatch
+calls and all. `dispatcher.run_supervisor_turn` (the real dispatch
 entry point) is awaited directly turn by turn rather than going through
 `on_bridge_message`'s fire-and-forget `asyncio.create_task` wrapping, since
 there's no real caller audio/VAD stream here to keep servicing between
@@ -34,7 +34,7 @@ from backend.config import settings
 from backend.db.repositories import Repositories, get_repositories
 
 # Each scenario: a fresh call_id, then a sequence of caller utterances fed
-# through dispatcher.process_supervisor_call in order, exactly as a live
+# through dispatcher.run_supervisor_turn in order, exactly as a live
 # caller would trigger them one ask_supervisor turn at a time.
 SCENARIOS: dict[str, list[str]] = {
     "S1": [
@@ -154,7 +154,7 @@ SCENARIOS: dict[str, list[str]] = {
 async def _replay_one(repos: Repositories, scenario_id: str, utterances: list[str], label: str) -> str:
     call_id = f"replay-{scenario_id.lower()}-{uuid.uuid4().hex[:8]}"
     for i, utterance in enumerate(utterances):
-        await dispatcher.process_supervisor_call(repos, call_id, f"tool-{i}", utterance)
+        await dispatcher.run_supervisor_turn(repos, call_id, f"tool-{i}", utterance)
     # Phase 8's research node spawns ground_statute_citation as a background
     # task (dispatcher.STATUTE_SEARCHES), rather than blocking the turn that
     # triggers it — with no further turn after the scripted sequence ends to

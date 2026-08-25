@@ -22,17 +22,8 @@ class Settings(BaseSettings):
     jupus_access_token: Optional[str] = None
     public_client_origin: Optional[str] = None  # e.g. "https://<project>.web.app"
 
-    # Phase 14 (LiveKit transport). "webrtc" is the hand-rolled
-    # /session + /bridge path; "livekit" routes the call through LiveKit
-    # Agents instead. Temporary migration scaffolding — this setting and the
-    # whole "webrtc" branch are deleted once LiveKit is verified live across
-    # all 7 canonical scenarios (docs/phases/phase-14-livekit-transport.md,
-    # Decision 5: the old bookkeeping is retired, not left dormant alongside
-    # the new path). It exists only so a working call survives the migration
-    # and so the DoD's required old-vs-new comparison is a flag flip.
-    transport: Literal["webrtc", "livekit"] = Field(
-        default="webrtc", validation_alias="JUPUS_TRANSPORT"
-    )
+    # Phase 14 (LiveKit transport) — required for a call to connect at all.
+    # Optional so the backend still boots for admin/eval work without them.
     livekit_url: Optional[str] = None
     livekit_api_key: Optional[str] = None
     livekit_api_secret: Optional[str] = None

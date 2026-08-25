@@ -244,25 +244,24 @@ async def test_dispatcher_only_spawns_background_verification_on_real_advance():
     repos = Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
     call_id = "call-regress"
     CALL_STATES.pop(call_id, None)
-    with patch("backend.dispatcher.send_over_bridge"):
-        await dispatcher.process_supervisor_call(repos, call_id, "t1", "I need some legal advice.")
-        with patch("backend.supervisor.tools.classify_practice_area", return_value={"area": "tenancy", "confidence": 0.9}):
-            await dispatcher.process_supervisor_call(repos, call_id, "t2", "my flat")
-        # garbled name -> medium confidence -> pending_confirm (fallback path,
-        # since "uh" trips looks_like_tangent) — Phase 13 merged this
-        # branch's extract_field + generate_confirm_back into one call.
-        with patch(
-            "backend.supervisor.tools.extract_and_confirm_field",
-            return_value={"value": "Alesh", "confidence": 0.4, "confirm_back_phrasing": "Did you say Alesh?"},
-        ):
-            await dispatcher.process_supervisor_call(repos, call_id, "t3", "uh, Alesh, maybe")
-        # a correction resolves the pending name via confirm_field_answer -
-        # this is where the bug used to spawn a stray "name" background task
-        with patch(
-            "backend.supervisor.tools.confirm_field_answer",
-            return_value={"confirmed": False, "corrected_value": "Alex Smith"},
-        ):
-            await dispatcher.process_supervisor_call(repos, call_id, "t4", "No, it's Alex Smith.")
+    await dispatcher.run_supervisor_turn(repos, call_id, "t1", "I need some legal advice.")
+    with patch("backend.supervisor.tools.classify_practice_area", return_value={"area": "tenancy", "confidence": 0.9}):
+        await dispatcher.run_supervisor_turn(repos, call_id, "t2", "my flat")
+    # garbled name -> medium confidence -> pending_confirm (fallback path,
+    # since "uh" trips looks_like_tangent) — Phase 13 merged this
+    # branch's extract_field + generate_confirm_back into one call.
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "Alesh", "confidence": 0.4, "confirm_back_phrasing": "Did you say Alesh?"},
+    ):
+        await dispatcher.run_supervisor_turn(repos, call_id, "t3", "uh, Alesh, maybe")
+    # a correction resolves the pending name via confirm_field_answer -
+    # this is where the bug used to spawn a stray "name" background task
+    with patch(
+        "backend.supervisor.tools.confirm_field_answer",
+        return_value={"confirmed": False, "corrected_value": "Alex Smith"},
+    ):
+        await dispatcher.run_supervisor_turn(repos, call_id, "t4", "No, it's Alex Smith.")
 
     assert ("call-regress", "name") not in dispatcher.FIELD_VERIFICATIONS
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "confirmed"

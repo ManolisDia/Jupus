@@ -22,13 +22,16 @@ Every one of those decisions — routing, extraction thresholds, escalation trig
 
 ```
 Caller's browser
-   │  WebRTC (mic audio)
+   │  WebRTC (mic audio) via LiveKit
+   ▼
+LiveKit room  ──▶  Jupus agent (in-process with the backend)
+   │
    ▼
 OpenAI Realtime API  ──speech + turn-taking + voice──▶  Caller hears a reply
    │
    │  the ONLY tool Realtime is ever given: ask_supervisor(reason, utterance)
    ▼
-FastAPI bridge (backend/app.py)  ──async dispatch──▶  LangGraph supervisor
+backend/transport/livekit_agent.py  ──async dispatch──▶  LangGraph supervisor
                                                           │
                                           ┌───────────────┼────────────────┐
                                           ▼               ▼                ▼

@@ -20,7 +20,7 @@ import pytest
 
 from backend import dispatcher
 from backend.db.repositories import Repositories
-from backend.dispatcher import process_supervisor_call
+from backend.dispatcher import run_supervisor_turn
 from backend.supervisor.state import CALL_STATES, new_call_state
 from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
 from eval.concurrency_stress_test import _check_leakage, _mock_graph_invoke, _seed_utterance
@@ -42,15 +42,9 @@ def _seed_state(call_id: str, stage: str = "routing") -> dict:
 def clear_dispatcher_state():
     CALL_STATES.clear()
     dispatcher.LOCKS.clear()
-    dispatcher.SPEAKING.clear()
-    dispatcher.DEFERRED.clear()
-    dispatcher.CONNECTIONS.clear()
     yield
     CALL_STATES.clear()
     dispatcher.LOCKS.clear()
-    dispatcher.SPEAKING.clear()
-    dispatcher.DEFERRED.clear()
-    dispatcher.CONNECTIONS.clear()
 
 
 @pytest.fixture
@@ -62,11 +56,11 @@ async def _fire_n_distinct_calls(repos: Repositories, n: int) -> list[str]:
     call_ids = [f"stress-{i}" for i in range(n)]
     for call_id in call_ids:
         _seed_state(call_id)
-    with patch("backend.dispatcher.send_over_bridge"), patch(
+    with patch(
         "backend.dispatcher.GRAPH.invoke", side_effect=_mock_graph_invoke
     ):
         await asyncio.gather(
-            *(process_supervisor_call(repos, call_id, f"tool-{i}", _seed_utterance(i)) for i, call_id in enumerate(call_ids))
+            *(run_supervisor_turn(repos, call_id, f"tool-{i}", _seed_utterance(i)) for i, call_id in enumerate(call_ids))
         )
     return call_ids
 
@@ -94,13 +88,13 @@ async def test_concurrent_wall_clock_is_substantially_less_than_serial(repos):
     concurrent_call_ids = [f"concurrent-{i}" for i in range(n)]
     for call_id in concurrent_call_ids:
         _seed_state(call_id)
-    with patch("backend.dispatcher.send_over_bridge"), patch(
+    with patch(
         "backend.dispatcher.GRAPH.invoke", side_effect=_mock_graph_invoke
     ):
         start = time.monotonic()
         await asyncio.gather(
             *(
-                process_supervisor_call(repos, call_id, f"tool-{i}", _seed_utterance(i))
+                run_supervisor_turn(repos, call_id, f"tool-{i}", _seed_utterance(i))
                 for i, call_id in enumerate(concurrent_call_ids)
             )
         )
@@ -112,12 +106,12 @@ async def test_concurrent_wall_clock_is_substantially_less_than_serial(repos):
     serial_call_ids = [f"serial-{i}" for i in range(n)]
     for call_id in serial_call_ids:
         _seed_state(call_id)
-    with patch("backend.dispatcher.send_over_bridge"), patch(
+    with patch(
         "backend.dispatcher.GRAPH.invoke", side_effect=_mock_graph_invoke
     ):
         start = time.monotonic()
         for i, call_id in enumerate(serial_call_ids):
-            await process_supervisor_call(repos, call_id, f"tool-{i}", _seed_utterance(i))
+            await run_supervisor_turn(repos, call_id, f"tool-{i}", _seed_utterance(i))
         serial_elapsed = time.monotonic() - start
 
     # Loose bound (not tight) to stay robust against normal test-machine
@@ -144,12 +138,12 @@ async def test_same_call_id_still_serializes_under_concurrent_load(repos):
     for call_id in set(call_ids):
         _seed_state(call_id)
 
-    with patch("backend.dispatcher.send_over_bridge"), patch(
+    with patch(
         "backend.dispatcher.GRAPH.invoke", side_effect=tracking_invoke
     ):
         await asyncio.gather(
             *(
-                process_supervisor_call(repos, call_id, f"tool-{i}", _seed_utterance(i))
+                run_supervisor_turn(repos, call_id, f"tool-{i}", _seed_utterance(i))
                 for i, call_id in enumerate(call_ids)
             )
         )
@@ -180,7 +174,6 @@ async def test_thread_pool_saturation_detected_at_high_n(repos):
             _seed_state(call_id)
 
         with (
-            patch("backend.dispatcher.send_over_bridge"),
             patch("backend.dispatcher.GRAPH.invoke", side_effect=_mock_graph_invoke),
             patch("backend.dispatcher.asyncio.to_thread", side_effect=limited_to_thread),
         ):
@@ -208,5 +201,5 @@ async def test_thread_pool_saturation_detected_at_high_n(repos):
 
 async def _timed(repos, call_id, tool_call_id, utterance):
     start = time.monotonic()
-    await process_supervisor_call(repos, call_id, tool_call_id, utterance)
+    await run_supervisor_turn(repos, call_id, tool_call_id, utterance)
     return (time.monotonic() - start) * 1000.0

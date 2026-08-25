@@ -36,15 +36,9 @@ SLOT_B = {"id": 2, "area": "tenancy", "start_time": "2026-09-03T15:00:00", "is_b
 def clear_dispatcher_state():
     CALL_STATES.clear()
     dispatcher.LOCKS.clear()
-    dispatcher.SPEAKING.clear()
-    dispatcher.DEFERRED.clear()
-    dispatcher.CONNECTIONS.clear()
     yield
     CALL_STATES.clear()
     dispatcher.LOCKS.clear()
-    dispatcher.SPEAKING.clear()
-    dispatcher.DEFERRED.clear()
-    dispatcher.CONNECTIONS.clear()
 
 
 @pytest.fixture

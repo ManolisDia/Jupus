@@ -6,7 +6,7 @@ staying correct while it's the only one in flight (Phase 5's own tests, see
 backend/tests/test_dispatcher_async.py, only ever exercise one call_id, or
 concurrent turns for the SAME call_id).
 
-Fires n distinct call_ids at backend.dispatcher.process_supervisor_call via
+Fires n distinct call_ids at backend.dispatcher.run_supervisor_turn via
 asyncio.gather (Decision 2 in docs/phases/phase-12-concurrency-stress-test.md)
 — the dispatcher/asyncio/db layer, the same boundary eval/replay_scenarios.py
 and backend/tests/test_scenarios.py already treat as "the real pipeline" for
@@ -38,7 +38,7 @@ from backend import dispatcher
 from backend.config import settings
 from backend.db.repositories import Repositories, get_repositories
 from backend.db.repositories.connection import connect, reset_schema
-from backend.dispatcher import process_supervisor_call
+from backend.dispatcher import run_supervisor_turn
 from backend.supervisor.state import CALL_STATES, get_or_create_state, new_call_state
 
 # A dedicated SQLite file, not backend/db/calendar.db — this script's
@@ -106,7 +106,7 @@ def _check_leakage(call_id: str, i: int) -> bool:
 
 async def _timed_call(repos: Repositories, call_id: str, tool_call_id: str, utterance: str) -> float:
     start = time.monotonic()
-    await process_supervisor_call(repos, call_id, tool_call_id, utterance)
+    await run_supervisor_turn(repos, call_id, tool_call_id, utterance)
     return (time.monotonic() - start) * 1000.0
 
 
@@ -128,11 +128,10 @@ async def run_stress_level(n: int, mode: str, repos: Repositories) -> dict:
 
     start = time.monotonic()
     if mode == "mocked":
-        with patch("backend.dispatcher.send_over_bridge"), patch("backend.dispatcher.GRAPH.invoke", side_effect=_mock_graph_invoke):
+        with patch("backend.dispatcher.GRAPH.invoke", side_effect=_mock_graph_invoke):
             per_call_ms = await _run_all()
     else:
-        with patch("backend.dispatcher.send_over_bridge"):
-            per_call_ms = await _run_all()
+        per_call_ms = await _run_all()
     wall_clock_ms = (time.monotonic() - start) * 1000.0
 
     leakage_found = any(_check_leakage(call_id, i) for i, call_id in enumerate(call_ids))
@@ -227,9 +226,6 @@ async def run_all_levels(
     for n in n_levels:
         CALL_STATES.clear()
         dispatcher.LOCKS.clear()
-        dispatcher.SPEAKING.clear()
-        dispatcher.DEFERRED.clear()
-        dispatcher.CONNECTIONS.clear()
         result = await run_stress_level(n, mode, repos)
         results.append(result)
         print(f"N={n}: wall_clock={result['wall_clock_ms']:.1f}ms, leakage={result['cross_call_leakage_found']}")

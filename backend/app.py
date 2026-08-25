@@ -6,12 +6,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from backend import dispatcher
 from backend.config import settings
@@ -28,23 +27,20 @@ from eval.insights_agent import run_deterministic_pass
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Phase 14 — the LiveKit agent worker runs inside this process, on this
-    # loop, so it can reach CALL_STATES and the per-call locks directly (see
-    # backend/transport/livekit_agent.py on why in-process rather than a
-    # separate `lk agent` process). Nothing starts under the legacy webrtc
-    # transport, so the default path is byte-for-byte unchanged.
-    if settings.transport == "livekit":
-        from backend.transport.livekit_agent import start_agent_server, stop_agent_server
+    # The LiveKit agent worker runs inside this process, on this loop, so it
+    # can reach CALL_STATES and the per-call locks directly — see
+    # backend/transport/livekit_agent.py for why in-process rather than a
+    # separate `lk agent` deployment.
+    from backend.transport.livekit_agent import start_agent_server, stop_agent_server
 
-        start_agent_server(REPOS)
-        try:
-            yield
-        finally:
-            await stop_agent_server()
-    else:
+    start_agent_server(REPOS)
+    try:
         yield
+    finally:
+        await stop_agent_server()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -81,7 +77,7 @@ ADMIN_TOKEN_COOKIE = "jupus_admin_token"
 @app.middleware("http")
 async def admin_access_gate(request: Request, call_next):
     # Gates /admin and /admin/annotate behind the same shared-secret query
-    # param as /session and /bridge (Phase 9, Decision 3) — a no-op when
+    # param as /livekit-token (Phase 9, Decision 3) — a no-op when
     # jupus_access_token is unset. Scoped to a single middleware rather than
     # a per-route dependency since StaticFiles serves many files under the
     # /admin mount.
@@ -102,56 +98,9 @@ async def admin_access_gate(request: Request, call_next):
         return response
     return await call_next(request)
 
-REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
-REALTIME_MODEL = "gpt-realtime-2.1"
-REALTIME_VOICE = "marin"
-
 
 class SessionRequest(BaseModel):
     call_id: str
-
-
-@app.post("/session", dependencies=[Depends(verify_access_token)])
-async def create_session(request: SessionRequest):
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                REALTIME_CLIENT_SECRETS_URL,
-                headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "session": {
-                        "type": "realtime",
-                        "model": REALTIME_MODEL,
-                        "audio": {"output": {"voice": REALTIME_VOICE}},
-                    }
-                },
-            )
-        except httpx.HTTPError:
-            return JSONResponse(
-                status_code=502, content={"error": "failed to reach OpenAI Realtime API"}
-            )
-
-    if response.status_code >= 400:
-        return JSONResponse(
-            status_code=502,
-            content={"error": "OpenAI Realtime session creation failed"},
-        )
-
-    try:
-        data = response.json()
-        return {
-            "client_secret": data["value"],
-            "session_id": data["session"]["id"],
-            "expires_at": str(data["expires_at"]),
-        }
-    except (ValueError, KeyError):
-        return JSONResponse(
-            status_code=502,
-            content={"error": "unexpected response shape from OpenAI Realtime API"},
-        )
 
 
 @app.post("/livekit-token", dependencies=[Depends(verify_access_token)])
@@ -193,45 +142,6 @@ async def create_livekit_token(request: SessionRequest):
         .to_jwt()
     )
     return {"url": settings.livekit_url, "token": token, "room": request.call_id}
-
-
-class BridgeMessage(BaseModel):
-    type: str
-    tool_call_id: Optional[str] = None
-    reason: Optional[str] = None
-    last_caller_utterance: Optional[str] = None
-    # Phase 11 (latency + cost instrumentation)
-    ms_since_reply_delivered: Optional[int] = None
-    input_audio_tokens: Optional[int] = None
-    output_audio_tokens: Optional[int] = None
-    input_text_tokens: Optional[int] = None
-    output_text_tokens: Optional[int] = None
-
-
-@app.websocket("/bridge")
-async def bridge(
-    websocket: WebSocket,
-    call_id: str,
-    access_token: Optional[str] = None,
-    repos: Repositories = Depends(get_repos),
-):
-    if settings.jupus_access_token and access_token != settings.jupus_access_token:
-        await websocket.close(code=4401)
-        return
-    await websocket.accept()
-    dispatcher.CONNECTIONS[call_id] = websocket
-    while True:
-        try:
-            raw = await websocket.receive_text()
-            msg = BridgeMessage.model_validate_json(raw)
-        except (json.JSONDecodeError, ValidationError):
-            logger.warning("malformed /bridge message call_id=%s: %r", call_id, raw)
-            continue
-        except WebSocketDisconnect:
-            await dispatcher.mark_call_abandoned(repos, call_id)
-            break
-
-        await dispatcher.on_bridge_message(repos, call_id, msg.model_dump(exclude_none=True))
 
 
 TRACE_STREAM_POLL_SECONDS = 0.4
