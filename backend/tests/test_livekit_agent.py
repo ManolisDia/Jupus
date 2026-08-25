@@ -40,14 +40,18 @@ def repos():
 
 
 @pytest.fixture(autouse=True)
-def fast_filler_timings():
-    # Same logic, milliseconds instead of seconds. Without this every
-    # filler test would pay the real 0.4s dwell just to prove the callback
-    # fired; the production constants are asserted separately by
-    # test_filler_is_scheduled_with_idle_delay_and_repeat.
+def fast_timings():
+    # Same logic, milliseconds instead of seconds. Without this every filler
+    # test pays the real 0.4s dwell just to prove the callback fired, and every
+    # test that doesn't seed a transcript pays the full 1.5s ASR wait. The
+    # production values are asserted separately (see
+    # test_filler_is_scheduled_with_idle_delay_and_repeat and
+    # test_production_filler_timings_are_what_the_measurement_assumes); tests
+    # that are specifically ABOUT a timeout patch it themselves.
     with (
         patch.object(livekit_agent, "FILLER_IDLE_DELAY_SECONDS", 0.01),
         patch.object(livekit_agent, "FILLER_REPEAT_SECONDS", 0.02),
+        patch.object(livekit_agent, "TRANSCRIPT_WAIT_SECONDS", 0.02),
     ):
         yield
 
@@ -159,6 +163,131 @@ def test_instructions_are_the_server_side_prompt(repos):
     from backend.transport.prompts import SUPERVISOR_INSTRUCTIONS
 
     assert JupusAgent("call-1", repos).instructions == SUPERVISOR_INSTRUCTIONS
+
+
+# --- verbatim transcript beats the model's invented argument ----------------
+# docs/DECISIONS.md: `last_caller_utterance` is authored by the Realtime model,
+# not passed through from ASR, and it invents ("manos44" -> "manos44@example.com").
+# That entry also records that tightening the prompt was tried and was NOT
+# reliable. The pre-Phase-14 client took real ASR in preference; these pin that
+# the LiveKit transport does the same.
+
+
+async def test_real_transcript_wins_over_the_models_invented_argument(repos):
+    _seed("call-1", "capture", capture_phase="fast")
+    agent = JupusAgent("call-1", repos)
+    agent.note_transcript("manos44")
+    seen = []
+
+    async def fake_turn(_r, _c, _t, utterance):
+        seen.append(utterance)
+        return "ok", "capture"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        await agent.ask_supervisor(
+            _FakeRunContext(),
+            {"reason": "r", "last_caller_utterance": "manos44@example.com"},
+        )
+
+    # The invented "@example.com" must never reach the graph — silently
+    # repairing a malformed email defeats the whole validation pipeline.
+    assert seen == ["manos44"]
+
+
+async def test_falls_back_to_the_model_argument_when_no_transcript_arrives(repos):
+    # Better a model-authored utterance than a dropped turn. The wait is
+    # shortened here so the test doesn't sit through the real timeout.
+    _seed("call-1", "routing")
+    agent = JupusAgent("call-1", repos)
+    seen = []
+
+    async def fake_turn(_r, _c, _t, utterance):
+        seen.append(utterance)
+        return "ok", "routing"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        await agent.ask_supervisor(
+            _FakeRunContext(), {"reason": "r", "last_caller_utterance": "my flat"}
+        )
+
+    assert seen == ["my flat"]
+
+
+async def test_turn_waits_for_a_transcript_that_lands_late(repos):
+    # The ASR/tool-call race: the model can call the tool before transcription
+    # finishes. docs/fixes/2026-08-25-001.md is the live bug from getting this
+    # wrong — a call stuck re-asking one turn behind.
+    _seed("call-1", "capture", capture_phase="fast")
+    agent = JupusAgent("call-1", repos)
+    seen = []
+
+    async def fake_turn(_r, _c, _t, utterance):
+        seen.append(utterance)
+        return "ok", "capture"
+
+    async def land_late():
+        await asyncio.sleep(0.03)
+        agent.note_transcript("alex at example dot com")
+
+    with (
+        patch.object(livekit_agent, "TRANSCRIPT_WAIT_SECONDS", 1.0),
+        patch.object(livekit_agent, "run_supervisor_turn", fake_turn),
+    ):
+        asyncio.create_task(land_late())
+        await agent.ask_supervisor(
+            _FakeRunContext(),
+            {"reason": "r", "last_caller_utterance": "alex@example.com"},
+        )
+
+    assert seen == ["alex at example dot com"]
+
+
+async def test_a_transcript_is_claimed_once_and_not_reused(repos):
+    # Reusing a stale transcript is the OTHER half of the same live bug: the
+    # next turn must not inherit the previous turn's text.
+    _seed("call-1", "capture", capture_phase="fast")
+    agent = JupusAgent("call-1", repos)
+    seen = []
+
+    async def fake_turn(_r, _c, _t, utterance):
+        seen.append(utterance)
+        return "ok", "capture"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        agent.note_transcript("Alex Smith")
+        await agent.ask_supervisor(_FakeRunContext(), {"reason": "r", "last_caller_utterance": "x"})
+        await agent.ask_supervisor(_FakeRunContext(), {"reason": "r", "last_caller_utterance": "y"})
+
+    assert seen == ["Alex Smith", "y"]
+
+
+def test_session_pins_transcription_model_voice_and_turn_detection():
+    # Left unset, the plugin defaults to gpt-4o-mini-transcribe — a silently
+    # different ASR model than the pre-Phase-14 config used, and transcription
+    # fidelity is exactly what _verbatim_utterance depends on.
+    #
+    # RealtimeModel is patched rather than built: constructing one opens a live
+    # WebSocket to OpenAI, and nothing in backend/tests may make a real API
+    # call. Capturing the kwargs asserts the same thing without the network.
+    captured = {}
+
+    def fake_model(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    with (
+        patch.object(livekit_agent.openai.realtime, "RealtimeModel", fake_model),
+        patch.object(livekit_agent, "AgentSession", lambda **kw: kw),
+    ):
+        livekit_agent.build_session()
+
+    assert captured["input_audio_transcription"].model == "gpt-transcribe"
+    assert captured["model"] == "gpt-realtime-2.1"
+    assert captured["voice"] == "marin"
+    # docs/DECISIONS.md records live-testing reasons for both of these.
+    assert captured["turn_detection"].eagerness == "low"
+    assert captured["turn_detection"].interrupt_response is True
+    assert captured["input_audio_noise_reduction"] == "near_field"
 
 
 # --- the reply path ---------------------------------------------------------

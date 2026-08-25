@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Awaitable, Optional, TypeVar
 
@@ -52,6 +53,7 @@ from livekit.agents import (
 )
 from livekit.agents.utils.audio import audio_frames_from_file
 from livekit.plugins import openai
+from openai.types.realtime import AudioTranscription
 from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVad
 
 from backend.config import settings
@@ -78,13 +80,27 @@ def _handle_done(handle: Any) -> bool:
 
 FILLER_AUDIO_DIR = Path(__file__).resolve().parent / "filler_audio"
 
-# Mirrors the pre-Phase-14 client/app.js session.update exactly: same model,
-# voice, speed, noise reduction, transcription model, and semantic_vad
-# eagerness. docs/DECISIONS.md records live-testing reasons for several of
-# these (eagerness "low" plus near_field to stop background noise being read as
-# speech; interrupt_response true for real barge-in). Changing any of them in a
-# transport migration would make a live regression impossible to attribute.
+# Mirrors the pre-Phase-14 client/app.js session.update: same model, voice,
+# noise reduction, transcription model, and semantic_vad eagerness.
+# docs/DECISIONS.md records live-testing reasons for several of these
+# (eagerness "low" plus near_field to stop background noise being read as
+# speech; interrupt_response true for real barge-in).
+#
+# One deliberate difference: output speed is 1.1x where the old config used
+# 1.5x — a separate, explicitly-requested voice change (commit 0bd2892), not a
+# side effect of the migration. Everything else is held constant precisely so a
+# live regression stays attributable.
 REALTIME_MODEL = "gpt-realtime-2.1"
+# Pinned, not left to the plugin's default (gpt-4o-mini-transcribe). This is
+# the model the pre-Phase-14 session config used, and transcription fidelity is
+# load-bearing here: it is what _verbatim_utterance trusts INSTEAD of the
+# Realtime model's own invented tool argument.
+TRANSCRIPTION_MODEL = "gpt-transcribe"
+
+# How long a turn waits for the caller's real transcript before falling back to
+# the model's argument. Generous enough to win the usual race, short enough
+# that it never becomes the thing the caller is waiting on.
+TRANSCRIPT_WAIT_SECONDS = 1.5
 
 # Data-channel topic for the caller client's "captured details" panel.
 # Topic-scoped so a future data topic can't be misread as call state.
@@ -127,6 +143,55 @@ class JupusAgent(Agent):
         # Filler speech handles created for the turn currently in flight. Used
         # only to answer "did the caller cut off a filler?" — see ask_supervisor.
         self._filler_handles: list[Any] = []
+        # The caller's last FINAL ASR transcript, waiting to be claimed by the
+        # turn it belongs to. See _verbatim_utterance for why this exists.
+        self._transcript: Optional[str] = None
+        self._transcript_ready = asyncio.Event()
+
+    # -- verbatim transcript (docs/DECISIONS.md) ---------------------------
+
+    def note_transcript(self, transcript: str) -> None:
+        """Record a final ASR transcript for the next turn to claim."""
+        self._transcript = transcript
+        self._transcript_ready.set()
+
+    def _claim_transcript(self) -> Optional[str]:
+        transcript, self._transcript = self._transcript, None
+        self._transcript_ready.clear()
+        return transcript
+
+    async def _verbatim_utterance(self, raw_arguments: dict[str, object]) -> str:
+        """What the caller ACTUALLY said, preferred over what the model says
+        they said.
+
+        `last_caller_utterance` is not a passthrough of speech recognition — it
+        is a string the Realtime model generates when building the tool call,
+        and it invents. docs/DECISIONS.md records the live case: a caller said
+        "manos44" and `extract_field` received `manos44@example.com`, the model
+        having added an `@` and a domain that were never spoken. That silently
+        repairs exactly the malformed input the confidence/validation pipeline
+        exists to catch. That entry also records that tightening the prompt was
+        tried and was NOT reliable, which is why the tool schema's stern
+        wording is not on its own considered a fix.
+
+        The pre-Phase-14 client solved it as `lastVerbatimTranscript ??
+        args.last_caller_utterance`. This is that same precedence, rebuilt on
+        LiveKit's `user_input_transcribed` event.
+
+        The short wait matters as much as the precedence. ASR completion and
+        the model's tool call race, and the tool call can win — the old client
+        hit exactly this and it produced a call stuck re-asking one turn behind
+        (docs/fixes/2026-08-25-001.md). Waiting briefly for the real transcript
+        is better than trusting an invented one; falling back to the model's
+        argument after the timeout is better than dropping the turn.
+        """
+        model_argument = str(raw_arguments.get("last_caller_utterance") or "")
+        if not self._transcript_ready.is_set():
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._transcript_ready.wait(), timeout=TRANSCRIPT_WAIT_SECONDS
+                )
+        return self._claim_transcript() or model_argument
 
     # -- filler ------------------------------------------------------------
 
@@ -196,7 +261,8 @@ class JupusAgent(Agent):
 
     @function_tool(raw_schema=ASK_SUPERVISOR_SCHEMA)
     async def ask_supervisor(self, ctx: RunContext, raw_arguments: dict[str, object]) -> str:
-        utterance = str(raw_arguments.get("last_caller_utterance") or "")
+        # What the caller actually said, not what the model says they said.
+        utterance = await self._verbatim_utterance(raw_arguments)
 
         # Phase 11's stage boundary, kept under the new transport: recorded
         # before any work so the timestamp reflects actual receipt. Paired with
@@ -317,6 +383,7 @@ def build_session() -> AgentSession:
             speed=VOICE_SPEED,
             api_key=settings.openai_api_key,
             input_audio_noise_reduction="near_field",
+            input_audio_transcription=AudioTranscription(model=TRANSCRIPTION_MODEL),
             turn_detection=SemanticVad(
                 type="semantic_vad",
                 eagerness="low",
@@ -343,6 +410,14 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await ctx.connect()
     session = build_session()
+    agent = JupusAgent(call_id, repos, ctx.room)
+
+    @session.on("user_input_transcribed")
+    def _on_transcript(event) -> None:  # noqa: ANN001 — LiveKit event type
+        # Only finals: interim transcripts are exactly the half-heard text the
+        # model would otherwise be inventing around.
+        if getattr(event, "is_final", False) and event.transcript:
+            agent.note_transcript(event.transcript)
 
     # Phase 11's cost accounting covers BOTH vendors, and the OpenAI Realtime
     # half used to arrive as client-reported `realtime_usage` bridge messages
@@ -383,7 +458,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_on_shutdown)
 
-    await session.start(agent=JupusAgent(call_id, repos, ctx.room), room=ctx.room)
+    await session.start(agent=agent, room=ctx.room)
 
 
 def build_server() -> AgentServer:
