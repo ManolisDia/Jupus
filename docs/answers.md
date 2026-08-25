@@ -63,7 +63,45 @@ in conversation — this is a real, measured answer to it, not a guess.
 
 ## Q3 — Iteration / scaling / operational health
 
-*TBD — Phase 12 (concurrency stress test) + Phase 13.*
+**Concurrency**: tested for real, not just assumed from the architecture — `eval/
+concurrency_stress_test.py` fires N *independent* `call_id`s at
+`backend.dispatcher.process_supervisor_call` via `asyncio.gather` (the dispatcher/asyncio/db layer
+directly, not through N real browser/WebRTC sessions — see `docs/DECISIONS.md`'s Phase 12 entry
+for why), against a real SQLite-backed `Repositories`, mocked-Claude (deterministic, free,
+isolates this project's own concurrency behavior from Anthropic/OpenAI API variance). Real output,
+`python eval/concurrency_stress_test.py --mode mocked`, 2026-08-25, this machine (20 logical CPUs):
+
+| N | wall_clock_ms | mean_ms | median_ms | p95_ms | leakage? |
+|---|---|---|---|---|---|
+| 5 | 234.0 | 178.0 | 172.0 | 203.0 | no |
+| 10 | 375.0 | 248.7 | 250.5 | 344.0 | no |
+| 20 | 672.0 | 403.4 | 406.5 | 657.0 | no |
+| 40 | 1235.0 | 675.2 | 671.5 | 1156.0 | no |
+
+**Verdict: holds up cleanly through N=10** (per-call median latency stays within 1.5x of N=5's
+baseline). Zero cross-call state leakage at every N — each of the N calls' final `caller_profile`
+contained only its own seeded values, checked explicitly
+(`backend/tests/test_concurrency_stress.py::test_no_cross_call_state_leakage`), not just inferred
+from "nothing crashed". Degradation past N=10 traces to two already-known, deliberate tradeoffs
+rather than a surprise: SQLite's single-writer behavior (already named in the README's "Known
+limits") and the default `asyncio.to_thread` executor's `min(32, cpu_count+4)` worker cap (24 on
+this machine) — both detailed with root-cause evidence in `docs/DECISIONS.md`'s Phase 12 entry,
+including the one-line production fix for the latter
+(`loop.set_default_executor(ThreadPoolExecutor(max_workers=N))`).
+
+**Iteration loop**: `eval/replay_scenarios.py --label <name>` drives the 6 canonical scenarios
+(`docs/scenarios.md`) through the real, unmocked pipeline; `eval/compare_runs.py --baseline
+<a> --candidate <b>` diffs per-error-class rates between two labeled runs and exits 1 on
+regression — a before/after-a-prompt-tweak loop, not manual re-listening. `eval/insights_agent.py`
+(Phase 6b) LLM-classifies every logged call against the editable `eval/error_classes.py` taxonomy;
+`eval/calibrate_judge.py` checks that classifier against the Benevolent Dictator's human
+annotations (`docs/benevolent_dictator.md`) rather than trusting it blind.
+
+**Operational health**: the admin panel's "Latency & cost" view (Q1) and error-class breakdown
+(Phase 6) are the two numbers actually worth watching in production — a `supervisor_processing`
+p95 regression points at prompt/model tuning, a `deferred_wait` p95 regression points at dispatcher
+timing, and a taxonomy-rate regression points at conversational quality. The stress test above adds
+a third: at what concurrent-call volume does either of those two start to move, and why.
 
 ## Q4 — Telephony / warm transfer / failure handling
 
