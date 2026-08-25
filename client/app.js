@@ -437,7 +437,7 @@ function sendSessionUpdate() {
       instructions: SUPERVISOR_INSTRUCTIONS,
       tools: [ASK_SUPERVISOR_TOOL],
       audio: {
-        output: { voice: "marin", speed: 1.5 },
+        output: { voice: "marin", speed: 1.1 },
         input: {
           noise_reduction: { type: "near_field" },
           transcription: { model: "gpt-transcribe" },
