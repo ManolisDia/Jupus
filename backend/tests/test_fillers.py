@@ -104,6 +104,29 @@ def test_every_site_has_a_long_wait_line():
         assert len(phrases) >= 2, f"{key!r} has no follow-up line for a long wait"
 
 
+def test_filler_audio_starts_immediately():
+    """No silent lead-in on any clip.
+
+    The old format test could not catch this and its comment claimed it
+    guarded "the dead air this whole phase exists to remove". It didn't: an
+    earlier confirm_field_0.wav opened with 890ms of digital silence and passed
+    it. That silence is invisible to the trace-based measurement (filler_spoken
+    is recorded when say() is called, not when sound arrives) and entirely
+    audible to the caller — it made the reported ~400ms time-to-first-audio
+    roughly a third of the truth at the most frequently used filler site.
+    """
+    import numpy as np
+
+    for key, index, path in _audio_paths():
+        with wave.open(str(path), "rb") as wav:
+            samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
+            rate = wav.getframerate()
+        loud = np.flatnonzero(np.abs(samples) > 200)
+        assert len(loud) > 0, f"{key}_{index} is silent throughout"
+        lead_in = loud[0] / rate
+        assert lead_in < 0.10, f"{key}_{index} has {lead_in * 1000:.0f}ms of dead air at the front"
+
+
 def test_filler_audio_is_the_format_the_generator_writes():
     # LiveKit's audio_frames_from_file decodes and resamples these to 48kHz on
     # the way out, so this isn't a hard runtime requirement — it's a guard that
