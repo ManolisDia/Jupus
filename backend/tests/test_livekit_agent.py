@@ -307,9 +307,12 @@ async def test_first_audio_is_timed_from_the_start_of_the_turn(repos):
     agent.note_agent_started_speaking()
 
     events = {e["event_type"]: e for e in repos.trace.get_trace("call-1")}
-    assert "tts_first_audio" in events
+    # first_audio answers Phase 14's question (total silence the caller sat
+    # through); tts_first_audio keeps Phase 11's narrower one (supervisor
+    # answered -> audible), so total_perceived's arithmetic stays valid.
+    assert events["first_audio"]["payload"]["ms_since_turn_start"] >= 0
+    assert events["first_audio"]["payload"]["tool_call_id"] == "tool-1"
     assert events["tts_first_audio"]["payload"]["ms_since_reply_delivered"] >= 0
-    assert events["tts_first_audio"]["payload"]["tool_call_id"] == "tool-1"
 
 
 async def test_first_audio_is_recorded_once_per_turn(repos):
@@ -326,6 +329,7 @@ async def test_first_audio_is_recorded_once_per_turn(repos):
     agent.note_agent_started_speaking()
 
     kinds = [e["event_type"] for e in repos.trace.get_trace("call-1")]
+    assert kinds.count("first_audio") == 1
     assert kinds.count("tts_first_audio") == 1
 
 

@@ -13,26 +13,26 @@ here on purpose: scripts/check_architecture.py greps the staged diff for direct
 Anthropic SDK usage outside llm_utils.py, and it is right not to try to tell a
 real call from one quoted in a docstring.)
 
-For every turn where a filler played, it reports two durations taken from the
-same trace, both anchored on the TURN's start (node_entered) rather than on any
-one tool's:
+For every turn it reports two durations from the same trace, both anchored on
+`ask_supervisor_received` — the moment the turn starts:
 
-  round trip     node_entered -> node_exited: the whole supervisor turn. This
-                 is what the caller waits for and what Phase 13 moved. Phase 14
-                 must leave it alone, and this is where that gets checked.
+  round trip     -> `reply_ready`. The whole supervisor turn, every Claude call
+                 in it. This is Phase 13's territory. Phase 14 must leave it
+                 alone, and this is where that gets checked.
 
-  time to audio  node_entered -> filler_spoken. What the caller actually
-                 experiences as the wait before the line stops being silent.
-                 Phase 14 moves this and nothing else.
+  time to audio  -> `first_audio`. When the caller actually HEARS something,
+                 filler or reply. Phase 14 moves this and nothing else.
 
-Anchoring on the turn matters: a booking turn runs extract_datetime before it
-reaches generate_confirmation_summary, so measuring from that tool's own start
-would both understate the wait and miss the turn entirely (the filler fires
-while the earlier tool is still running).
+`first_audio` is a real playout signal (LiveKit's agent state entering
+"speaking"), deliberately not the moment `say()` was called. An earlier version
+of this script measured the latter and reported ~400ms for a turn whose filler
+clip took 1.3s to make a sound, because 890ms of silence was baked into the
+front of the WAV. Measuring scheduling instead of playout is exactly the kind of
+flattering-but-wrong number this phase is not allowed to publish.
 
-The gap between them is the dead air the phase removed. Turns with no filler
-are counted but contribute no time-to-audio, since on those the caller is still
-waiting the full round trip by design (Decision 2 scopes filler to three sites).
+Turns are split by whether a filler played, because that split IS the
+comparison: on a turn without one the caller waits the whole round trip in
+silence, which is what the three filler sites looked like before this phase.
 """
 
 from __future__ import annotations
@@ -45,13 +45,7 @@ from statistics import median
 from backend.config import settings
 from backend.db.repositories import get_repositories
 
-# The tool each filler site is masking, so a turn's round trip is attributed to
-# the call that actually made the caller wait.
-FILLER_TOOLS = {
-    "confirm_field": "confirm_field_answer",
-    "confirm_booking": "confirm_booking_answer",
-    "propose_slot": "generate_confirmation_summary",
-}
+FILLER_SITES = ("confirm_field", "confirm_booking", "propose_slot")
 
 
 def _ts(raw: str) -> datetime:
@@ -71,35 +65,41 @@ def _payload(event: dict) -> dict:
 
 
 def analyze_call(events: list[dict]) -> list[dict]:
-    """One row per filler turn: which site, how long the caller waited to hear
-    anything, and how long the whole supervisor turn actually took."""
+    """One row per completed turn: time to audio, round trip, and whether a
+    filler covered the gap. Turns missing either boundary are skipped rather
+    than guessed at."""
     rows: list[dict] = []
-    turn: dict | None = None
+    turns: dict[str, dict] = {}
 
     for event in events:
         kind = event["event_type"]
         payload = _payload(event)
+        tool_call_id = payload.get("tool_call_id")
 
-        if kind == "node_entered":
-            turn = {"start": _ts(event["ts"]), "filler_at": None, "site": None}
-        elif kind == "filler_spoken" and turn is not None and payload.get("step") == 0:
-            # step 0 only: the second line fires seconds later by design and is
-            # not when the caller first hears something.
-            turn["filler_at"] = _ts(event["ts"])
-            turn["site"] = payload.get("filler")
-        elif kind == "node_exited" and turn is not None:
-            if turn["filler_at"] is not None:
-                rows.append(
-                    {
-                        "site": turn["site"],
-                        "round_trip_ms": (_ts(event["ts"]) - turn["start"]).total_seconds() * 1000,
-                        "time_to_audio_ms": (
-                            turn["filler_at"] - turn["start"]
-                        ).total_seconds()
-                        * 1000,
-                    }
-                )
-            turn = None
+        if kind == "ask_supervisor_received":
+            turns[tool_call_id] = {"start": _ts(event["ts"]), "site": None}
+        elif kind == "filler_spoken":
+            # filler_spoken carries no tool_call_id — it belongs to whichever
+            # turn is open, and in practice only one is mid-filler at a time.
+            for turn in turns.values():
+                if turn["site"] is None:
+                    turn["site"] = payload.get("filler")
+        elif kind == "reply_ready" and tool_call_id in turns:
+            turn = turns[tool_call_id]
+            turn["round_trip_ms"] = (_ts(event["ts"]) - turn["start"]).total_seconds() * 1000
+            turn["filler_played"] = bool(payload.get("filler_played"))
+        elif kind == "first_audio" and tool_call_id in turns:
+            turn = turns.pop(tool_call_id)
+            if "round_trip_ms" not in turn:
+                continue
+            rows.append(
+                {
+                    "site": turn["site"],
+                    "filler_played": turn["filler_played"],
+                    "round_trip_ms": turn["round_trip_ms"],
+                    "time_to_audio_ms": float(payload.get("ms_since_turn_start") or 0.0),
+                }
+            )
 
     return rows
 
@@ -108,8 +108,15 @@ def _p(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
-    index = min(int(pct / 100 * len(ordered)), len(ordered) - 1)
-    return ordered[index]
+    return ordered[min(int(pct / 100 * len(ordered)), len(ordered) - 1)]
+
+
+def _row(label: str, subset: list[dict]) -> None:
+    if not subset:
+        return
+    trip = median(r["round_trip_ms"] for r in subset)
+    audio = median(r["time_to_audio_ms"] for r in subset)
+    print(f"{label:<22}{len(subset):>4}{trip:>11.0f}ms{audio:>13.0f}ms{trip - audio:>15.0f}ms")
 
 
 def main() -> int:
@@ -123,35 +130,39 @@ def main() -> int:
         rows.extend(analyze_call(repos.trace.get_trace(call_id)))
 
     if not rows:
-        print("No filler turns found. Run a live call over the LiveKit transport first:")
+        print("No completed turns found. Run a live call over the LiveKit transport first:")
         print("  python eval/livekit_live_call.py --all")
         return 1
 
-    header = f"{'filler site':<18}{'n':>4}{'round trip':>14}{'time to audio':>16}{'dead air removed':>19}"
-    print(f"{len(rows)} filler turns across {len(call_ids)} calls\n")
+    header = f"{'turns':<22}{'n':>4}{'round trip':>14}{'time to audio':>16}{'silence removed':>18}"
+    print(f"{len(rows)} turns across {len(call_ids)} calls")
+    print()
     print(header)
     print("-" * len(header))
 
-    for key in FILLER_TOOLS:
-        site = [r for r in rows if r["site"] == key]
-        if not site:
-            continue
-        trip = median(r["round_trip_ms"] for r in site)
-        audio = median(r["time_to_audio_ms"] for r in site)
-        print(f"{key:<18}{len(site):>4}{trip:>11.0f}ms{audio:>13.0f}ms{trip - audio:>16.0f}ms")
+    with_filler = [r for r in rows if r["filler_played"]]
+    without = [r for r in rows if not r["filler_played"]]
 
-    trips = [r["round_trip_ms"] for r in rows]
-    audios = [r["time_to_audio_ms"] for r in rows]
+    for site in FILLER_SITES:
+        _row(f"  {site}", [r for r in with_filler if r["site"] == site])
+    _row("WITH filler (p50)", with_filler)
+    if with_filler:
+        trips = [r["round_trip_ms"] for r in with_filler]
+        audios = [r["time_to_audio_ms"] for r in with_filler]
+        print(
+            f"{'WITH filler (p95)':<22}{'':>4}{_p(trips, 95):>11.0f}ms"
+            f"{_p(audios, 95):>13.0f}ms{_p(trips, 95) - _p(audios, 95):>15.0f}ms"
+        )
     print("-" * len(header))
-    print(f"{'ALL (p50)':<18}{len(rows):>4}{median(trips):>11.0f}ms{median(audios):>13.0f}ms"
-          f"{median(trips) - median(audios):>16.0f}ms")
-    print(f"{'ALL (p95)':<18}{'':>4}{_p(trips, 95):>11.0f}ms{_p(audios, 95):>13.0f}ms"
-          f"{_p(trips, 95) - _p(audios, 95):>16.0f}ms")
-    print(
-        "\nRound trip is the Anthropic call itself — Phase 13's number, which this phase "
-        "does not touch.\nTime to audio is what the caller experiences, and is the only "
-        "thing Phase 14 changes."
-    )
+    _row("without filler", without)
+
+    print()
+    print("Round trip is the supervisor turn - Phase 13's territory, untouched here.")
+    print("Time to audio is when the caller first HEARS something: a real playout")
+    print("signal, not the moment say() was called.")
+    print("The 'without filler' row is the same measurement on turns Decision 2")
+    print("leaves alone. There the two columns converge - which is what the three")
+    print("filler sites looked like before this phase.")
     return 0
 
 

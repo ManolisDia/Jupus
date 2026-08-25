@@ -148,9 +148,14 @@ class JupusAgent(Agent):
         # turn it belongs to. See _verbatim_utterance for why this exists.
         self._transcript: Optional[str] = None
         self._transcript_ready = asyncio.Event()
-        # Set when a turn starts, cleared when the caller first hears anything
-        # for it. See note_agent_started_speaking.
-        self._awaiting_first_audio: Optional[tuple[str, float]] = None
+        # Two DIFFERENT clocks, both cleared by the first agent audio.
+        # _turn_started_at answers Phase 14's question (how long was the caller
+        # in silence, filler or not); _reply_ready_at answers Phase 11's
+        # (how long from the supervisor answering to the reply being audible).
+        # Collapsing them into one would double-count supervisor time inside
+        # total_perceived.
+        self._turn_started_at: Optional[tuple[str, float]] = None
+        self._reply_ready_at: Optional[tuple[str, float]] = None
 
     # -- verbatim transcript (docs/DECISIONS.md) ---------------------------
 
@@ -210,29 +215,38 @@ class JupusAgent(Agent):
         self._repos.trace.record_event(self._call_id, "speech_stopped", node="transport")
 
     def note_agent_started_speaking(self) -> None:
-        """The `tts_first_audio` boundary: the caller can now hear something.
+        """The caller can now hear something. Closes both audio boundaries.
 
         This is a real playout signal (LiveKit's agent state entering
         "speaking"), which is strictly better than what it replaces — the old
         client inferred it from the remote audio track's amplitude, because
         WebRTC never surfaced per-chunk audio events.
 
-        It fires for whichever comes first, filler or real reply, because from
-        the caller's side that IS when the silence ends. That makes it the
-        honest measure of perceived latency, unlike timing the moment say() was
-        *called*, which excludes the speech queue and playout entirely.
+        `first_audio` fires for whichever comes first, filler or real reply,
+        because from the caller's side that IS when the silence ends. It is the
+        honest measure of what Phase 14 changed, unlike timing the moment say()
+        was *called* — which excludes the speech queue and playout entirely,
+        and is how an earlier version of this phase reported ~400ms for a clip
+        that took 1.3s to make a sound.
+
+        `tts_first_audio` keeps Phase 11's narrower meaning (supervisor
+        answered -> reply audible) so total_perceived's arithmetic stays valid.
         """
-        if self._awaiting_first_audio is None:
-            return
-        tool_call_id, started = self._awaiting_first_audio
-        self._awaiting_first_audio = None
-        self._repos.trace.record_event(
-            self._call_id,
-            "tts_first_audio",
-            node="transport",
-            tool_call_id=tool_call_id,
-            ms_since_reply_delivered=int((time.monotonic() - started) * 1000),
-        )
+        now = time.monotonic()
+        if self._turn_started_at is not None:
+            tool_call_id, started = self._turn_started_at
+            self._turn_started_at = None
+            self._repos.trace.record_event(
+                self._call_id, "first_audio", node="transport",
+                tool_call_id=tool_call_id, ms_since_turn_start=int((now - started) * 1000),
+            )
+        if self._reply_ready_at is not None:
+            tool_call_id, ready = self._reply_ready_at
+            self._reply_ready_at = None
+            self._repos.trace.record_event(
+                self._call_id, "tts_first_audio", node="transport",
+                tool_call_id=tool_call_id, ms_since_reply_delivered=int((now - ready) * 1000),
+            )
 
     # -- filler ------------------------------------------------------------
 
@@ -318,7 +332,7 @@ class JupusAgent(Agent):
             node="transport",
             tool_call_id=ctx.function_call.call_id,
         )
-        self._awaiting_first_audio = (ctx.function_call.call_id, time.monotonic())
+        self._turn_started_at = (ctx.function_call.call_id, time.monotonic())
 
         # Decision 3: a caller talking over the filler purely to acknowledge it
         # ("mhm", "okay") must not become a turn of its own. Without this guard
@@ -389,6 +403,7 @@ class JupusAgent(Agent):
             dispatch_stage=dispatch_stage,
             filler_played=bool(played),
         )
+        self._reply_ready_at = (ctx.function_call.call_id, time.monotonic())
         await self._publish_call_state()
         return result
 
