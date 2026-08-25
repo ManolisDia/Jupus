@@ -313,13 +313,17 @@ async def test_scenario_s4_low_confidence_capture(repos):
         await _turn(repos, call_id, "tool-2", "It's about my flat.")
     assert CALL_STATES[call_id]["stage"] == "capture"
 
-    # garbled name -> medium confidence -> pending_confirm + confirm-back
-    with (
-        patch("backend.supervisor.tools.extract_field", return_value={"value": "Alesh", "confidence": 0.4}),
-        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say Alesh?") as mock_confirm_back,
+    # garbled name -> medium confidence -> pending_confirm + confirm-back.
+    # Phase 13: node_capture's fresh-extraction path now merges extraction
+    # and confirm-back phrasing into one call (extract_and_confirm_field),
+    # not a separate extract_field + generate_confirm_back pair.
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "Alesh", "confidence": 0.4, "confirm_back_phrasing": "Did you say Alesh?"},
     ):
         await _turn(repos, call_id, "tool-3", "uh, Alesh, maybe")
     assert CALL_STATES[call_id]["caller_profile"]["name"]["status"] == "pending_confirm"
+    assert CALL_STATES[call_id]["pending_reply"] == "Did you say Alesh?"
 
     # a clear correction resolves the pending name via confirm_field_answer's
     # corrected_value path (this branch's real node_capture logic — see the
@@ -395,7 +399,6 @@ async def test_scenario_s4_low_confidence_capture(repos):
     final_profile = CALL_STATES[call_id]["caller_profile"]
     assert final_profile["name"]["status"] == "confirmed"
     assert final_profile["email"]["status"] == "confirmed"
-    mock_confirm_back.assert_called_once()
 
 
 async def test_scenario_s5_model_judged_escalation_multi_area(repos, tmp_path):

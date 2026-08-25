@@ -34,6 +34,19 @@ EXTRACT_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Phase 13 (latency reduction) — merges extract_field + generate_confirm_back
+# into one call/schema; see extract_and_confirm_field below.
+EXTRACT_AND_CONFIRM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "string"},
+        "confidence": {"type": "number"},
+        "confirm_back_phrasing": {"type": "string"},
+    },
+    "required": ["value", "confidence", "confirm_back_phrasing"],
+    "additionalProperties": False,
+}
+
 CONFIRM_ANSWER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -150,6 +163,21 @@ def extract_field(utterance: str, field_name: str) -> dict:
         system=prompts.EXTRACT_FIELD_PROMPT.format(field_name=field_name),
         user_content=utterance,
         json_schema=EXTRACT_SCHEMA,
+    )
+
+
+def extract_and_confirm_field(utterance: str, field_name: str) -> dict:
+    """Phase 13 (latency reduction) — replaces the extract_field +
+    generate_confirm_back pair used by node_capture's fresh-extraction
+    path with one call: the model extracts the value and drafts the
+    confirm-back phrasing for it in the same response. Node logic still
+    decides deterministically (CLAUDE.md rule 3) whether that phrasing is
+    ever actually used — this only removes the round trip, not the
+    threshold/format checks."""
+    return call_claude_json(
+        system=prompts.EXTRACT_AND_CONFIRM_FIELD_PROMPT.format(field_name=field_name),
+        user_content=utterance,
+        json_schema=EXTRACT_AND_CONFIRM_SCHEMA,
     )
 
 

@@ -317,6 +317,33 @@ showing the N levels that looked good:
   threads. Raising the real ceiling in production is a one-line change:
   `loop.set_default_executor(ThreadPoolExecutor(max_workers=N))` at startup.
 
+### Phase 13: prompt caching shipped, measured, and confirmed to have zero effect on this project's real system prompts — kept anyway
+`call_claude_json`/`call_claude_text` (`backend/supervisor/llm_utils.py`) send the system prompt as
+a `cache_control: {"type": "ephemeral"}` content block rather than a plain string, on the reasoning
+that `prompts.py`'s per-node system prompts are static and resent every turn. A live `eval/
+replay_scenarios.py --label phase13-baseline` run (2026-08-25, all 8 canonical-scenario calls, real
+Claude API) showed `cache_write_tokens=0, cache_read_tokens=0` on every single `llm_usage` event —
+including tool names called 8-10 times in the same batch with an identical system prompt
+(`classify_practice_area`, `confirm_field_answer`). Root cause, confirmed against Anthropic's
+current published prompt-caching docs: a system block must be **at least 1024 tokens** (Sonnet-class
+minimum) before it's eligible for caching at all — anything shorter is silently never cached, no
+error, no signal. This project's node system prompts, judged by the same batch's `input_tokens`
+figures (roughly 100–650 tokens total per call, system prompt included), sit well under that floor.
+This was measured, not assumed, precisely because Decision-making-by-assumption is what this whole
+latency-reduction effort started by rejecting (see the LiveKit/filler-masking conversation that led
+to this phase).
+
+**Kept in place rather than reverted** — it costs nothing (Anthropic ignores `cache_control` below
+the minimum, no error, no latency/pricing penalty for the attempt) and it correctly reports zero
+cache activity rather than silently mispricing anything, so there's no downside to leaving it wired
+up. It becomes a real, zero-further-effort win the moment any node's system prompt grows past 1024
+tokens (plausible if Phase 14's filler/interrupt logic or a future stretch adds a substantially
+richer prompt to a node) — this is not speculative future-proofing kept "just in case" so much as an
+already-paid-for mechanism sitting dormant until a real trigger. The actual Phase 13 latency win, per
+this finding, has to come from the other three levers in `phase-13-latency-reduction.md` (merging
+sequential Claude calls, the retry-tail root cause, per-tool model choice) — none of which depend on
+prompt length.
+
 Neither bottleneck is fixed as part of this phase — measuring and reporting them honestly is the
 job here, per `docs/phases/phase-12-concurrency-stress-test.md`'s own non-goals. See
 `docs/answers.md`'s Q3 for the full per-N table.
@@ -328,3 +355,102 @@ instead of a simulated one. All 5 independently resolved the correct practice ar
 cross-call mixing in the stored transcripts, though a single live turn only reaches classification
 and the first capture question — narrower leakage coverage than the mocked sweep's fully-populated
 profiles, since less state exists yet to check for contamination.
+
+### Phase 13: `extract_field` + `generate_confirm_back` merged into one call — the originally-planned second merge doesn't exist
+`node_capture`'s fresh-extraction branch (`backend/supervisor/graph.py`) made two sequential Claude
+calls whenever a field needed confirming: extract, then a separate round trip for the confirm-back
+phrasing. `tools.extract_and_confirm_field` now does both in one JSON-schema call. Real live-call
+measurement (`replay-s4-62114f1c` baseline vs. `phase13-merge-capture`) showed the identical turn
+shape going from two round trips (`extract_field` 1522ms + `generate_confirm_back` 2552ms = 4074ms)
+to one (`extract_and_confirm_field` 3221ms) with zero error-class regression — ~21% faster, and
+structurally more significant than the percentage: one fewer full request/response cycle, and one
+fewer place for the retry tail (below) to strike.
+
+This doc's phase-13 planning originally also claimed a second merge —
+`select_offered_slot`+`generate_confirmation_summary` in `node_booking` — as a mirror-image
+opportunity. **Found to be wrong while implementing**: re-reading `node_booking` in full shows
+`select_offered_slot`'s branch never calls `generate_confirmation_summary` at all (it books directly
+and replies with a fixed string); `generate_confirmation_summary`'s actual neighbor is
+`extract_datetime`, separated by a deterministic `check_availability` call whose *result* (which
+slot, if any, is available) `generate_confirmation_summary` needs as input — genuinely blocked by a
+data dependency, not just unexplored. A second real capture-side candidate,
+`_finish_fast_pass`'s own extract+confirm-back pair, was also considered and deliberately left
+unmerged: unlike `node_capture`'s branch, its confirm-back can be for an *earlier* field than the one
+just extracted (Phase 7's background verification can resolve an earlier field first), so merging
+would need either drafting confirm-back phrasing for a value the model never saw, or conditional
+fallback logic — real complexity risk in code with a documented history of confirm-back
+misattribution bugs (`docs/fixes/`), for the single-call saving on the least-frequent capture turn.
+
+### Phase 13: `confirm_field_answer`'s retry-driven latency tail — root-caused via real trace data, fixed at the prompt, not the token ceiling
+A live call's `trace_events` (`call_id=56e57e0f-...`) showed `confirm_field_answer`'s `output_tokens`
+climbing unpredictably (201, 351, a truncated failure, 274, 178, 30) for what should be a compact
+3-field JSON object, while a caller repeatedly re-spelled a garbled email. The failing call's
+`corrected_value` generation grew long enough to exceed `call_claude_json`'s `max_tokens=512`
+mid-generation, producing invalid truncated JSON, triggering the existing retry-once path — two
+~7.5s failed attempts is exactly where the previously-observed 10s+ max came from.
+`confirm_booking_answer` (boolean-only schema, no free-text field) showed zero retries in the same
+data, confirming the fix belongs on `CONFIRM_FIELD_ANSWER_PROMPT`'s verbosity, not the retry
+machinery or a larger token ceiling — raising `max_tokens` would let the wasteful generation succeed
+without making it any faster. See `docs/fixes/2026-08-25-002.md`.
+
+### Phase 13: per-tool model choice via a thread-local override, not a project-wide `MODEL_ID` change — one candidate shipped, three left for follow-up
+`call_claude_tool` gained an optional `model=` kwarg (a thread-local stash cleared in `finally`, same
+shape as Decision 8's usage-capture stash) so a specific tool call can use `HAIKU_MODEL_ID` without
+touching the project-wide default. `docs/DECISIONS.md`'s existing Haiku-rejection entry is scoped
+to free-text extraction-with-formatting (`extract_field`'s spoken "at"/"dot" → `@`/`.` conversion) —
+closed-set classification is a different task shape and was never actually re-tested until now.
+`select_offered_slot` (pick an index / decline / needs-clarification from a short offered list)
+shipped on `HAIKU_MODEL_ID` after `eval/replay_scenarios.py --label phase13-haiku-select-slot` +
+`eval/compare_runs.py` showed zero error-class regression against the Sonnet baseline. Notably,
+Haiku returned `needs_clarification: True` for the same ambiguous "Yes, the alternative works."
+utterance (against 3 offered slots) that Sonnet's own baseline run *also* returned
+`needs_clarification: True` for — identical behavior, not a regression, and this incidentally
+surfaces that scenario S3's scripted utterance is genuinely ambiguous against the "offer up to
+three alternatives" feature, independent of model choice (not chased further, out of scope here).
+On the unambiguous cases, Haiku resolved the same call shape in 1092-1782ms vs. Sonnet's 3500ms in
+baseline — roughly 2-3x faster. `confirm_field_answer`, `confirm_booking_answer`, and
+`classify_practice_area` remain untested Haiku candidates — one demonstrated, measured swap was
+judged sufficient to prove the pattern within this phase, not evidence the others would also be
+safe; each needs its own `eval/compare_runs.py` check before switching.
+
+Shipping a real per-call model override also required fixing a latent cost-accounting gap:
+`llm_usage`'s recorded `model` field previously hardcoded `MODEL_ID` rather than reading
+`response.model`, and `eval/pricing.py`'s cost estimator assumed every Claude call in a batch was
+priced at one model's rate. `eval/pricing.py` now has a `CLAUDE_MODEL_RATES` table (Haiku confirmed
+at $1/$5 per million input/output vs. Sonnet's $2/$10, 2026-08-25) and `estimate_claude_cost_usd`
+prices per-event by whichever model that specific call actually used; an unrecognized model id falls
+back to the (more expensive) Sonnet rate rather than silently pricing at zero, so a missing pricing
+entry shows up as an overestimate worth investigating, never a hidden underestimate.
+
+### Phase 13 (follow-up): `ground_statute_citation` moved to Haiku — same pattern, second confirmed candidate
+Requested directly after identifying `ground_statute_citation` (Phase 8's legal-citation grounding
+call) as the single longest individual tool call post-Phase-13 (5047ms in one sample). Same task
+shape as `select_offered_slot`: closed-set selection from ≤3 candidates plus one short spoken-framing
+sentence, not free-text extraction — the same reasoning that made `select_offered_slot` a safe
+Haiku candidate applies here. A "trim the candidate text sent as input" idea was considered and
+dropped after actually measuring: the statute corpus entries are already short (200-400 characters,
+~50-80 tokens each) and the system prompt is compact (~220 tokens) — there was no real bloat to cut,
+and forcing a trim without evidence behind it would have been exactly the kind of
+assumption-over-measurement this whole latency effort set out to avoid.
+
+Correctness/timing confirmed via a direct, isolated comparison (not `eval/replay_scenarios.py` — see
+the known-issues entry below): the same real utterance against the same candidate set, Sonnet took
+4090ms and selected `tenancy-poe1977-s5` (Protection from Eviction Act); Haiku took 1367ms and
+selected the identical statute id — same correctness, ~3x faster, consistent with `select_offered_slot`'s
+result.
+
+Worth noting: this call is already latency-hidden behind Phase 8's research filler question
+(`node_research_deliver` treats "still running" and "nothing found" identically — Decision 4 of that
+phase). Speeding it up doesn't reduce caller-perceived wait time; it raises the odds the grounding
+finishes before the caller answers the filler, so a real citation is more likely to survive the race
+instead of being silently dropped.
+
+**Found in passing, documented, not fully resolved**: `eval/replay_scenarios.py` intermittently
+loses this background task entirely when driven through the full scripted S7a/S7b conversation — no
+error, no trace event past `search_statute_candidates`'s own `tool_call_start`, no exception. Not
+reproducible when the identical utterances are driven directly against `dispatcher.process_supervisor_call`
+in isolation (which is how the 4090ms/1367ms comparison above was actually obtained). A partial fix
+(explicitly awaiting the background task after the scripted turns, mirroring `test_scenarios.py`'s
+own `_await_statute_search` helper) was applied to `replay_scenarios.py` regardless — correct and
+necessary, but not sufficient to make the full-script case reliable. See
+`docs/known-issues/2026-08-25-003.md`.

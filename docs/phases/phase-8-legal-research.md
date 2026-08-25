@@ -4,7 +4,7 @@
 
 Insert a new stage between `capture` and `booking`: once the caller's contact details are confirmed, the agent asks a real follow-up question about what's actually happened, searches a small hand-authored knowledge base of statutes/regulations for each of the three practice areas, and — when something genuinely relevant exists — cites the specific provision back to the caller before moving on to booking. A caller who says "my landlord is trying to evict me tomorrow without giving me any notice" should hear the actual notice-period provision that applies, not a generic "that sounds like a tenancy issue." Like Phase 7, the *retrieval* latency (a keyword search plus one grounding Claude call) is hidden behind a natural follow-up question rather than a synchronous pause — by the time the caller finishes answering that follow-up, the citation (or the decision that there isn't one) is already resolved.
 
-This phase promotes and replaces the "Real statute citation (tenancy)" optional stretch that used to live in what is now `docs/phases/phase-13-polish-submission.md` — expanded from one practice area to all three, and from a synchronous tool call to the same background-latency-hiding pattern Phase 7 established for field capture.
+This phase promotes and replaces the "Real statute citation (tenancy)" optional stretch that used to live in what is now `docs/phases/phase-15-polish-submission.md` — expanded from one practice area to all three, and from a synchronous tool call to the same background-latency-hiding pattern Phase 7 established for field capture.
 
 ## Prerequisite
 

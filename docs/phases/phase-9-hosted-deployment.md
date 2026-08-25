@@ -1,7 +1,7 @@
 # Phase 9 — Hosted Deployment (Railway backend + Firebase Hosting client)
 
 ## Revision note
-Numbered Phase 9 (originally scoped as Phase 13, before the intended build order was settled) — sequenced right after Phase 8 (legal research) and before Phase 10 (telephony), since Phase 10's Twilio webhooks need this phase's public URL as a hard prerequisite. See `docs/phases/phase-13-polish-submission.md`'s own renumbering note for the full history.
+Numbered Phase 9 (originally scoped as Phase 13, before the intended build order was settled) — sequenced right after Phase 8 (legal research) and before Phase 10 (telephony), since Phase 10's Twilio webhooks need this phase's public URL as a hard prerequisite. See `docs/phases/phase-15-polish-submission.md`'s own renumbering note for the full history.
 
 ## Goal
 

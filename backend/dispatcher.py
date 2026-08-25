@@ -9,7 +9,7 @@ from backend.supervisor import tools
 from backend.supervisor.faq import match_faq
 from backend.supervisor.graph import GRAPH, LOW_CONFIDENCE_CONFIRM_THRESHOLD, apply_extraction
 from backend.supervisor.heuristics import is_explicit_human_request
-from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
+from backend.supervisor.llm_utils import HAIKU_MODEL_ID, LLMCallFailed, call_claude_tool
 from backend.supervisor.state import CALL_STATES, FIELD_PRIORITY, CallState, get_or_create_state
 from backend.supervisor.tracing import traced_call
 from backend.utils import now_iso
@@ -217,9 +217,18 @@ async def _search_statutes_in_background(repos: Repositories, call_id: str, area
     if not candidates or candidates[0]["score"] < tools.BM25_RELEVANCE_FLOOR:
         return None
     try:
+        # Phase 13 (latency reduction), Decision 3 — closed-set selection
+        # from <=3 candidates plus one short spoken-framing sentence, same
+        # task shape as select_offered_slot. Already latency-hidden behind
+        # the research filler question (Decision 4), so speeding this up
+        # doesn't shave caller-perceived time — it raises the odds the
+        # grounding finishes before the caller answers the filler and the
+        # citation doesn't get silently dropped (node_research_deliver
+        # treats "still running" and "nothing found" identically).
         grounded = await asyncio.to_thread(
             call_claude_tool, repos.trace, call_id, "research", "ground_statute_citation",
             tools.ground_statute_citation, utterance, candidates,
+            model=HAIKU_MODEL_ID,
         )
     except LLMCallFailed:
         return None

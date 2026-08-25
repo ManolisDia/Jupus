@@ -1,6 +1,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from backend.db.repositories import Repositories
 from backend.tests.fakes import (
     FakeAnnotationRepository,
@@ -179,6 +181,36 @@ def test_cost_for_call_sums_multiple_llm_usage_events():
     assert cost["cost_usd"] > 0
 
 
+def test_cost_for_call_prices_mixed_models_at_their_own_rate():
+    # Phase 13, Decision 3 — a per-tool Haiku override means one call_id's
+    # llm_usage events can legitimately mix models; each must be priced at
+    # its OWN rate, not all lumped in at Sonnet's (which would overstate
+    # the whole point of using a cheaper model for that tool).
+    from eval.pricing import estimate_claude_cost_usd
+
+    trace_repo = FakeTraceRepository()
+    _push(
+        trace_repo, "c1", "llm_usage", "2026-01-01T00:00:00+00:00",
+        node="capture", tool_name="extract_field", model="claude-sonnet-5", input_tokens=100, output_tokens=50,
+    )
+    _push(
+        trace_repo, "c1", "llm_usage", "2026-01-01T00:00:01+00:00",
+        node="booking", tool_name="select_offered_slot", model="claude-haiku-4-5-20251001",
+        input_tokens=100, output_tokens=50,
+    )
+
+    cost = _cost_for_call(trace_repo.get_trace("c1"))
+
+    expected = (
+        estimate_claude_cost_usd("claude-sonnet-5", 100, 50)
+        + estimate_claude_cost_usd("claude-haiku-4-5-20251001", 100, 50)
+    )
+    assert cost["cost_usd"] == pytest.approx(expected)
+    # Haiku's real, lower rate must actually bite — this total must be less
+    # than pricing BOTH events as Sonnet would produce.
+    assert cost["cost_usd"] < 2 * estimate_claude_cost_usd("claude-sonnet-5", 100, 50)
+
+
 def test_cost_for_call_includes_realtime_usage_even_without_supervisor_call():
     trace_repo = FakeTraceRepository()
     _push(
@@ -190,6 +222,24 @@ def test_cost_for_call_includes_realtime_usage_even_without_supervisor_call():
     cost = _cost_for_call(trace_repo.get_trace("c1"))
 
     assert cost["realtime_audio_input_tokens"] == 1000
+    assert cost["cost_usd"] > 0
+
+
+def test_cost_for_call_includes_cache_usage_tokens():
+    """Phase 13 (prompt caching) — cache_write_tokens/cache_read_tokens on
+    an llm_usage event must be summed and priced, not silently dropped
+    (they're billed at different rates than plain input/output tokens)."""
+    trace_repo = FakeTraceRepository()
+    _push(
+        trace_repo, "c1", "llm_usage", "2026-01-01T00:00:00+00:00",
+        node="capture", input_tokens=50, output_tokens=20,
+        cache_write_tokens=800, cache_read_tokens=1500,
+    )
+
+    cost = _cost_for_call(trace_repo.get_trace("c1"))
+
+    assert cost["claude_cache_write_tokens"] == 800
+    assert cost["claude_cache_read_tokens"] == 1500
     assert cost["cost_usd"] > 0
 
 

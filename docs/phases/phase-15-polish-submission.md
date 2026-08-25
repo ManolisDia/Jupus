@@ -1,13 +1,13 @@
-# Phase 13 — Polish + Submission
+# Phase 15 — Polish + Submission
 
 ## Goal
 
-Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–12, and a recorded walkthrough. This phase has no new application code — it's verification and documentation.
+Turn a working prototype into a submittable package: a README a stranger can follow with zero undocumented steps, written answers that reference real code, a full regression pass across everything built in Phases 1–14, and a recorded walkthrough. This phase has no new application code — it's verification and documentation.
 
 ## Prerequisite
-Phases 8–12 DoD met (legal research, hosted deployment, telephony, latency/cost instrumentation, concurrency stress test), on top of Phase 7 (optimistic capture) and Phase 6a/6b/6c — or, for whichever of 8/10/11/12 didn't end up getting built, documented plainly as an intentional scope cut rather than silently absent (see the "Known limitations" README section below).
+Phases 8–14 DoD met (legal research, hosted deployment, telephony, latency/cost instrumentation, concurrency stress test, latency reduction, LiveKit transport) on top of Phase 7 (optimistic capture) and Phase 6a/6b/6c — or, for whichever of 8/10/11/12/13/14 didn't end up getting built, documented plainly as an intentional scope cut rather than silently absent (see the "Known limitations" README section below).
 
-**Renumbered twice.** First from Phase 8 to Phase 9 on 2026-08-24 to make room for `phase-8-legal-research.md`. Renumbered again, from Phase 9 to Phase 13, to make room for `phase-9-hosted-deployment.md`, `phase-10-telephony.md`, `phase-11-latency-observability.md`, and `phase-12-concurrency-stress-test.md`, once those were scoped and the intended build order settled on hosting → telephony → latency/cost → concurrency, all after legal research and all before this phase. Final submission has to stay the last phase regardless of number, same rule both times; this doc's content is otherwise unchanged, only its number, self-references, and the two superseded-stretch notes below moved.
+**Renumbered three times.** First from Phase 8 to Phase 9 on 2026-08-24 to make room for `phase-8-legal-research.md`. Renumbered again, from Phase 9 to Phase 13, to make room for `phase-9-hosted-deployment.md`, `phase-10-telephony.md`, `phase-11-latency-observability.md`, and `phase-12-concurrency-stress-test.md`. Renumbered a third time, from Phase 13 to Phase 15 on 2026-08-25, to make room for `phase-13-latency-reduction.md` and `phase-14-livekit-transport.md`, scoped after live-call trace data showed the booking/capture-confirmation Claude round-trips (not the transport layer) as the dominant contributor to per-turn latency. Final submission has to stay the last phase regardless of number, same rule every time; this doc's content is otherwise unchanged, only its number, self-references, and the two superseded-stretch notes below moved.
 
 ---
 
@@ -70,7 +70,7 @@ This stretch (originally: gate a deployed endpoint behind a shared-secret token,
 
 **Placement**: a separate spectator page (e.g. `admin/graph.html` or a new admin tab), never folded into the caller-facing `client/index.html` — it's read-only, driven off the trace stream, and must have zero ability to affect the live call or add latency/risk to the hot path.
 
-**Scope guard**: attempt only after every required Phase 13 DoD item is met, and after the hosted-deployment phase (Phase 9) if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
+**Scope guard**: attempt only after every required Phase 15 DoD item is met, and after the hosted-deployment phase (Phase 9) if that's also being attempted. If time runs out, cut this before cutting anything in the required DoD — it's garnish, the working prototype is the meal.
 
 ## Optional stretch — Caller-facing visual polish
 
@@ -85,7 +85,7 @@ This stretch (originally: gate a deployed endpoint behind a shared-secret token,
 
 **Placement**: this is `client/index.html` + its CSS/JS only — no backend changes, no new endpoints.
 
-**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 13 DoD is met, and cut first if time runs short.
+**Scope guard**: same as the graph-viz stretch above — attempt only once the required Phase 15 DoD is met, and cut first if time runs short.
 
 ## Optional stretch — Admin panel UI/UX polish
 
@@ -103,7 +103,7 @@ This stretch (originally: gate a deployed endpoint behind a shared-secret token,
 
 **Placement**: `admin/index.html`, `admin/app.js`, `admin/annotate.html`, `admin/annotate.js` — no backend changes.
 
-**Scope guard**: same as the other optional stretches — attempt only once the required Phase 13 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
+**Scope guard**: same as the other optional stretches — attempt only once the required Phase 15 DoD is met, and cut first if time runs short (alongside the caller-facing client polish below — treat the two as a pair if only one gets done, since a polished client next to a plain admin panel, or vice versa, undercuts the "one connected product" impression more than either being merely functional would).
 
 ## Superseded — Real statute citation (tenancy)
 

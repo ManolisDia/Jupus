@@ -73,9 +73,15 @@ def test_fast_pass_first_field_has_no_gate_or_urgent_check(repos):
 
 @pytest.mark.parametrize("utterance", ["what do you need that for?", "wait, actually", "can you repeat that?"])
 def test_fast_pass_gate_falls_back_on_tangent(repos, utterance):
+    # A gate fallback routes into node_capture's own fresh-extraction
+    # branch (_fallback_to_real_capture -> node_capture), which since
+    # Phase 13 calls the merged extract_and_confirm_field, not extract_field.
     state = _fast_state("email")
     state["transcript"][-1]["text"] = utterance
-    with patch("backend.supervisor.tools.extract_field", return_value={"value": None, "confidence": 0.0}):
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": None, "confidence": 0.0, "confirm_back_phrasing": ""},
+    ):
         result = _invoke(state, repos)
     # fell back to real node_capture — last_asked_field re-synced to "email"
     # (still missing/unresolved), no optimistic advance to "phone"
@@ -86,7 +92,10 @@ def test_fast_pass_gate_falls_back_on_bad_shape(repos):
     # asked about email, but this utterance has no @/at/dot at all
     state = _fast_state("email")
     state["transcript"][-1]["text"] = "yes that's correct"
-    with patch("backend.supervisor.tools.extract_field", return_value={"value": None, "confidence": 0.0}):
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": None, "confidence": 0.0, "confirm_back_phrasing": ""},
+    ):
         result = _invoke(state, repos)
     assert result["last_asked_field"] == "email"
 
@@ -101,7 +110,10 @@ def test_fast_pass_gate_falls_back_on_explicit_human_request(repos):
     # instead of advancing straight past it.
     state = _fast_state("name")
     state["transcript"][-1]["text"] = "can I just talk to a human"
-    with patch("backend.supervisor.tools.extract_field", return_value={"value": None, "confidence": 0.0}):
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": None, "confidence": 0.0, "confirm_back_phrasing": ""},
+    ):
         result = _invoke(state, repos)
     assert result["last_asked_field"] != "email"
 
@@ -128,7 +140,10 @@ def test_gate_fallback_does_not_confirm_an_unrelated_earlier_pending_field(repos
     )
     state["transcript"][-1]["text"] = "Manos at gmail dot com."
     with (
-        patch("backend.supervisor.tools.extract_field", return_value={"value": "", "confidence": 0.0}) as mock_extract,
+        patch(
+            "backend.supervisor.tools.extract_and_confirm_field",
+            return_value={"value": "", "confidence": 0.0, "confirm_back_phrasing": ""},
+        ) as mock_extract,
         patch("backend.supervisor.tools.confirm_field_answer") as mock_confirm,
     ):
         result = _invoke(state, repos)
@@ -234,10 +249,11 @@ async def test_dispatcher_only_spawns_background_verification_on_real_advance():
         with patch("backend.supervisor.tools.classify_practice_area", return_value={"area": "tenancy", "confidence": 0.9}):
             await dispatcher.process_supervisor_call(repos, call_id, "t2", "my flat")
         # garbled name -> medium confidence -> pending_confirm (fallback path,
-        # since "uh" trips looks_like_tangent)
-        with (
-            patch("backend.supervisor.tools.extract_field", return_value={"value": "Alesh", "confidence": 0.4}),
-            patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say Alesh?"),
+        # since "uh" trips looks_like_tangent) — Phase 13 merged this
+        # branch's extract_field + generate_confirm_back into one call.
+        with patch(
+            "backend.supervisor.tools.extract_and_confirm_field",
+            return_value={"value": "Alesh", "confidence": 0.4, "confirm_back_phrasing": "Did you say Alesh?"},
         ):
             await dispatcher.process_supervisor_call(repos, call_id, "t3", "uh, Alesh, maybe")
         # a correction resolves the pending name via confirm_field_answer -
