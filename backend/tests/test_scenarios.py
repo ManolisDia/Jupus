@@ -9,8 +9,13 @@ state path, not just node functions in isolation.
 
 All 6 scenarios are now implemented for real, unblocked by Phase 4's real
 booking node (node_booking) and Phase 5's "multiple_areas" classification
-value + is_explicit_human_request heuristic. `send_over_bridge` is patched
-in each test so replies are captured without a real /bridge WebSocket.
+value + is_explicit_human_request heuristic.
+
+Phase 14 note: turns now go through `run_supervisor_turn`, which returns the
+reply instead of pushing it at a transport. That makes this file
+transport-agnostic — it no longer patches `send_over_bridge` (or anything
+else) just to keep a delivery mechanism quiet. These same scenarios are also
+driven over the REAL transport, unmocked, by eval/livekit_live_call.py.
 """
 
 from unittest.mock import patch
@@ -19,7 +24,7 @@ import pytest
 
 from backend import dispatcher
 from backend.db.repositories import Repositories
-from backend.dispatcher import process_supervisor_call
+from backend.dispatcher import run_supervisor_turn
 from backend.supervisor.state import CALL_STATES
 from backend.tests.fakes import FakeCallRepository, FakeSlotRepository, FakeTraceRepository
 
@@ -52,9 +57,19 @@ def booking_repos():
     return Repositories(calls=FakeCallRepository(), slots=FakeSlotRepository(), trace=FakeTraceRepository())
 
 
-async def _turn(repos, call_id, tool_call_id, utterance):
-    with patch("backend.dispatcher.send_over_bridge"):
-        await process_supervisor_call(repos, call_id, tool_call_id, utterance)
+async def _turn(repos, call_id, tool_call_id, utterance) -> str:
+    """One scenario turn, returning the reply the caller would hear.
+
+    Goes through run_supervisor_turn rather than process_supervisor_call so
+    these tests are transport-agnostic: they exercise the real dispatcher /
+    lock / persistence path that cross-cutting.md section 3 requires, without
+    also having to stub out whichever transport happens to be delivering
+    replies this month. Before Phase 14 this needed
+    `patch("backend.dispatcher.send_over_bridge")` purely to stop the /bridge
+    push from erroring on a socket that was never there.
+    """
+    reply, _dispatch_stage = await run_supervisor_turn(repos, call_id, tool_call_id, utterance)
+    return reply
 
 
 async def _await_statute_search(call_id):
