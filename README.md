@@ -22,13 +22,16 @@ Every one of those decisions — routing, extraction thresholds, escalation trig
 
 ```
 Caller's browser
-   │  WebRTC (mic audio)
+   │  WebRTC (mic audio) via LiveKit
+   ▼
+LiveKit room  ──▶  Jupus agent (in-process with the backend)
+   │
    ▼
 OpenAI Realtime API  ──speech + turn-taking + voice──▶  Caller hears a reply
    │
    │  the ONLY tool Realtime is ever given: ask_supervisor(reason, utterance)
    ▼
-FastAPI bridge (backend/app.py)  ──async dispatch──▶  LangGraph supervisor
+backend/transport/livekit_agent.py  ──async dispatch──▶  LangGraph supervisor
                                                           │
                                           ┌───────────────┼────────────────┐
                                           ▼               ▼                ▼
@@ -138,3 +141,10 @@ python eval/calibrate_judge.py                           # LLM judge vs. human a
 ## Known limits
 
 This is a scoped take-home prototype, deliberately: no telephony (browser mic only), no session/call duration cap, in-memory call state (fine for a single local process, not for horizontal scaling), SQLite rather than a hosted database. Every one of these is an explicit, documented tradeoff — see `docs/DECISIONS.md` — not an oversight.
+
+**A third external dependency: LiveKit.** Since Phase 14 the call's transport is LiveKit Agents (hosting the same OpenAI Realtime model through LiveKit's plugin), which means the project now depends on a LiveKit Cloud account alongside OpenAI and Anthropic. The free "Build" tier is enough to run everything here and needs no card, but this is still a third external service that has to be provisioned and configured (`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`) before a call will connect at all. Self-hosting the open-source LiveKit server was considered and rejected — see `docs/DECISIONS.md` for why it would likely make media latency *worse*, not better.
+
+Two operational sharp edges worth knowing, both of which fail silently rather than loudly:
+
+- **LiveKit dispatches agents automatically to every room in a project.** If two backends are running against the same LiveKit credentials, they will split calls between them at random, and because each holds its own in-memory call state, a call handled by the "wrong" one simply won't appear in the other's admin panel or database. The backend logs a warning about this at startup.
+- **The agent worker runs inside the backend process**, not as a separate `lk agent` deployment, so that it can reach the supervisor's in-memory state directly. That is what keeps the admin panel's live view working, but it does mean the backend process is doing real-time media work alongside serving HTTP.

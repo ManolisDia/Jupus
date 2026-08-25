@@ -54,12 +54,26 @@ New interrupt-handling scenarios, on top of the existing 7 canonical scenarios i
 
 ## Definition of Done
 
-- [ ] LiveKit Cloud free-tier account provisioned (or self-hosted server running on Railway alongside the existing backend — pick one, document which and why in `docs/DECISIONS.md`).
-- [ ] `client/app.js` replaced by a LiveKit client integration; `backend/app.py`'s `/session`/`/bridge` replaced by LiveKit's session/agent wiring.
-- [ ] All 7 canonical scenarios (`docs/scenarios.md`) re-run live over the new transport and pass.
-- [ ] All 5 new interrupt-handling test cases above pass, including live manual verification of at least the substantive-interruption-during-filler case (item 3) — this is exactly the class of bug (`ask_supervisor`/ASR race) this codebase has hit before, so it gets a real live check, not just a mocked unit test.
-- [ ] `pytest` — full suite, zero regressions.
-- [ ] Filler treatment shipped for exactly the three calls named in Decision 2, no others.
-- [ ] `docs/DECISIONS.md` gets an entry: why LiveKit over Pipecat (kept Realtime), why LiveKit over staying hand-rolled (built-in turn-taking/interrupt primitives), the free-tier-vs-self-host choice, and an explicit statement that this phase changed perceived latency, not the Phase 13 round-trip numbers — with both sets of numbers shown side by side so the distinction is visible, not just asserted.
-- [ ] README's "Known limitations" section names the new external LiveKit dependency plainly.
-- [ ] `docs/answers.md`'s Q1 and Q2 answers updated to reference this phase's real filler/interrupt design, distinct from Phase 13's round-trip numbers.
+- [x] LiveKit Cloud free-tier account provisioned (or self-hosted server running on Railway alongside the existing backend — pick one, document which and why in `docs/DECISIONS.md`). — Cloud; rationale in `DECISIONS.md` (single-region self-hosting would likely make media latency *worse*, plus UDP/TURN work Railway's HTTP ingress doesn't suit).
+- [x] `client/app.js` replaced by a LiveKit client integration; `backend/app.py`'s `/session`/`/bridge` replaced by LiveKit's session/agent wiring. — `client/livekit-transport.js` + `backend/transport/`; `app.js` 677 → 252 lines.
+- [~] All 7 canonical scenarios (`docs/scenarios.md`) re-run live over the new transport and pass. — **Partially.** Six of the eight scripts (S7 splits into S7a/S7b) reached their expected outcome live; S4 and S7b desynchronized because the scripts assume *mocked* extraction, so once a real extraction took a different branch the later scripted lines answered questions the agent hadn't asked. Harness limitation, written up in `eval/livekit_live_call.py`; closing it properly needs an adaptive caller. Not claimed as a pass.
+- [x] All 5 new interrupt-handling test cases above pass, including live manual verification of at least the substantive-interruption-during-filler case (item 3). — All five in `backend/tests/test_livekit_agent.py`; barge-in with a real correction verified on a live call (2026-08-25). Case 4 is reinterpreted and documented: under LiveKit a turn faster than the idle dwell produces *no* filler, so there is nothing to collide with.
+- [x] `pytest` — full suite, zero regressions. — 402 passing.
+- [x] Filler treatment shipped for exactly the three calls named in Decision 2, no others. — `backend/supervisor/fillers.py`; `test_fillers.py` pins both that the three sites get one and that nothing else does.
+- [x] `docs/DECISIONS.md` gets an entry: why LiveKit over Pipecat, why LiveKit over staying hand-rolled, the free-tier-vs-self-host choice, and an explicit statement that this phase changed perceived latency, not the Phase 13 round-trip numbers — with both sets of numbers shown side by side. — Three entries; numbers measured by `eval/filler_latency_report.py` from real playout.
+- [x] README's "Known limitations" section names the new external LiveKit dependency plainly. — Plus the two operational sharp edges that fail silently (automatic dispatch across two backends; the worker living inside the backend process).
+- [x] `docs/answers.md`'s Q1 and Q2 answers updated. — Q2 was a TBD placeholder and is now written.
+
+### Post-merge follow-ups (not blockers, recorded so they aren't lost)
+
+1. **The first turn of every call is the slowest and has no filler** — measured at 3.3–4.3s
+   (`classify_practice_area` plus ~1s playout). Decision 2 didn't consider it because routing
+   normally ends by asking a question, but on turn one there is nothing in front of the gap. It is
+   the caller's first impression.
+2. **`capture_fast`'s last field pays two sequential Claude calls** (`extract_field` +
+   `generate_confirm_back`, measured 6.3s to first audio) and gets no filler. Phase 7's fast path is
+   zero-LLM for every field *except* the last, which has no following turn to run against. It fits
+   Decision 2's rationale exactly without being one of its three named sites.
+3. **The browser client has no automated coverage.** The "thinking" indicator was dead from the
+   migration until it was caught by hand; a page-level smoke test would have caught it.
+4. **An adaptive live caller** would make live scenario runs trustworthy (see item 3 above).

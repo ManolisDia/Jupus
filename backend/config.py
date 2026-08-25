@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     jupus_access_token: Optional[str] = None
     public_client_origin: Optional[str] = None  # e.g. "https://<project>.web.app"
 
+    # Phase 14 (LiveKit transport) — required for a call to connect at all.
+    # Optional so the backend still boots for admin/eval work without them.
+    livekit_url: Optional[str] = None
+    livekit_api_key: Optional[str] = None
+    livekit_api_secret: Optional[str] = None
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

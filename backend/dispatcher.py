@@ -1,8 +1,5 @@
 import asyncio
 import logging
-import time
-
-from fastapi import WebSocket
 
 from backend.db.repositories import Repositories
 from backend.supervisor import tools
@@ -17,9 +14,6 @@ from backend.utils import now_iso
 logger = logging.getLogger(__name__)
 
 LOCKS: dict[str, asyncio.Lock] = {}
-SPEAKING: dict[str, bool] = {}
-DEFERRED: dict[str, list[tuple[str, str, str, float]]] = {}
-CONNECTIONS: dict[str, WebSocket] = {}
 # Phase 7 (optimistic capture) — (call_id, field_name) -> the background
 # task doing that field's REAL extraction/validation while node_capture_fast
 # has already moved on. Deliberately a plain result-returning task, never
@@ -48,48 +42,6 @@ def derive_outcome_label(state: CallState) -> str:
     return "info_only"
 
 
-async def on_bridge_message(repos: Repositories, call_id: str, msg: dict) -> None:
-    msg_type = msg.get("type")
-    if msg_type == "ask_supervisor":
-        # Recorded synchronously, before the task is spawned, so the
-        # timestamp reflects actual receipt time rather than whenever the
-        # task happens to start running (Phase 11 latency instrumentation —
-        # closes the stt_and_dialogue_decision stage's end boundary).
-        repos.trace.record_event(call_id, "ask_supervisor_received", tool_call_id=msg["tool_call_id"])
-        asyncio.create_task(
-            process_supervisor_call(repos, call_id, msg["tool_call_id"], msg["last_caller_utterance"])
-        )
-    elif msg_type == "speech_started":
-        SPEAKING[call_id] = True
-    elif msg_type == "speech_stopped":
-        SPEAKING[call_id] = False
-        # Phase 11: this event was always the intended start boundary for
-        # the stt_and_dialogue_decision latency stage, but the record_event
-        # call to actually emit it was never added — silently zeroing every
-        # latency stat computed since Phase 6a. See docs/fixes/.
-        repos.trace.record_event(call_id, "speech_stopped")
-        drain_deferred(repos, call_id)
-    elif msg_type == "tts_first_audio":
-        # Phase 11: client-reported (client/app.js is the only side that can
-        # observe when Realtime actually started playing audio back).
-        # Fire-and-forget — never blocks caller audio.
-        repos.trace.record_event(
-            call_id, "tts_first_audio",
-            tool_call_id=msg["tool_call_id"], ms_since_reply_delivered=msg["ms_since_reply_delivered"],
-        )
-    elif msg_type == "realtime_usage":
-        # Phase 11: client-reported per response.done, including responses
-        # that never went through ask_supervisor at all (e.g. the opening
-        # greeting) — those still cost real Realtime tokens.
-        repos.trace.record_event(
-            call_id, "realtime_usage", tool_call_id=msg.get("tool_call_id"),
-            input_audio_tokens=msg["input_audio_tokens"], output_audio_tokens=msg["output_audio_tokens"],
-            input_text_tokens=msg["input_text_tokens"], output_text_tokens=msg["output_text_tokens"],
-        )
-    else:
-        logger.warning("unknown /bridge message type=%r call_id=%s", msg_type, call_id)
-
-
 async def _verify_field_in_background(repos: Repositories, call_id: str, field: str, utterance: str) -> dict:
     """Phase 7 (optimistic capture) — one field's real extraction/validation,
     run fully in the background while node_capture_fast has already moved
@@ -99,9 +51,8 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
     well-tested, synchronous-path function's control flow for this.
 
     Deliberately never touches CALL_STATES or acquires get_lock(call_id) —
-    process_supervisor_call may be AWAITING this very task while it already
-    holds that lock (see the blocking-wait case in process_supervisor_call
-    below); if this function also needed the lock to write its result,
+    run_supervisor_turn may be AWAITING this very task while it already
+    holds that lock; if this function also needed the lock to write its result,
     that would deadlock. Instead it's a pure computation that returns its
     result, and only the lock-holding turn processing (via
     _reconcile_field_verifications) ever writes it into shared state.
@@ -274,13 +225,32 @@ def _reconcile_before_capture_turn(state: CallState, call_id: str) -> None:
     _reconcile_field_verifications(state, call_id)
 
 
-async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_id: str, utterance: str) -> None:
+async def run_supervisor_turn(
+    repos: Repositories, call_id: str, tool_call_id: str, utterance: str
+) -> tuple[str, str]:
+    """One full supervisor turn, RETURNING its reply rather than pushing it
+    at a transport. Returns (reply, dispatch_stage).
+
+    Phase 14 split this out of the old process_supervisor_call, which pushed
+    the reply over the /bridge WebSocket itself and needed SPEAKING/DEFERRED
+    bookkeeping to time that correctly. Both are gone: the LiveKit agent awaits
+    this from inside the ask_supervisor function tool and returns the string,
+    letting LiveKit's own turn-taking decide when it is safe to speak.
+
+    Everything between the lock and the return is unchanged from the
+    pre-Phase-14 implementation; only the delivery of the final string
+    moved out.
+
+    Never raises: an unhandled error becomes an escalation-flavored fallback
+    reply (CLAUDE.md rule #7), because on the fire-and-forget path a raised
+    exception would silently kill the task and leave the caller hearing dead
+    air (docs/phases/cross-cutting.md section 1).
+    """
     try:
         async with get_lock(call_id):
             state = get_or_create_state(call_id)
             if state["stage"] == "ended":
-                deliver_or_defer(repos, call_id, tool_call_id, "This call has already been completed.", "ended")
-                return
+                return "This call has already been completed.", "ended"
             state["transcript"] = state["transcript"] + [{"role": "caller", "text": utterance, "ts": now_iso()}]
             if is_explicit_human_request(utterance):
                 state["stage"] = "escalation"
@@ -306,11 +276,9 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             # WebSocket can keep receiving speech_started/speech_stopped VAD
             # events (and other calls' messages) while a tool call is in
             # flight. Without this, the event loop is fully frozen for the
-            # duration of every real Claude call, and deliver_or_defer's
-            # SPEAKING check always sees stale state — the deferred-reply
-            # path (see deliver_or_defer/drain_deferred below) never
-            # actually triggers against real timing, only in tests that set
-            # SPEAKING directly.
+            # duration of every real Claude call, which would block the
+            # LiveKit agent's own event loop work (turn detection, filler
+            # scheduling) for as long as the supervisor is thinking.
             updated = await asyncio.to_thread(
                 GRAPH.invoke, state, config={"configurable": {"repos": repos}}
             )
@@ -384,7 +352,6 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             repos.calls.upsert(updated)
             if updated["stage"] == "ended":
                 repos.trace.record_event(call_id, "call_ended", outcome=derive_outcome_label(updated))
-            broadcast_call_state(call_id)
     except Exception as e:
         logger.exception("unhandled error processing call_id=%s", call_id)
         repos.trace.record_event(call_id, "unhandled_error", error=str(e))
@@ -397,60 +364,11 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             repos.trace, call_id, "dispatcher", "write_minimal_handoff_note",
             tools.write_minimal_handoff_note, call_id, state, f"Unhandled error: {e}",
         )
-        broadcast_call_state(call_id)
-        deliver_or_defer(
-            repos, call_id, tool_call_id,
+        return (
             "Sorry, something went wrong on my end — let me get you to someone who can help.",
             "escalation",
         )
-        return
-    deliver_or_defer(repos, call_id, tool_call_id, updated["pending_reply"], dispatch_stage)
-
-
-def deliver_or_defer(repos: Repositories, call_id: str, tool_call_id: str, reply: str, dispatch_stage: str) -> None:
-    if SPEAKING.get(call_id, False):
-        DEFERRED.setdefault(call_id, []).append((tool_call_id, reply, dispatch_stage, time.monotonic()))
-        repos.trace.record_event(call_id, "reply_deferred", tool_call_id=tool_call_id, reason="caller_speaking")
-    else:
-        send_over_bridge(call_id, tool_call_id, reply)
-        repos.trace.record_event(
-            call_id, "reply_delivered", tool_call_id=tool_call_id, reply=reply, was_deferred=False, wait_ms=0
-        )
-
-
-def drain_deferred(repos: Repositories, call_id: str) -> None:
-    items = DEFERRED.pop(call_id, [])
-    current_stage = CALL_STATES.get(call_id, {}).get("stage")
-    for tool_call_id, reply, dispatch_stage, queued_at in items:
-        if dispatch_stage != current_stage:
-            logger.debug("dropping stale deferred reply call_id=%s tool_call_id=%s", call_id, tool_call_id)
-            repos.trace.record_event(
-                call_id, "reply_dropped_stale", tool_call_id=tool_call_id,
-                dispatch_stage=dispatch_stage, current_stage=current_stage,
-            )
-            continue
-        send_over_bridge(call_id, tool_call_id, reply)
-        repos.trace.record_event(
-            call_id, "reply_delivered", tool_call_id=tool_call_id, reply=reply,
-            was_deferred=True, wait_ms=int((time.monotonic() - queued_at) * 1000),
-        )
-
-
-async def _send_json_safely(ws: WebSocket, payload: dict, call_id: str) -> None:
-    try:
-        await ws.send_json(payload)
-    except Exception:
-        logger.warning("failed to send supervisor_result to call_id=%s (connection likely closed)", call_id)
-
-
-def send_over_bridge(call_id: str, tool_call_id: str, reply: str) -> None:
-    ws = CONNECTIONS.get(call_id)
-    if ws is None:
-        logger.warning("no active /bridge connection for call_id=%s — dropping reply", call_id)
-        return
-    asyncio.create_task(
-        _send_json_safely(ws, {"type": "supervisor_result", "tool_call_id": tool_call_id, "reply": reply}, call_id)
-    )
+    return updated["pending_reply"], dispatch_stage
 
 
 def call_state_snapshot(state: CallState) -> dict:
@@ -488,18 +406,8 @@ def call_state_snapshot(state: CallState) -> dict:
     }
 
 
-def broadcast_call_state(call_id: str) -> None:
-    ws = CONNECTIONS.get(call_id)
-    if ws is None:
-        return
-    state = CALL_STATES.get(call_id)
-    if state is None:
-        return
-    asyncio.create_task(_send_json_safely(ws, call_state_snapshot(state), call_id))
-
-
 async def mark_call_abandoned(repos: Repositories, call_id: str) -> None:
-    # Must hold the same per-call lock process_supervisor_call holds while
+    # Must hold the same per-call lock run_supervisor_turn holds while
     # mutating CALL_STATES/writing the outcome — otherwise a disconnect
     # landing mid-turn (GRAPH.invoke can run for seconds) races the
     # in-flight turn: whichever of the two writes CALL_STATES[call_id] and
@@ -513,6 +421,3 @@ async def mark_call_abandoned(repos: Repositories, call_id: str) -> None:
             state["stage"] = "ended"
             repos.calls.upsert(state, outcome_override="abandoned")
         repos.trace.record_event(call_id, "call_abandoned")
-        CONNECTIONS.pop(call_id, None)
-        SPEAKING.pop(call_id, None)
-        DEFERRED.pop(call_id, None)

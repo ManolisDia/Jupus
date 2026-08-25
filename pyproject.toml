@@ -14,6 +14,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
+    # Phase 14 — LiveKit Agents transport. livekit-agents hosts the agent
+    # worker in-process (see backend/transport/), the openai plugin keeps
+    # OpenAI Realtime as the speech model, and livekit-api mints room tokens.
+    "livekit-agents>=1.7,<2",
+    "livekit-plugins-openai>=1.7,<2",
+    "livekit-api>=1.2,<2",
 ]
 
 [project.optional-dependencies]

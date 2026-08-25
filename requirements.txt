@@ -8,3 +8,6 @@ openai>=1.45
 python-dotenv>=1.0
 pydantic>=2.8
 pydantic-settings>=2.4
+livekit-agents>=1.7,<2
+livekit-plugins-openai>=1.7,<2
+livekit-api>=1.2,<2

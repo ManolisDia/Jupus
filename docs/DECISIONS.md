@@ -454,3 +454,134 @@ in isolation (which is how the 4090ms/1367ms comparison above was actually obtai
 own `_await_statute_search` helper) was applied to `replay_scenarios.py` regardless — correct and
 necessary, but not sufficient to make the full-script case reliable. See
 `docs/known-issues/2026-08-25-003.md`.
+
+### Phase 14: LiveKit Agents for transport, OpenAI Realtime kept as the speech model
+
+**Why not Pipecat (or any chained STT→LLM→TTS pipeline).** Out of scope by construction: the
+original choice of OpenAI Realtime was made because it "has the most mature WebRTC/tool-calling/
+interrupt handling of the available realtime voice APIs," and a chained pipeline reverses that.
+LiveKit was adopted specifically *because* it can host OpenAI Realtime through its own
+`openai.realtime` plugin, so the speech model is byte-for-byte the same one Phases 1–13 were tuned
+against — same `gpt-realtime-2.1`, same `marin` voice, same `semantic_vad` with `eagerness: "low"`,
+same `near_field` noise reduction, all of which have live-testing reasons recorded above. A
+transport migration that also swapped the speech model would have made any live regression
+impossible to attribute to one or the other.
+
+**Why not stay hand-rolled.** The hand-rolled path worked, but a large fraction of it was
+re-implementing turn-taking badly. Deleted outright by this phase: the SDP offer/answer dance, ICE
+handling, the `oai-events` data channel, Realtime server-event parsing, `session.update`, the tool
+schema, the `responseActive`/`pendingResponseCreate` one-deep collision queue, and the
+`transcriptionPending`/`awaitingToolCall` ASR-race fix — plus `dispatcher.py`'s `SPEAKING`,
+`DEFERRED` and `CONNECTIONS` bookkeeping. Two of those (the response-collision queue and the ASR
+race) each cost a live-debugging session of their own and have their own `docs/fixes/` entries.
+They are the kind of thing a transport library should own, and LiveKit does.
+
+**LiveKit Cloud free tier, not self-hosted.** Self-hosting was considered and rejected on two
+grounds, in order. First, latency: a self-hosted SFU would run in one region, while LiveKit Cloud
+routes through a geographically distributed edge — for a WebRTC media path, one fixed region is
+likely *worse* for any caller not near it, not better. Second, effort: the OSS server needs UDP
+port ranges for media (or a TURN relay fallback, which adds its own latency), and the existing
+Railway deployment is built around HTTP/TCP ingress through its proxy. That is a real infra project
+for no gain. The honest cost of the Cloud choice is named plainly in the README's "Known
+limitations": this adds a third external account to the project's surface, alongside OpenAI and
+Anthropic.
+
+**The agent worker runs in-process with FastAPI.** Not the usual `lk agent` deployment. The
+supervisor's per-call state — `CALL_STATES`, the per-call `asyncio.Lock`s, the Phase 7/8 background
+task registries — lives in module-level globals that the admin trace stream also reads. A separate
+worker process would have meant reintroducing an IPC bridge, which is precisely what this phase
+deletes, and would have broken the admin panel's live view. Two consequences worth recording
+because both are silent failure modes:
+
+- `job_executor_type=JobExecutorType.THREAD` is passed **explicitly**. LiveKit defaults to a
+  subprocess on Linux/macOS and a thread on Windows, so relying on the default would work on a
+  Windows dev machine and silently break on Railway, with the agent mutating a `CALL_STATES` in the
+  wrong process.
+- A thread job still gets its **own event loop**, and an `asyncio.Lock` binds to the first loop that
+  awaits it. Every supervisor call is therefore marshalled back onto the FastAPI loop
+  (`_on_main_loop`), which keeps the concurrency model identical to the pre-Phase-14 one rather
+  than introducing a second, subtly different one.
+
+### Phase 14: filler is transport-scheduled and pre-rendered — reconciling with the Phase 2 decision that removed it
+
+This phase reintroduces something an earlier decision above ("No filler acknowledgment ... reversed
+after live testing") explicitly removed. That earlier finding was not wrong, and it is not being
+overturned wholesale — the mechanism is different in the two ways that finding actually complained
+about.
+
+The Phase 2 complaint was: *"a spoken promise ('one moment') followed by dead air until the real
+reply eventually lands reads as more broken than a brief, unannounced pause."* Two distinct
+failures are bundled in that sentence — narrating a wait that turns out to be short, and making a
+promise that is then followed by silence. Phase 14 addresses both:
+
+- **Short waits are still not narrated.** The old filler was model-generated at the *start* of the
+  turn, before anyone knew how long the turn would take. LiveKit's `RunContext.with_filler`
+  schedules on a continuous-idle dwell instead (`FILLER_IDLE_DELAY_SECONDS = 0.4`), so a turn that
+  resolves quickly produces no filler at all, and the filler can never talk over the caller.
+- **Long waits are re-acknowledged, not promised once and abandoned.** Each of the three target
+  sites has a second line that fires only if the supervisor is still working
+  `FILLER_REPEAT_SECONDS = 4.0` later. The second line is deliberately reassurance with no new
+  promise in it ("Still with you." not "Almost done!"), because a second promise would compound the
+  original complaint rather than answer it.
+
+**Pre-rendered audio, not live TTS.** Discovered at implementation time: `session.say()` refuses
+text-only input when the LLM is a `RealtimeModel` — the OpenAI plugin reports
+`supports_say = False` and the call raises unless a TTS plugin is attached or `audio=` is supplied.
+Attaching a TTS purely to unlock `say()` would have pulled a second voice into the call. Instead the
+fixed phrase set is rendered once by `scripts/generate_filler_audio.py` at the same voice and speed
+as the live session and committed as WAVs. This is strictly better than the live-TTS alternative on
+the phase's own terms: Decision 1 rejected a model-generated filler because even a fast model costs
+a 200–400ms round trip, and pre-rendering makes that a local file read.
+
+**Deviation from Decision 2's stated mechanism.** The phase doc scopes filler to
+`confirm_field_answer`, `confirm_booking_answer` and `generate_confirmation_summary`, reasoning that
+for those "the reply *is* the answer." Checked against the code, that is literally true only for
+`generate_confirmation_summary` — the other two are classifiers whose turns produce a reply from a
+template, a repeated question, or a second Claude call. The doc's *intent* holds exactly (these are
+the turns where the caller has just answered and is left waiting with nothing else being asked), but
+the filler cannot hang off the tool function: by the time a tool runs, the turn is already underway.
+Selection instead reads the **pre-turn `CallState`**, which deterministically predicts which call
+site the turn will reach — which also keeps it inside CLAUDE.md rule #2. One honest gap:
+`node_capture_fast`'s `_fallback_to_real_capture` can also reach `confirm_field_answer`, but nothing
+in the pre-turn state predicts it (that is the point of the fast path — it decides mid-turn), so
+those turns keep their pre-Phase-14 behaviour.
+
+### Phase 14: what actually changed — perceived wait, not round-trip latency, with both numbers
+
+The phase doc's central warning is that LiveKit must not be credited with anything Phase 13
+achieved: the Anthropic round trip is fixed by the SDK call inside `llm_utils.py` and is identical
+regardless of transport. Rather than assert that, here are both numbers, measured together from the
+same traces (`python eval/filler_latency_report.py`, over calls driven by
+`eval/livekit_live_call.py`):
+
+| turns | n | round trip | time to first audio |
+|---|---:|---:|---:|
+| `confirm_field` | 5 | 2543ms | 422ms |
+| `propose_slot` | 1 | 2332ms | 406ms |
+| **with filler, p50** | 6 | **2484ms** | **422ms** |
+| **with filler, p95** | | 5022ms | 577ms |
+| **without filler, p50** | 12 | 766ms | **1796ms** |
+| **without filler, p95** | | 5419ms | 6342ms |
+
+Read it this way:
+
+- **Round trip is Phase 13's number and it did not move.** Same tools, same models, same durations.
+  **Phase 14 reduced it by nothing and claims nothing.**
+- **The two blocks are the comparison, not a before/after of the same turns.** On a filler turn the
+  caller hears something at ~420ms while the supervisor is still working — time-to-audio sits
+  *below* the round trip. On a turn without one they hear nothing until the reply itself is
+  generated and played: 1796ms at p50, 6.3s at p95. That second row is what all three filler sites
+  looked like before this phase.
+- **The round trips differ between the blocks (2484ms vs 766ms) because filler turns ARE the slow
+  ones.** That is Decision 2 working as intended rather than a sampling artefact — filler is scoped
+  to exactly the sites where the caller has just answered and has nothing else to do but wait.
+- **The p95 row is the real argument.** 6.3 seconds of silence is where a pause stops reading as a
+  pause and starts reading as a dropped call.
+
+Two honest limits. `first_audio` is a real playout signal (LiveKit's agent state entering
+"speaking"), not the moment `say()` was called — an earlier version of this measurement made that
+mistake and reported ~400ms for a clip that took 1.3s to make a sound, because 890ms of silence was
+baked into the front of the WAV. And this is 18 turns on one machine against one LiveKit region,
+from a gitignored local database: enough to show the shape of the change and to prove the round
+trip is untouched, reproducible by re-running the two commands above, but not a production latency
+budget.
