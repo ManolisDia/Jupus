@@ -89,6 +89,15 @@ this machine) — both detailed with root-cause evidence in `docs/DECISIONS.md`'
 including the one-line production fix for the latter
 (`loop.set_default_executor(ThreadPoolExecutor(max_workers=N))`).
 
+**One real, live data point** (`--mode live --n-levels 5`, real Claude calls, capped spend,
+2026-08-25): 5 concurrent real calls, wall-clock 2937ms vs. each individual call's own ~2203ms
+median — i.e. 5 calls in parallel cost barely more than one call alone, not 5x, confirming the
+mocked evidence's shape against a real API round-trip. All 5 independently classified the correct
+practice area (`tenancy`) with no cross-call mixing in the stored transcripts. Narrower leakage
+coverage than the mocked sweep, though — a single live turn only reaches practice-area
+classification and the first capture question, not full name/email/phone extraction, so there was
+less state to check for contamination than the mocked N=40 run's fully-populated profiles.
+
 **Iteration loop**: `eval/replay_scenarios.py --label <name>` drives the 6 canonical scenarios
 (`docs/scenarios.md`) through the real, unmocked pipeline; `eval/compare_runs.py --baseline
 <a> --candidate <b>` diffs per-error-class rates between two labeled runs and exits 1 on

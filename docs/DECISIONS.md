@@ -320,3 +320,11 @@ showing the N levels that looked good:
 Neither bottleneck is fixed as part of this phase — measuring and reporting them honestly is the
 job here, per `docs/phases/phase-12-concurrency-stress-test.md`'s own non-goals. See
 `docs/answers.md`'s Q3 for the full per-N table.
+
+**One real, capped live-API run** (`--mode live --n-levels 5`, 2026-08-25): 5 concurrent real
+Claude calls, wall-clock 2937ms vs. ~2203ms for one call's own median — consistent with the mocked
+evidence's shape (parallel cost barely above a single call, not N×) against a real API round-trip
+instead of a simulated one. All 5 independently resolved the correct practice area with no
+cross-call mixing in the stored transcripts, though a single live turn only reaches classification
+and the first capture question — narrower leakage coverage than the mocked sweep's fully-populated
+profiles, since less state exists yet to check for contamination.
