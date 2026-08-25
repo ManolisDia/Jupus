@@ -274,13 +274,37 @@ def _reconcile_before_capture_turn(state: CallState, call_id: str) -> None:
     _reconcile_field_verifications(state, call_id)
 
 
-async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_id: str, utterance: str) -> None:
+async def run_supervisor_turn(
+    repos: Repositories, call_id: str, tool_call_id: str, utterance: str
+) -> tuple[str, str]:
+    """One full supervisor turn, RETURNING its reply rather than pushing it
+    at a transport. Returns (reply, dispatch_stage).
+
+    Phase 14 split this out of process_supervisor_call so the two transports
+    can consume the same turn logic in the two different shapes they need:
+
+    - The hand-rolled /bridge path (process_supervisor_call, below) is
+      fire-and-forget — nothing is awaiting the reply, so it has to be
+      pushed over a WebSocket once ready, which is what deliver_or_defer's
+      SPEAKING/DEFERRED bookkeeping exists to time correctly.
+    - The LiveKit path awaits this directly from inside the ask_supervisor
+      function tool and returns the string, letting LiveKit's own
+      turn-taking decide when it's safe to speak.
+
+    Everything between the lock and the return is unchanged from the
+    pre-Phase-14 implementation; only the delivery of the final string
+    moved out.
+
+    Never raises: an unhandled error becomes an escalation-flavored fallback
+    reply (CLAUDE.md rule #7), because on the fire-and-forget path a raised
+    exception would silently kill the task and leave the caller hearing dead
+    air (docs/phases/cross-cutting.md section 1).
+    """
     try:
         async with get_lock(call_id):
             state = get_or_create_state(call_id)
             if state["stage"] == "ended":
-                deliver_or_defer(repos, call_id, tool_call_id, "This call has already been completed.", "ended")
-                return
+                return "This call has already been completed.", "ended"
             state["transcript"] = state["transcript"] + [{"role": "caller", "text": utterance, "ts": now_iso()}]
             if is_explicit_human_request(utterance):
                 state["stage"] = "escalation"
@@ -398,13 +422,20 @@ async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_i
             tools.write_minimal_handoff_note, call_id, state, f"Unhandled error: {e}",
         )
         broadcast_call_state(call_id)
-        deliver_or_defer(
-            repos, call_id, tool_call_id,
+        return (
             "Sorry, something went wrong on my end — let me get you to someone who can help.",
             "escalation",
         )
-        return
-    deliver_or_defer(repos, call_id, tool_call_id, updated["pending_reply"], dispatch_stage)
+    return updated["pending_reply"], dispatch_stage
+
+
+async def process_supervisor_call(repos: Repositories, call_id: str, tool_call_id: str, utterance: str) -> None:
+    # The /bridge (hand-rolled WebRTC) transport's entry point: run the turn,
+    # then push the reply over the WebSocket, timing it against the caller's
+    # own speech. Retired along with that transport at the end of Phase 14 —
+    # the LiveKit path calls run_supervisor_turn directly instead.
+    reply, dispatch_stage = await run_supervisor_turn(repos, call_id, tool_call_id, utterance)
+    deliver_or_defer(repos, call_id, tool_call_id, reply, dispatch_stage)
 
 
 def deliver_or_defer(repos: Repositories, call_id: str, tool_call_id: str, reply: str, dispatch_stage: str) -> None:

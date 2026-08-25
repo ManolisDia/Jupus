@@ -308,6 +308,59 @@ async def test_ended_call_short_circuits_without_invoking_graph(repos):
     spy.assert_called_once_with("call-1", "tool-1", "This call has already been completed.")
 
 
+# ---------------------------------------------------------------------------
+# Phase 14 — run_supervisor_turn returns its reply instead of pushing it at a
+# transport. These assert the RETURN VALUE contract the LiveKit ask_supervisor
+# tool depends on; the deliver_or_defer tests above cover the /bridge path
+# that wraps it. Both transports run the same turn logic, so a divergence
+# between these two sets of tests is itself the bug worth catching.
+# ---------------------------------------------------------------------------
+
+
+async def test_run_supervisor_turn_returns_reply_and_stage(repos):
+    _seed_state("call-1")
+
+    with patch(
+        "backend.dispatcher.GRAPH.invoke",
+        side_effect=lambda state, config=None: {**state, "pending_reply": "ok", "stage": "capture"},
+    ):
+        reply, dispatch_stage = await dispatcher.run_supervisor_turn(repos, "call-1", "tool-1", "hi")
+
+    assert reply == "ok"
+    # The stage the turn RESULTED in, not the one it started from — same
+    # contract deliver_or_defer's staleness check has always relied on.
+    assert dispatch_stage == "capture"
+
+
+async def test_run_supervisor_turn_returns_fallback_instead_of_raising(repos):
+    # An unhandled error must never propagate out — on the fire-and-forget
+    # /bridge path that would silently kill the task and leave dead air
+    # (docs/phases/cross-cutting.md section 1). On the LiveKit path it would
+    # surface as a tool error instead. Either way the contract is a graceful
+    # reply, not an exception.
+    _seed_state("call-1")
+
+    with (
+        patch("backend.dispatcher.GRAPH.invoke", side_effect=RuntimeError("boom")),
+        patch("backend.dispatcher.tools.write_minimal_handoff_note"),
+    ):
+        reply, dispatch_stage = await dispatcher.run_supervisor_turn(repos, "call-1", "tool-1", "hi")
+
+    assert reply == "Sorry, something went wrong on my end — let me get you to someone who can help."
+    assert dispatch_stage == "escalation"
+
+
+async def test_run_supervisor_turn_short_circuits_ended_call(repos):
+    _seed_state("call-1", stage="ended")
+
+    with patch("backend.dispatcher.GRAPH.invoke") as invoke_mock:
+        reply, dispatch_stage = await dispatcher.run_supervisor_turn(repos, "call-1", "tool-1", "hi")
+
+    invoke_mock.assert_not_called()
+    assert reply == "This call has already been completed."
+    assert dispatch_stage == "ended"
+
+
 async def test_immediate_delivery_records_reply_delivered_with_zero_wait(repos):
     _seed_state("call-1")
     dispatcher.SPEAKING["call-1"] = False
