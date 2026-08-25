@@ -257,7 +257,11 @@ instead via the remote-stream amplitude analyser the caller-facing visualizer al
 animation frame (Phase 7) — the first frame where `remoteAmp` crosses the same `agentSpeaking`
 threshold already driving the "Agent speaking…" UI state, while `awaitingFirstAudioDelta` is still
 true, is reported as `tts_first_audio`. Trades a little precision (one frame's worth of latency,
-plus the analyser's own smoothing) for actually working under this project's real transport.
+plus the analyser's own smoothing) for actually working under this project's real transport. Known
+edge case, not yet confirmed live: if the remote track is still audibly above threshold from the
+tail end of the *previous* response when a new one starts, the very next frame could report a
+near-zero value for that turn — accepted as a measurement caveat of this approach rather than
+solved, since eliminating it would need actual silence-detection, not just an amplitude threshold.
 
 ### Phase 11: cost captured at the source, never estimated from duration or turn count
 Claude token usage is captured server-side, right where the Anthropic API response already arrives
