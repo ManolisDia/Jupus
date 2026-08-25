@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from livekit.agents import StopResponse
 
 from backend import dispatcher
 from backend.db.repositories import Repositories
@@ -352,8 +353,6 @@ async def test_slow_turn_reaches_the_second_filler_line(repos):
 async def test_acknowledgment_during_filler_does_not_reach_the_graph(repos):
     # Phase doc test 2. Without this guard every "mhm" over a filler becomes a
     # real utterance and reroutes the turn.
-    from livekit.agents import StopResponse
-
     _seed("call-1", "booking", proposed_slot_id=7)
     agent = JupusAgent("call-1", repos)
     agent._filler_handles = [_FakeHandle(interrupted=True)]
@@ -411,6 +410,70 @@ async def test_negation_during_filler_is_never_treated_as_acknowledgment(repos):
         await agent.ask_supervisor(ctx, {"reason": "r", "last_caller_utterance": "no"})
 
     assert seen == ["no"]
+
+
+async def test_backchannel_still_suppressed_after_a_substantive_interruption(repos):
+    """Regression: overlapping turns must not wipe each other's interrupt state.
+
+    LiveKit keeps a tool running after its speech is interrupted, and the
+    interrupting utterance starts its own turn — so two ask_supervisor calls
+    are genuinely in flight at once, sharing this agent instance. An earlier
+    version reset the filler-handle list at the top of every turn, so a
+    substantive interruption erased the evidence that a filler had been cut off
+    while the first turn was still running, and the NEXT backchannel sailed
+    past the guard into the graph as a real utterance.
+
+    Reproduced against the pre-fix code before this test was written.
+    """
+    _seed("call-1", "booking", proposed_slot_id=7)
+    agent = JupusAgent("call-1", repos)
+    agent._filler_handles = [_FakeHandle(interrupted=True)]
+    reached = []
+
+    async def fake_turn(_repos, _call_id, _tool_call_id, utterance):
+        reached.append(utterance)
+        return "ok", "booking"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        # A real correction: consumes the interruption and reaches the graph.
+        await agent.ask_supervisor(
+            _FakeRunContext(), {"reason": "r", "last_caller_utterance": "actually make it Friday"}
+        )
+        # A backchannel arriving right behind it, while a filler for the still
+        # in-flight turn is cut off again.
+        agent._filler_handles.append(_FakeHandle(interrupted=True))
+        with pytest.raises(StopResponse):
+            await agent.ask_supervisor(
+                _FakeRunContext(), {"reason": "r", "last_caller_utterance": "mhm"}
+            )
+
+    assert reached == ["actually make it Friday"], "the backchannel must not reach the graph"
+
+
+async def test_interruption_is_consumed_so_the_guard_disarms(repos):
+    # The other half of the contract: once a turn has taken responsibility for
+    # an interruption, a LATER backchannel with no fresh interruption behind it
+    # is ordinary input. Leaving the guard armed forever would silently swallow
+    # every "yes" for the rest of the call.
+    _seed("call-1", "booking", proposed_slot_id=7)
+    agent = JupusAgent("call-1", repos)
+    agent._filler_handles = [_FakeHandle(interrupted=True)]
+    reached = []
+
+    async def fake_turn(_repos, _call_id, _tool_call_id, utterance):
+        reached.append(utterance)
+        return "ok", "booking"
+
+    with patch.object(livekit_agent, "run_supervisor_turn", fake_turn):
+        with pytest.raises(StopResponse):
+            await agent.ask_supervisor(
+                _FakeRunContext(), {"reason": "r", "last_caller_utterance": "mhm"}
+            )
+        await agent.ask_supervisor(
+            _FakeRunContext(), {"reason": "r", "last_caller_utterance": "yes"}
+        )
+
+    assert reached == ["yes"]
 
 
 async def test_acknowledgment_without_an_interrupted_filler_is_normal_input(repos):

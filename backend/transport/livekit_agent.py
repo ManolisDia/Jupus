@@ -71,6 +71,11 @@ from backend.transport.prompts import ASK_SUPERVISOR_SCHEMA, SUPERVISOR_INSTRUCT
 
 logger = logging.getLogger(__name__)
 
+
+def _handle_done(handle: Any) -> bool:
+    done = getattr(handle, "done", None)
+    return bool(done()) if callable(done) else False
+
 FILLER_AUDIO_DIR = Path(__file__).resolve().parent / "filler_audio"
 
 # Mirrors the pre-Phase-14 client/app.js session.update exactly: same model,
@@ -125,7 +130,7 @@ class JupusAgent(Agent):
 
     # -- filler ------------------------------------------------------------
 
-    def _say_filler(self, session: AgentSession, key: str, step: int) -> Any:
+    def _say_filler(self, session: AgentSession, key: str, step: int, played: list) -> Any:
         """Play filler line `step` for `key`, or None when there are no more.
 
         Returning a SpeechHandle (rather than a str) is what lets this work at
@@ -150,14 +155,42 @@ class JupusAgent(Agent):
             # that matters is CallState["transcript"], maintained by the graph.
             add_to_chat_ctx=False,
         )
+        played.append(handle)
+        # Shared across overlapping turns purely so the interrupt guard can see
+        # a filler that a DIFFERENT in-flight turn started. Pruned of finished,
+        # uninterrupted handles so it can't grow for the life of the call.
+        self._filler_handles = [
+            h for h in self._filler_handles if h.interrupted or not _handle_done(h)
+        ]
         self._filler_handles.append(handle)
         self._repos.trace.record_event(
             self._call_id, "filler_spoken", node="transport", filler=key, step=step
         )
         return handle
 
-    def _caller_cut_off_a_filler(self) -> bool:
-        return any(handle.interrupted for handle in self._filler_handles)
+    def _consume_filler_interruption(self) -> bool:
+        """Did the caller cut off a filler that hasn't been acted on yet?
+
+        Consuming (rather than just reading) is what makes this safe against
+        overlapping turns. Two ask_supervisor calls can be in flight at once
+        for the same call — LiveKit keeps a tool running after its speech is
+        interrupted, and the interrupting utterance starts its own turn — so
+        this state is genuinely shared, and an earlier version simply reset the
+        list at the top of every turn. That lost the evidence: a substantive
+        interruption cleared the list while the first turn's filler was still
+        the thing that had been cut off, and a backchannel arriving right after
+        it sailed past the guard into the graph. Reproduced before fixing.
+
+        Clearing exactly the handles that were interrupted keeps the guard
+        armed for as long as an unhandled interruption exists, and disarms it
+        the moment one turn takes responsibility for it — whether by
+        suppressing a backchannel or by processing a real correction.
+        """
+        interrupted = [handle for handle in self._filler_handles if handle.interrupted]
+        if not interrupted:
+            return False
+        self._filler_handles = [h for h in self._filler_handles if not h.interrupted]
+        return True
 
     # -- the one tool (CLAUDE.md rule #1) ----------------------------------
 
@@ -186,7 +219,7 @@ class JupusAgent(Agent):
         # falls through — it becomes the next turn's input, serialized behind
         # the in-flight turn by dispatcher.get_lock(), so it reaches the graph
         # rather than being discarded.
-        if self._caller_cut_off_a_filler() and looks_like_acknowledgment(utterance):
+        if self._consume_filler_interruption() and looks_like_acknowledgment(utterance):
             self._repos.trace.record_event(
                 self._call_id,
                 "filler_interruption_ignored",
@@ -198,9 +231,14 @@ class JupusAgent(Agent):
         state = CALL_STATES.get(self._call_id)
         filler_key = filler_for_state(state) if state else None
 
-        self._filler_handles = []
+        # Per-TURN, unlike self._filler_handles: what this turn played is not
+        # what some overlapping turn played, and reply_ready reports on this
+        # turn. No reset of the shared list here — another turn may still be
+        # inside its own with_filler block, and wiping its handles from under
+        # it is exactly the bug _consume_filler_interruption documents.
+        played: list[Any] = []
         if filler_key is None:
-            reply, _stage = await self._run_turn(ctx, utterance)
+            reply, _stage = await self._run_turn(ctx, utterance, played)
             return reply
 
         # The scheduler only fires once the session has been continuously idle
@@ -209,15 +247,15 @@ class JupusAgent(Agent):
         # working FILLER_REPEAT_SECONDS later, line [1] follows — see
         # fillers.py on why a single line would reproduce the Phase 2 finding.
         async with ctx.with_filler(
-            lambda step: self._say_filler(ctx.session, filler_key, step),
+            lambda step: self._say_filler(ctx.session, filler_key, step, played),
             delay=FILLER_IDLE_DELAY_SECONDS,
             interval=FILLER_REPEAT_SECONDS,
             max_steps=len(FILLER_PHRASES[filler_key]),
         ):
-            reply, _stage = await self._run_turn(ctx, utterance)
+            reply, _stage = await self._run_turn(ctx, utterance, played)
         return reply
 
-    async def _run_turn(self, ctx: RunContext, utterance: str) -> tuple[str, str]:
+    async def _run_turn(self, ctx: RunContext, utterance: str, played: list) -> tuple[str, str]:
         # Decision 4: run_supervisor_turn never raises — an upstream failure
         # comes back as _llm_failure_fallback's graceful reply and its
         # 3-strikes escalation bookkeeping (CLAUDE.md rule #7). The filler
@@ -241,7 +279,7 @@ class JupusAgent(Agent):
             tool_call_id=ctx.function_call.call_id,
             reply=reply,
             dispatch_stage=dispatch_stage,
-            filler_played=bool(self._filler_handles),
+            filler_played=bool(played),
         )
         await self._publish_call_state()
         return result
