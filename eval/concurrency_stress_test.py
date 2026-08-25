@@ -29,7 +29,6 @@ business-logic fidelity, not concurrency).
 
 import argparse
 import asyncio
-import os
 import statistics
 import time
 from typing import Callable, Optional
@@ -199,18 +198,21 @@ def _print_report(results: list[dict]) -> None:
 
 
 def build_stress_repos(db_path: str = STRESS_DB_PATH) -> Repositories:
-    """An isolated SQLite db for stress runs — never backend/db/calendar.db,
-    so synthetic stress-* call_ids never show up next to real demo calls (in
-    the CLI table or the admin panel alike). Schema is (re)initialized only
-    the first time this path is seen, not deleted-and-recreated on every
-    call: the admin page's backend calls this once per run in a long-lived
-    process, and deleting a file a previous run's sqlite3.Connection is
-    still holding open fails outright on Windows (file-locking semantics
-    differ from POSIX, where an unlinked-but-open file is fine) — reusing
-    the existing schema sidesteps that instead of needing to track down and
-    close every prior connection first."""
-    if not os.path.exists(db_path):
-        reset_schema(connect(db_path))
+    """A fresh, isolated SQLite db for one stress run — never
+    backend/db/calendar.db, so synthetic stress-* call_ids never show up
+    next to real demo calls (in the CLI table or the admin panel alike).
+    Every call gets a genuinely clean schema (DROP + recreate every table,
+    via reset_schema on a normal connect()), so repeat runs — whether two
+    separate CLI invocations or the admin backend calling this once per run
+    in one long-lived process — never pool a previous run's leftover
+    trace_events into this run's latency_breakdown_percentiles for the same
+    stress-N call_ids. Deliberately does NOT os.remove() the file first (an
+    earlier version did): deleting a file a previous run's sqlite3.Connection
+    is still holding open fails outright on Windows (file-locking semantics
+    differ from POSIX, where an unlinked-but-open file is fine), and
+    reset_schema's DROP TABLE IF EXISTS achieves the same "clean slate"
+    result on the existing file without ever needing to unlink it."""
+    reset_schema(connect(db_path))
     stress_settings = settings.model_copy(update={"db_path": db_path})
     return get_repositories(stress_settings)
 
