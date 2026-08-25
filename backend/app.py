@@ -419,6 +419,25 @@ async def api_eval_summary(repos: Repositories = Depends(get_repos), label: str 
     return summary
 
 
+@app.get("/api/dev/tables")
+async def api_dev_tables(repos: Repositories = Depends(get_repos)):
+    if repos.dev is None:
+        raise HTTPException(status_code=404, detail="dev repository not configured")
+    return repos.dev.list_tables()
+
+
+@app.get("/api/dev/tables/{table}")
+async def api_dev_table(
+    table: str, limit: int = 100, offset: int = 0, repos: Repositories = Depends(get_repos)
+):
+    if repos.dev is None:
+        raise HTTPException(status_code=404, detail="dev repository not configured")
+    try:
+        return repos.dev.get_table(table, limit=min(limit, 500), offset=max(offset, 0))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/eval/error-classes")
 async def api_error_classes():
     from eval.error_classes import get_active_error_classes

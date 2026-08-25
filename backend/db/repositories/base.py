@@ -79,6 +79,14 @@ class EvalRepository(ABC):
     def call_ids_already_evaluated(self) -> set[str]: ...
 
 
+class DevRepository(ABC):
+    @abstractmethod
+    def list_tables(self) -> list[str]: ...
+
+    @abstractmethod
+    def get_table(self, table: str, *, limit: int = 100, offset: int = 0) -> dict: ...
+
+
 class AnnotationRepository(ABC):
     @abstractmethod
     def save_review(
