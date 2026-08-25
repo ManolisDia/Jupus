@@ -141,11 +141,20 @@ which means disabling Realtime's own turn handling and rebuilding the chained-pi
 this project deliberately avoided.
 
 Since Phase 14, the *transport* around that is LiveKit Agents (still hosting the same Realtime
-model). That deleted a substantial amount of hand-rolled turn-taking machinery: a one-deep
-`response.create` collision queue, a `transcriptionPending`/`awaitingToolCall` fix for
-`ask_supervisor` racing ASR completion, and the dispatcher's own `SPEAKING`/`DEFERRED` bookkeeping
-that decided whether a ready reply could be spoken yet. Each of those was a real live bug with its
-own entry in `docs/fixes/`. They are the kind of thing a transport library should own.
+model). That deleted two pieces of hand-rolled turn-taking machinery outright — a one-deep
+`response.create` collision queue, and the dispatcher's own `SPEAKING`/`DEFERRED` bookkeeping that
+decided whether a ready reply could be spoken yet. Both were real live bugs with their own entries
+in `docs/fixes/`, and both are the kind of thing a transport library should own.
+
+A third piece — the `transcriptionPending`/`awaitingToolCall` machinery — was **not** something
+LiveKit takes over, and it is worth being precise about, because the migration initially dropped it
+by mistake. It exists because `last_caller_utterance` is authored by the Realtime model rather than
+passed through from speech recognition, and the model invents (`docs/DECISIONS.md`: a caller said
+"manos44" and the graph received `manos44@example.com`). The fix was never a better prompt — that
+was tried and recorded as unreliable — it was to prefer the real ASR transcript over the model's
+argument, and to wait for it when the tool call wins the race. That behaviour is rebuilt on
+LiveKit's `user_input_transcribed` and pinned by tests. The lesson generalises: a transport swap
+can quietly delete a *feature* that looks like plumbing.
 
 **Interruptions.** `interrupt_response: true` is kept, so a caller can barge in on the agent
 mid-sentence. The interesting case Phase 14 added is barge-in *during a filler*, where the caller

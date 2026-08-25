@@ -51,9 +51,8 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
     well-tested, synchronous-path function's control flow for this.
 
     Deliberately never touches CALL_STATES or acquires get_lock(call_id) —
-    process_supervisor_call may be AWAITING this very task while it already
-    holds that lock (see the blocking-wait case in process_supervisor_call
-    below); if this function also needed the lock to write its result,
+    run_supervisor_turn may be AWAITING this very task while it already
+    holds that lock; if this function also needed the lock to write its result,
     that would deadlock. Instead it's a pure computation that returns its
     result, and only the lock-holding turn processing (via
     _reconcile_field_verifications) ever writes it into shared state.
@@ -232,16 +231,11 @@ async def run_supervisor_turn(
     """One full supervisor turn, RETURNING its reply rather than pushing it
     at a transport. Returns (reply, dispatch_stage).
 
-    Phase 14 split this out of process_supervisor_call so the two transports
-    can consume the same turn logic in the two different shapes they need:
-
-    - The hand-rolled /bridge path (process_supervisor_call, below) is
-      fire-and-forget — nothing is awaiting the reply, so it has to be
-      pushed over a WebSocket once ready, which is what deliver_or_defer's
-      SPEAKING/DEFERRED bookkeeping exists to time correctly.
-    - The LiveKit path awaits this directly from inside the ask_supervisor
-      function tool and returns the string, letting LiveKit's own
-      turn-taking decide when it's safe to speak.
+    Phase 14 split this out of the old process_supervisor_call, which pushed
+    the reply over the /bridge WebSocket itself and needed SPEAKING/DEFERRED
+    bookkeeping to time that correctly. Both are gone: the LiveKit agent awaits
+    this from inside the ask_supervisor function tool and returns the string,
+    letting LiveKit's own turn-taking decide when it is safe to speak.
 
     Everything between the lock and the return is unchanged from the
     pre-Phase-14 implementation; only the delivery of the final string
@@ -282,11 +276,9 @@ async def run_supervisor_turn(
             # WebSocket can keep receiving speech_started/speech_stopped VAD
             # events (and other calls' messages) while a tool call is in
             # flight. Without this, the event loop is fully frozen for the
-            # duration of every real Claude call, and deliver_or_defer's
-            # SPEAKING check always sees stale state — the deferred-reply
-            # path (see deliver_or_defer/drain_deferred below) never
-            # actually triggers against real timing, only in tests that set
-            # SPEAKING directly.
+            # duration of every real Claude call, which would block the
+            # LiveKit agent's own event loop work (turn detection, filler
+            # scheduling) for as long as the supervisor is thinking.
             updated = await asyncio.to_thread(
                 GRAPH.invoke, state, config={"configurable": {"repos": repos}}
             )
@@ -415,7 +407,7 @@ def call_state_snapshot(state: CallState) -> dict:
 
 
 async def mark_call_abandoned(repos: Repositories, call_id: str) -> None:
-    # Must hold the same per-call lock process_supervisor_call holds while
+    # Must hold the same per-call lock run_supervisor_turn holds while
     # mutating CALL_STATES/writing the outcome — otherwise a disconnect
     # landing mid-turn (GRAPH.invoke can run for seconds) races the
     # in-flight turn: whichever of the two writes CALL_STATES[call_id] and

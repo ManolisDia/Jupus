@@ -1,6 +1,6 @@
 """Drive a REAL LiveKit call end to end, with no human at a microphone.
 
-    # backend must be running with JUPUS_TRANSPORT=livekit
+    # the backend (and therefore the agent worker) must be running
     python eval/livekit_live_call.py --scenario S1
     python eval/livekit_live_call.py --all --label livekit-live
 

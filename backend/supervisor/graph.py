@@ -159,7 +159,7 @@ def node_greeting(state: CallState, config: RunnableConfig) -> dict:
     # stage bump so the caller's first real utterance — already sitting in
     # this same invocation's transcript — gets classified by node_routing
     # right away instead of being silently discarded for a turn. See
-    # dispatcher.process_supervisor_call, which chains straight into the
+    # dispatcher.run_supervisor_turn, which chains straight into the
     # next node when a call starts from "greeting" rather than treating
     # this stage bump as a turn worth replying to on its own.
     repos = _repos(config)

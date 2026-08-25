@@ -1,13 +1,14 @@
 """docs/scenarios.md — the canonical scenarios (S1-S6, plus S7's two variants
 added alongside Phase 8's case-research node), mocked-Claude and
-driven through backend.dispatcher.process_supervisor_call (the real dispatch
-entry point on this branch; docs/scenarios.md calls it `process_supervisor_call`
-too, but an earlier draft of this file used a since-removed `on_ask_supervisor`
-name — see docs/architecture.md's note on reading phase-doc signatures as
-illustrative, not literal) so this exercises the real dispatcher -> graph ->
-state path, not just node functions in isolation.
+driven through backend.dispatcher.run_supervisor_turn (the real dispatch entry
+point; docs/scenarios.md and the phase docs name older spellings —
+`process_supervisor_call`, `on_ask_supervisor` — both since removed, see
+docs/architecture.md's note on reading phase-doc signatures as illustrative
+rather than literal) so this exercises the real dispatcher -> graph -> state
+path, not just node functions in isolation.
 
-All 6 scenarios are now implemented for real, unblocked by Phase 4's real
+All scenarios are implemented for real (S1-S6 plus S7's two variants,
+eight test functions in total), unblocked by Phase 4's real
 booking node (node_booking) and Phase 5's "multiple_areas" classification
 value + is_explicit_human_request heuristic.
 

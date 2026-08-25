@@ -595,16 +595,16 @@ def start_agent_server(repos: Repositories) -> None:
         )
         return
     # Automatic dispatch means EVERY worker registered against this LiveKit
-    # project is a candidate for every call. A second backend left running with
-    # JUPUS_TRANSPORT=livekit — a stale terminal, a forgotten --reload — will
-    # happily take calls this one expects to handle, and because that other
-    # process has its own CALL_STATES, the call simply vanishes from this one's
-    # admin panel and database with no error anywhere. This cost real debugging
-    # time during Phase 14; the warning is here so it costs nobody else any.
+    # project is a candidate for every call. A second backend — a stale
+    # terminal, a forgotten --reload — will happily take calls this one expects
+    # to handle, and because that other process has its own CALL_STATES, the
+    # call simply vanishes from this one's admin panel and database with no
+    # error on either side. That cost real debugging time during Phase 14; the
+    # warning is here so it costs nobody else any.
     logger.warning(
         "LiveKit worker registering with automatic dispatch — it will accept calls for ANY "
-        "room in this project. Make sure no other backend is running with "
-        "JUPUS_TRANSPORT=livekit, or calls will be split between them at random."
+        "room in this project. Make sure only ONE backend is running against these "
+        "credentials, or calls will be split between them at random."
     )
     MAIN_LOOP = asyncio.get_running_loop()
     _REPOS = repos
