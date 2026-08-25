@@ -98,12 +98,12 @@ def main():
 
 ## Definition of Done
 
-- [ ] `pytest backend/tests/test_concurrency_stress.py` — all 5 tests pass, including the leakage check (#2) and the serial-vs-concurrent wall-clock proof (#3).
-- [ ] `python eval/concurrency_stress_test.py --mode mocked` run and its output saved/quoted somewhere referenced by `docs/answers.md`'s Q3 answer — a real table of N vs. wall-clock vs. leakage-found, not a description of what such a table would probably show.
-- [ ] If thread-pool saturation is actually observed at the higher N levels (Decision 3): documented plainly in `docs/DECISIONS.md` as a known, measured ceiling — including what raising it would look like (`loop.set_default_executor(ThreadPoolExecutor(max_workers=N))`, a one-line production config change) — rather than silently only reporting the N levels that looked good.
-- [ ] `docs/DECISIONS.md` entry: why concurrency is tested at the dispatcher layer directly rather than through the full transport stack (Decision 2's reasoning), and the SQLite single-writer caveat (Decision 4) restated in this context alongside the README's existing mention of it.
-- [ ] Optional: one small, capped live-API run (`--mode live --n-levels 5` or similar), its real numbers quoted directly in the video alongside the mocked report, clearly labeled as the one live data point among otherwise-mocked evidence.
-- [ ] `docs/answers.md`'s Q3 answer (iteration/scaling/health) updated to cite this phase's real numbers directly — "tested up to N concurrent calls, held up through X, degraded due to Y at higher N" — instead of describing the async architecture in the abstract.
+- [x] `pytest backend/tests/test_concurrency_stress.py` — all 5 tests pass, including the leakage check (#2) and the serial-vs-concurrent wall-clock proof (#3).
+- [x] `python eval/concurrency_stress_test.py --mode mocked` run and its output saved/quoted somewhere referenced by `docs/answers.md`'s Q3 answer — a real table of N vs. wall-clock vs. leakage-found, not a description of what such a table would probably show.
+- [x] If thread-pool saturation is actually observed at the higher N levels (Decision 3): documented plainly in `docs/DECISIONS.md` as a known, measured ceiling — including what raising it would look like (`loop.set_default_executor(ThreadPoolExecutor(max_workers=N))`, a one-line production config change) — rather than silently only reporting the N levels that looked good.
+- [x] `docs/DECISIONS.md` entry: why concurrency is tested at the dispatcher layer directly rather than through the full transport stack (Decision 2's reasoning), and the SQLite single-writer caveat (Decision 4) restated in this context alongside the README's existing mention of it.
+- [ ] Optional: one small, capped live-API run (`--mode live --n-levels 5` or similar), its real numbers quoted directly in the video alongside the mocked report, clearly labeled as the one live data point among otherwise-mocked evidence. **Not done this session** — needs a live-API confirmation per this repo's own resuming-work checklist before running paid-API sequences; skipped rather than run without that confirmation.
+- [x] `docs/answers.md`'s Q3 answer (iteration/scaling/health) updated to cite this phase's real numbers directly — "tested up to N concurrent calls, held up through X, degraded due to Y at higher N" — instead of describing the async architecture in the abstract.
 
 ---
 

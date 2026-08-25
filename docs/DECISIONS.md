@@ -280,3 +280,43 @@ expensive one. `eval/pricing.py`'s $/million-token constants are hardcoded and m
 re-verified against current published pricing before trusting any dollar figure this project
 displays — every place a cost is shown is labeled "estimated" in the UI/text itself, not just a
 footnote.
+
+### Phase 12: concurrency stress-tested at the dispatcher/asyncio/db layer, not through the full transport stack
+`eval/concurrency_stress_test.py` and `backend/tests/test_concurrency_stress.py` fire N distinct
+`call_id`s at `backend.dispatcher.process_supervisor_call` directly via `asyncio.gather`, rather
+than driving N real browser tabs each holding a real WebRTC session and a real OpenAI Realtime
+connection. The latter would mostly measure OpenAI's/the network's own concurrency handling, not
+this project's — the same reasoning `eval/replay_scenarios.py` and `backend/tests/
+test_scenarios.py` already apply when they call `process_supervisor_call` as "the real,
+unmocked pipeline" for their own purposes. This is the one layer whose concurrency behavior is
+actually this project's own engineering: a distinct `asyncio.Lock()` per `call_id`
+(`dispatcher.get_lock`), and each `GRAPH.invoke` dispatched off the event loop via
+`asyncio.to_thread` (Phase 5's design, since LangGraph's node functions make blocking Claude
+calls).
+
+Two genuine bottlenecks this exposed, both already-known, deliberate tradeoffs (SQLite as a local
+single-writer DB is named in the README's "Known limits"; the default `asyncio.to_thread` executor
+cap was flagged as a testable hypothesis, not an assumption, in `docs/phases/
+phase-12-concurrency-stress-test.md`'s Decision 3) — reported here plainly rather than only
+showing the N levels that looked good:
+
+- **SQLite single-writer contention.** `eval/concurrency_stress_test.py` deliberately runs against
+  a real SQLite-backed `Repositories` (not the in-memory fakes `backend/tests/test_scenarios.py`
+  uses), specifically so `repos.calls.upsert`/`repos.trace.record_event` exercise SQLite's actual
+  locking under concurrent writes rather than a fake that can't show this. A real, mocked-Claude
+  run on this machine (20 logical CPUs) showed per-call median latency already at ~172ms at N=5
+  (well above the simulated ~50ms of node work per call), climbing to ~406ms at N=20 and ~672ms at
+  N=40 — visible well before N=20 crosses this machine's thread-pool cap (below), so at least part
+  of this is SQLite write serialization, not thread-pool queuing alone.
+- **`asyncio.to_thread`'s default executor cap** (`min(32, os.cpu_count() + 4)` — 24 on this
+  20-core machine) is a hard ceiling on how many `GRAPH.invoke` calls can genuinely run in
+  parallel; `backend/tests/test_concurrency_stress.py::test_thread_pool_saturation_detected_at_high_n`
+  configures a small custom executor (`max_workers=2`, patched in via `asyncio.to_thread` itself,
+  not `loop.set_default_executor` — see that test's comment on why the latter isn't safely
+  reversible) to make this ceiling reachable and assert it's detected, without needing 32+ real
+  threads. Raising the real ceiling in production is a one-line change:
+  `loop.set_default_executor(ThreadPoolExecutor(max_workers=N))` at startup.
+
+Neither bottleneck is fixed as part of this phase — measuring and reporting them honestly is the
+job here, per `docs/phases/phase-12-concurrency-stress-test.md`'s own non-goals. See
+`docs/answers.md`'s Q3 for the full per-N table.
