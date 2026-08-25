@@ -78,6 +78,16 @@ regardless of your own confidence score. For email or phone specifically, spell 
 characters if it would help the caller confirm accurately. Keep it to one short sentence,
 phone-call style."""
 
+# Phase 13 (latency reduction), Decision 4 — the final paragraph was added
+# after a real live call showed confirm_field_answer's output_tokens
+# ballooning to 201/351/(truncated, failed)/274/178 across repeated
+# attempts at confirming a garbled, repeatedly-respelled email, eventually
+# exceeding call_claude_json's max_tokens=512 mid-generation and producing
+# invalid (truncated) JSON — the actual root cause of this tool's
+# multi-second retry tail, confirmed via trace_events, not assumed. The fix
+# is constraining verbosity at the source, not raising max_tokens (which
+# would let the wasteful generation succeed instead of failing, but not
+# make it fast).
 CONFIRM_FIELD_ANSWER_PROMPT = """The caller was just asked to confirm their "{field_name}",
 which we heard as "{candidate_value}". Interpret their reply: did they confirm it, deny it, or
 provide a correction?
@@ -85,7 +95,12 @@ provide a correction?
 If their reply isn't actually an answer at all — e.g. "what?", "can you repeat that?", a question
 back, or anything else showing they didn't hear or understand the question rather than answering
 it — set "needs_clarification" to true and leave "confirmed" false and "corrected_value" null; the
-question will simply be repeated, so don't guess at what they meant."""
+question will simply be repeated, so don't guess at what they meant.
+
+"corrected_value" must be nothing more than the corrected value itself — never an explanation,
+never your reasoning about what the caller might have meant, and never a restatement of their full
+spelled-out utterance. Even if the caller spelled something out slowly or repeated themselves
+several times, resolve it down to the short final value alone."""
 
 EXTRACT_DATETIME_PROMPT = """You are extracting a preferred consultation date and time-of-day
 window from the caller's most recent utterance in a law firm intake call.
