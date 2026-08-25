@@ -155,6 +155,20 @@ async def _replay_one(repos: Repositories, scenario_id: str, utterances: list[st
     call_id = f"replay-{scenario_id.lower()}-{uuid.uuid4().hex[:8]}"
     for i, utterance in enumerate(utterances):
         await dispatcher.process_supervisor_call(repos, call_id, f"tool-{i}", utterance)
+    # Phase 8's research node spawns ground_statute_citation as a background
+    # task (dispatcher.STATUTE_SEARCHES), rather than blocking the turn that
+    # triggers it — with no further turn after the scripted sequence ends to
+    # naturally reconcile it (the way a live call's next ask_supervisor
+    # would), this script previously raced its own exit against that task,
+    # so ground_statute_citation's trace_events (and thus its cost/latency)
+    # were only captured by luck. Explicitly awaited here, same pattern as
+    # backend/tests/test_scenarios.py's _await_statute_search — a no-op for
+    # scenarios that never spawned one (Phase 13, found while measuring a
+    # per-tool Haiku swap for this exact call).
+    task = dispatcher.STATUTE_SEARCHES.get(call_id)
+    if task:
+        await task
+        dispatcher._reconcile_statute_search(dispatcher.CALL_STATES[call_id], call_id)
     repos.evals.tag_eval_run(call_id, label, scenario_id=scenario_id)
     return call_id
 

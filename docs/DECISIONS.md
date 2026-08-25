@@ -421,3 +421,36 @@ at $1/$5 per million input/output vs. Sonnet's $2/$10, 2026-08-25) and `estimate
 prices per-event by whichever model that specific call actually used; an unrecognized model id falls
 back to the (more expensive) Sonnet rate rather than silently pricing at zero, so a missing pricing
 entry shows up as an overestimate worth investigating, never a hidden underestimate.
+
+### Phase 13 (follow-up): `ground_statute_citation` moved to Haiku — same pattern, second confirmed candidate
+Requested directly after identifying `ground_statute_citation` (Phase 8's legal-citation grounding
+call) as the single longest individual tool call post-Phase-13 (5047ms in one sample). Same task
+shape as `select_offered_slot`: closed-set selection from ≤3 candidates plus one short spoken-framing
+sentence, not free-text extraction — the same reasoning that made `select_offered_slot` a safe
+Haiku candidate applies here. A "trim the candidate text sent as input" idea was considered and
+dropped after actually measuring: the statute corpus entries are already short (200-400 characters,
+~50-80 tokens each) and the system prompt is compact (~220 tokens) — there was no real bloat to cut,
+and forcing a trim without evidence behind it would have been exactly the kind of
+assumption-over-measurement this whole latency effort set out to avoid.
+
+Correctness/timing confirmed via a direct, isolated comparison (not `eval/replay_scenarios.py` — see
+the known-issues entry below): the same real utterance against the same candidate set, Sonnet took
+4090ms and selected `tenancy-poe1977-s5` (Protection from Eviction Act); Haiku took 1367ms and
+selected the identical statute id — same correctness, ~3x faster, consistent with `select_offered_slot`'s
+result.
+
+Worth noting: this call is already latency-hidden behind Phase 8's research filler question
+(`node_research_deliver` treats "still running" and "nothing found" identically — Decision 4 of that
+phase). Speeding it up doesn't reduce caller-perceived wait time; it raises the odds the grounding
+finishes before the caller answers the filler, so a real citation is more likely to survive the race
+instead of being silently dropped.
+
+**Found in passing, documented, not fully resolved**: `eval/replay_scenarios.py` intermittently
+loses this background task entirely when driven through the full scripted S7a/S7b conversation — no
+error, no trace event past `search_statute_candidates`'s own `tool_call_start`, no exception. Not
+reproducible when the identical utterances are driven directly against `dispatcher.process_supervisor_call`
+in isolation (which is how the 4090ms/1367ms comparison above was actually obtained). A partial fix
+(explicitly awaiting the background task after the scripted turns, mirroring `test_scenarios.py`'s
+own `_await_statute_search` helper) was applied to `replay_scenarios.py` regardless — correct and
+necessary, but not sufficient to make the full-script case reliable. See
+`docs/known-issues/2026-08-25-003.md`.

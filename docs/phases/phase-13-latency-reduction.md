@@ -70,3 +70,22 @@ Add `cache_control: {"type": "ephemeral"}` to the system prompt block in both `c
 - [x] One real candidate shipped and measured: `select_offered_slot` (`node_booking`'s offered-slot-selection branch) switched to `HAIKU_MODEL_ID`. `eval/replay_scenarios.py --label phase13-haiku-select-slot` + `eval/compare_runs.py --baseline phase13-baseline --candidate phase13-haiku-select-slot`: **zero error-class regressions**. Notably, Haiku returned `needs_clarification: True` for the identical ambiguous utterance ("Yes, the alternative works." against 3 offered slots, S3) that Sonnet's own baseline run *also* returned `needs_clarification: True` for — same behavior, not a regression, and incidentally surfaces that S3's scripted utterance is genuinely ambiguous against the "up to three alternatives" feature (a scenario-script mismatch, not a model issue — not chased further here, out of scope). On the clear, unambiguous cases (S2, S7a, S7b), Haiku resolved the same task in 1092-1782ms vs. Sonnet's 3500ms for the same call shape in baseline — roughly 2-3x faster. The other three named candidates (`confirm_field_answer`, `confirm_booking_answer`, `classify_practice_area`) were not tested — one demonstrated, measured swap was judged sufficient to prove the pattern within this phase's scope; testing the rest is a natural follow-up, not abandoned by oversight.
 - [x] Final `eval/replay_scenarios.py --label phase13-final` run, `eval/compare_runs.py --baseline phase13-baseline --candidate phase13-final`: zero error-class regressions. Real, positive latency delta confirmed — reported as total/average Claude tool-call duration across all 8 scenario calls (`tool_call_end.duration_ms` summed per label) rather than through Phase 11's `supervisor_processing` stage breakdown, since that breakdown needs bridge-level events (`speech_stopped`, `ask_supervisor_received`) that `eval/replay_scenarios.py` never emits (it drives `process_supervisor_call` directly, bypassing `/bridge` entirely — see that script's own docstring). Both measure the same underlying thing; a live-call re-measurement through the real bridge would be needed to refresh the stage-breakdown table itself. Result: **132,991ms → 120,958ms total (16,624ms → 15,120ms average per call, ~9%)**. Written up in `docs/answers.md`'s Q1 update.
 - [x] `docs/DECISIONS.md` gets an entry for item 1 (prompt caching — shipped, measured, confirmed ineffective, kept anyway). Entries for items 2-4 still pending as those ship.
+
+## Follow-up, after the DoD above was already closed: `ground_statute_citation` → Haiku
+
+Requested directly after this phase's own data identified `ground_statute_citation` as the single
+longest individual tool call remaining. Same Decision 3 methodology, second confirmed candidate —
+full writeup in `docs/DECISIONS.md`'s "Phase 13 (follow-up)" entry: same task shape as
+`select_offered_slot` (closed-set selection, not free-text extraction), shipped after a direct
+isolated comparison (not `eval/replay_scenarios.py` — see below) showed identical correctness
+(same statute id selected) and ~3x faster (4090ms Sonnet vs. 1367ms Haiku). A candidate second
+change — trimming the candidate statute text sent as input — was considered and dropped after
+actually measuring the corpus (entries are already 200-400 characters; there was no real bloat to
+cut, and forcing a trim without evidence would have been exactly the assumption-over-measurement
+this phase set out to avoid).
+
+Also surfaced (documented, partially — not fully — fixed) a real bug in `eval/replay_scenarios.py`
+itself: the background statute-search task it spawns intermittently never completes when driven
+through the full scripted S7a/S7b conversation, with no error or trace signal at all — not
+reproducible when the same utterances are driven directly. See
+`docs/known-issues/2026-08-25-003.md`.
