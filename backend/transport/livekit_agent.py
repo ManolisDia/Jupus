@@ -35,6 +35,7 @@ livekit-agents 1.7.0 source rather than assumed:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any, Awaitable, Optional, TypeVar
@@ -55,7 +56,7 @@ from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVa
 
 from backend.config import settings
 from backend.db.repositories import Repositories
-from backend.dispatcher import mark_call_abandoned, run_supervisor_turn
+from backend.dispatcher import call_state_snapshot, mark_call_abandoned, run_supervisor_turn
 from backend.supervisor.fillers import (
     FILLER_IDLE_DELAY_SECONDS,
     FILLER_PHRASES,
@@ -79,6 +80,10 @@ FILLER_AUDIO_DIR = Path(__file__).resolve().parent / "filler_audio"
 # speech; interrupt_response true for real barge-in). Changing any of them in a
 # transport migration would make a live regression impossible to attribute.
 REALTIME_MODEL = "gpt-realtime-2.1"
+
+# Data-channel topic for the caller client's "captured details" panel.
+# Topic-scoped so a future data topic can't be misread as call state.
+CALL_STATE_TOPIC = "jupus.call_state"
 
 T = TypeVar("T")
 
@@ -107,10 +112,13 @@ class JupusAgent(Agent):
     rather than in another module-level dict keyed by call_id.
     """
 
-    def __init__(self, call_id: str, repos: Repositories) -> None:
+    def __init__(self, call_id: str, repos: Repositories, room: Any = None) -> None:
         super().__init__(instructions=SUPERVISOR_INSTRUCTIONS)
         self._call_id = call_id
         self._repos = repos
+        # Optional so unit tests can build an agent without a live room; with
+        # no room there is simply nothing to publish call state to.
+        self._room = room
         # Filler speech handles created for the turn currently in flight. Used
         # only to answer "did the caller cut off a filler?" — see ask_supervisor.
         self._filler_handles: list[Any] = []
@@ -201,11 +209,37 @@ class JupusAgent(Agent):
         # 3-strikes escalation bookkeeping (CLAUDE.md rule #7). The filler
         # having already played changes nothing about that contract; it just
         # means the fallback is spoken one beat later.
-        return await _on_main_loop(
+        result = await _on_main_loop(
             run_supervisor_turn(
                 self._repos, self._call_id, ctx.function_call.call_id, utterance
             )
         )
+        await self._publish_call_state()
+        return result
+
+    async def _publish_call_state(self) -> None:
+        """Push the caller-profile snapshot to the browser's "captured details"
+        panel — the LiveKit data-channel replacement for dispatcher's
+        broadcast_call_state over the /bridge WebSocket.
+
+        Display-only and strictly one-way, exactly as before: nothing the
+        client does with this can reach back into the call. Failures are
+        swallowed because a cosmetic panel update must never be able to break
+        a live call.
+        """
+        if self._room is None:
+            return
+        state = CALL_STATES.get(self._call_id)
+        if state is None:
+            return
+        try:
+            await self._room.local_participant.publish_data(
+                json.dumps(call_state_snapshot(state)),
+                topic=CALL_STATE_TOPIC,
+                reliable=True,
+            )
+        except Exception:
+            logger.warning("failed to publish call_state for %s", self._call_id, exc_info=True)
 
 
 def build_session() -> AgentSession:
@@ -251,7 +285,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await ctx.connect()
     session = build_session()
-    await session.start(agent=JupusAgent(call_id, repos), room=ctx.room)
+    await session.start(agent=JupusAgent(call_id, repos, ctx.room), room=ctx.room)
 
 
 def build_server() -> AgentServer:

@@ -2,6 +2,11 @@ const BACKEND_URL = window.JUPUS_BACKEND_URL;
 const BRIDGE_WS_URL = window.JUPUS_BRIDGE_WS_URL;
 const ACCESS_TOKEN = window.JUPUS_ACCESS_TOKEN || "";
 const REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
+// Phase 14 migration seam — "webrtc" (this file's hand-rolled path) or
+// "livekit" (client/livekit-transport.js). Must match the backend's
+// JUPUS_TRANSPORT: the two halves of a call have to agree on the transport.
+// Both this constant and the legacy path are deleted once LiveKit is verified.
+const TRANSPORT = window.JUPUS_TRANSPORT || "webrtc";
 
 const startBtn = document.getElementById("start-call");
 const endBtn = document.getElementById("end-call");
@@ -175,11 +180,13 @@ function renderCallState(snapshot) {
   }
 }
 
-function setupVisualizer() {
+// Takes the mic stream explicitly: under WebRTC it's the module-global
+// localStream, under LiveKit it's the published mic track's own MediaStream.
+function setupVisualizer(micStream = localStream) {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   audioCtx.resume?.().catch(() => {});
 
-  const localSource = audioCtx.createMediaStreamSource(localStream);
+  const localSource = audioCtx.createMediaStreamSource(micStream);
   localAnalyser = audioCtx.createAnalyser();
   localAnalyser.fftSize = 256;
   localAnalyser.smoothingTimeConstant = 0.75;
@@ -309,6 +316,7 @@ function teardown(statusMessage) {
     ws.close();
     ws = null;
   }
+  if (TRANSPORT === "livekit") teardownLiveKit();
   teardownVisualizer();
   callerSpeaking = false;
   responseActive = false;
@@ -462,6 +470,16 @@ async function startCall() {
   try {
     callId = crypto.randomUUID();
     showCallIdChip(callId);
+
+    // Phase 14 migration seam. Everything below this branch is the legacy
+    // hand-rolled WebRTC path and is deleted, along with the branch itself,
+    // once LiveKit is verified live across all 7 canonical scenarios.
+    if (TRANSPORT === "livekit") {
+      await startLiveKitCall(callId);
+      endBtn.disabled = false;
+      setStatus("connected");
+      return;
+    }
 
     const sessionResp = await fetch(
       `${BACKEND_URL}/session${ACCESS_TOKEN ? `?access_token=${ACCESS_TOKEN}` : ""}`,

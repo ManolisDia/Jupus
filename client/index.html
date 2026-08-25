@@ -181,7 +181,14 @@
     </div>
   </main>
   <audio id="remote-audio" autoplay></audio>
+  <!-- Phase 14: LiveKit browser SDK, pinned. Loaded from a CDN rather than
+       vendored or bundled, consistent with docs/DECISIONS.md's no-bundler
+       choice — and the app already cannot function without internet (OpenAI +
+       Anthropic), so this adds no new failure mode. -->
+  <script src="https://unpkg.com/livekit-client@2.22.0/dist/livekit-client.umd.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
+  <!-- After app.js: it calls that file's UI functions directly. -->
+  <script src="livekit-transport.js"></script>
 </body>
 </html>
