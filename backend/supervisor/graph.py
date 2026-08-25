@@ -321,6 +321,15 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
     def _invalid_format_reply(field_name: str) -> str:
         return f"That doesn't look like a valid {FIELD_LABELS[field_name]} — could you say it again?"
 
+    # Phase 13 (latency reduction) — set only by the fresh-extraction branch
+    # below, via the merged extract_and_confirm_field call. Left None on the
+    # pending_field/corrected_value branch, which never calls that merged
+    # tool (it already made its own Claude call, confirm_field_answer, and
+    # derives new_value/new_status from that reply's corrected_value plus a
+    # hardcoded confidence, not from a fresh extraction) — the confirm-back
+    # phrasing for that path must still come from a standalone
+    # generate_confirm_back call below, not a stale/absent field.
+    extracted = None
     try:
         if allowed_pending_field is not None:
             pending_field = allowed_pending_field if profile[allowed_pending_field]["status"] == "pending_confirm" else None
@@ -366,8 +375,17 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                     stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
                 )
                 return result
+            # Phase 13 (latency reduction) — merges what used to be a
+            # separate extract_field + generate_confirm_back round trip into
+            # one call: the model extracts the value AND drafts the
+            # confirm-back phrasing for it in the same response. The
+            # confirm_back_phrasing is simply discarded below when this
+            # extraction doesn't end up pending_confirm (deny/reprompt or
+            # auto-confirmed) — a small amount of wasted output generation,
+            # never a wasted round trip.
             extracted = call_claude_tool(
-                repos.trace, call_id, "capture", "extract_field", tools.extract_field, utterance, target_field
+                repos.trace, call_id, "capture", "extract_and_confirm_field",
+                tools.extract_and_confirm_field, utterance, target_field,
             )
             if target_field in ("email", "phone"):
                 # handled fully explicitly, not through apply_extraction's
@@ -393,10 +411,15 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
 
     if new_status == "pending_confirm":
         try:
-            reply = call_claude_tool(
-                repos.trace, call_id, "capture", "generate_confirm_back",
-                tools.generate_confirm_back, target_field, new_value,
-            )
+            if extracted is not None:
+                # Phase 13 — already drafted in the same call as the
+                # extraction itself; no second round trip needed.
+                reply = extracted["confirm_back_phrasing"]
+            else:
+                reply = call_claude_tool(
+                    repos.trace, call_id, "capture", "generate_confirm_back",
+                    tools.generate_confirm_back, target_field, new_value,
+                )
         except LLMCallFailed:
             return _llm_failure_fallback(repos, state, "capture")
         repos.trace.record_event(

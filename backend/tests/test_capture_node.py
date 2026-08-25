@@ -37,7 +37,8 @@ def _capture_state(**caller_profile_overrides):
 def test_field_priority_order_targets_name_first(repos):
     state = _capture_state()
     with patch(
-        "backend.supervisor.tools.extract_field", return_value={"value": "x", "confidence": 0.9}
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "x", "confidence": 0.9, "confirm_back_phrasing": "Did you say x?"},
     ) as mock_extract:
         _invoke(state, repos)
     mock_extract.assert_called_once()
@@ -50,48 +51,44 @@ def test_high_confidence_valid_email_still_confirms_back(repos):
     state = _capture_state(
         name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
     )
-    with (
-        patch(
-            "backend.supervisor.tools.extract_field", return_value={"value": "a@b.com", "confidence": 0.95}
-        ),
-        patch(
-            "backend.supervisor.tools.generate_confirm_back", return_value="Did you say a@b.com?"
-        ) as mock_confirm_back,
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "a@b.com", "confidence": 0.95, "confirm_back_phrasing": "Did you say a@b.com?"},
     ):
         result = _invoke(state, repos)
     assert result["caller_profile"]["email"]["status"] == "pending_confirm"
-    mock_confirm_back.assert_called_once()
+    # Phase 13: the confirm-back phrasing now comes from the same merged
+    # call as the extraction itself, not a separate generate_confirm_back
+    # round trip — asserting the reply matches it directly proves the merge
+    # actually wires the phrasing through rather than dropping it.
+    assert result["pending_reply"] == "Did you say a@b.com?"
 
 
 def test_confirmed_field_advances_to_next_target(repos):
     state = _capture_state()
     with patch(
-        "backend.supervisor.tools.extract_field", return_value={"value": "Alex Smith", "confidence": 0.9}
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "Alex Smith", "confidence": 0.9, "confirm_back_phrasing": "Did you say Alex Smith?"},
     ):
         result = _invoke(state, repos)
     assert result["caller_profile"]["name"]["status"] == "confirmed"
     assert result["caller_profile"]["name"]["value"] == "Alex Smith"
 
-    with patch("backend.supervisor.tools.extract_field") as mock_extract:
-        mock_extract.return_value = {"value": "a@b.com", "confidence": 0.9}
+    with patch("backend.supervisor.tools.extract_and_confirm_field") as mock_extract:
+        mock_extract.return_value = {"value": "a@b.com", "confidence": 0.9, "confirm_back_phrasing": "Did you say a@b.com?"}
         _invoke(result, repos)
     assert mock_extract.call_args.args[1] == "email"
 
 
 def test_medium_confidence_triggers_pending_and_confirm_back_reply(repos):
     state = _capture_state()
-    with (
-        patch(
-            "backend.supervisor.tools.extract_field", return_value={"value": "Alex", "confidence": 0.6}
-        ),
-        patch(
-            "backend.supervisor.tools.generate_confirm_back", return_value="Did you say Alex?"
-        ) as mock_confirm_back,
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "Alex", "confidence": 0.6, "confirm_back_phrasing": "Did you say Alex?"},
     ):
         result = _invoke(state, repos)
     assert result["caller_profile"]["name"]["status"] == "pending_confirm"
-    mock_confirm_back.assert_called_once()
-    assert result["pending_reply"]
+    assert result["pending_reply"] == "Did you say Alex?"
 
 
 def test_three_failed_attempts_on_same_field_escalates(repos):
@@ -101,9 +98,9 @@ def test_three_failed_attempts_on_same_field_escalates(repos):
         # each cycle: medium-confidence extraction -> pending_confirm,
         # then a denied confirmation with no correction -> back to "missing"
         # (or escalation on the 3rd) — attempts only increments on denial
-        with (
-            patch("backend.supervisor.tools.extract_field", return_value={"value": "Alex", "confidence": 0.6}),
-            patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say Alex?"),
+        with patch(
+            "backend.supervisor.tools.extract_and_confirm_field",
+            return_value={"value": "Alex", "confidence": 0.6, "confirm_back_phrasing": "Did you say Alex?"},
         ):
             state = _invoke(state, repos)
         assert state["caller_profile"]["name"]["status"] == "pending_confirm"
@@ -191,7 +188,10 @@ def test_persistently_invalid_email_explains_and_escalates_instead_of_looping(re
         name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
     )
     for _ in range(3):
-        with patch("backend.supervisor.tools.extract_field", return_value={"value": "manos44", "confidence": 0.9}):
+        with patch(
+            "backend.supervisor.tools.extract_and_confirm_field",
+            return_value={"value": "manos44", "confidence": 0.9, "confirm_back_phrasing": "Did you say manos44?"},
+        ):
             state = _invoke(state, repos)
         if state["stage"] == "escalation":
             break
@@ -206,14 +206,17 @@ def test_persistently_invalid_email_explains_and_escalates_instead_of_looping(re
 
 
 def test_zero_confidence_email_still_explains_and_reprompts(repos):
-    # regression: extract_field returning confidence 0 (nothing recognizable
+    # regression: extraction returning confidence 0 (nothing recognizable
     # as an email said at all) must still get the explanatory reprompt, not
     # silently fall through to a plain "what's your email?" repeat with no
     # indication anything was wrong
     state = _capture_state(
         name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
     )
-    with patch("backend.supervisor.tools.extract_field", return_value={"value": "", "confidence": 0}):
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "", "confidence": 0, "confirm_back_phrasing": ""},
+    ):
         result = _invoke(state, repos)
     assert result["caller_profile"]["email"]["status"] == "missing"
     assert result["caller_profile"]["email"]["attempts"] == 1
@@ -229,8 +232,11 @@ def test_low_confidence_well_formed_email_asks_to_spell_out_instead_of_confirmin
         name={"value": "Alex", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True}
     )
     with patch(
-        "backend.supervisor.tools.extract_field",
-        return_value={"value": "alex@example.com", "confidence": 0.6},
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={
+            "value": "alex@example.com", "confidence": 0.6,
+            "confirm_back_phrasing": "Did you say alex@example.com?",
+        },
     ):
         result = _invoke(state, repos)
     assert result["caller_profile"]["email"]["status"] == "missing"
@@ -256,7 +262,7 @@ def test_all_fields_confirmed_transitions_to_research(repos):
 def test_llm_failure_returns_fallback_reply_without_crashing(repos):
     state = _capture_state()
     with patch(
-        "backend.supervisor.tools.extract_field",
+        "backend.supervisor.tools.extract_and_confirm_field",
         side_effect=json.JSONDecodeError("truncated", "doc", 0),
     ):
         result = _invoke(state, repos)
@@ -268,7 +274,7 @@ def test_llm_failure_returns_fallback_reply_without_crashing(repos):
 def test_three_consecutive_llm_failures_escalates_with_system_error(repos):
     state = _capture_state()
     with patch(
-        "backend.supervisor.tools.extract_field",
+        "backend.supervisor.tools.extract_and_confirm_field",
         side_effect=json.JSONDecodeError("truncated", "doc", 0),
     ):
         for _ in range(3):
