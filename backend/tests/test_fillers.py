@@ -90,9 +90,12 @@ def test_every_phrase_has_committed_audio():
         assert (FILLER_AUDIO_DIR / f"{key}.wav").exists(), f"missing filler audio for {key!r}"
 
 
-def test_filler_audio_is_the_format_the_streamer_expects():
-    # backend/transport/filler_audio.py streams these into rtc.AudioFrames with
-    # no decoding or resampling, so the container must be mono s16 @ 24kHz.
+def test_filler_audio_is_the_format_the_generator_writes():
+    # LiveKit's audio_frames_from_file decodes and resamples these to 48kHz on
+    # the way out, so this isn't a hard runtime requirement — it's a guard that
+    # the committed WAVs actually came from scripts/generate_filler_audio.py
+    # (mono s16 @ 24kHz, straight from OpenAI's response_format="pcm") rather
+    # than being hand-dropped in some other format that happens to decode.
     for key in FILLER_PHRASES:
         with wave.open(str(FILLER_AUDIO_DIR / f"{key}.wav"), "rb") as wav:
             assert wav.getnchannels() == 1

@@ -20,9 +20,9 @@ order of importance:
    is a local file read, not a network call.
 
 Output is raw PCM wrapped in a WAV container — signed 16-bit mono at 24kHz,
-which is what OpenAI's `response_format="pcm"` returns and what
-backend/transport/filler_audio.py streams into rtc.AudioFrames without any
-resampling or decoding.
+which is exactly what OpenAI's `response_format="pcm"` returns. LiveKit's own
+`utils.audio.audio_frames_from_file` decodes and resamples to 48kHz at play
+time, so no custom streaming code is needed on the agent side.
 
 The WAVs are committed. Re-run this only when FILLER_PHRASES, VOICE, or
 VOICE_SPEED changes in backend/supervisor/fillers.py — a mismatch between the
