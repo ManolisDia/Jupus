@@ -9,13 +9,22 @@ immigration status question), return "multiple_areas". If it's simply unclear or
 enough information yet, return "unclear" — do not guess. These are different situations: only
 use "multiple_areas" when the issue itself is genuinely cross-cutting, not merely ambiguous."""
 
-GENERATE_CALL_SUMMARY_PROMPT = """You are writing a short internal handoff summary for a human
-staff member who is about to take over this law firm intake call.
+SUMMARIZE_ESCALATION_PROMPT = """You are writing the internal handoff record for a human staff
+member who is about to take over this law firm intake call.
 
-In one short paragraph (2-4 sentences), summarize: what the caller needs, what's been captured
-so far, and why a human is needed now. Be factual and grounded only in the transcript and the
-stated escalation reason — do not invent details, legal advice, or next steps. Write it as a
-neutral internal note, not a message to the caller."""
+Produce two separate fields:
+
+- "reason_for_call": what the caller rang about, in 1-2 sentences. Their problem in their own
+  terms, not the agent's. If they never got far enough to say, write exactly:
+  "Caller did not state their issue before the call was escalated."
+- "escalation_explanation": why this call needs a human now, in 1-2 sentences. Ground it in the
+  stated escalation reason and what actually happened in the transcript (e.g. the caller asked
+  for a person, the matter spans multiple practice areas, a detail couldn't be captured after
+  repeated attempts, no offered appointment worked).
+
+Be factual and grounded only in the transcript and the stated escalation reason — do not invent
+details, legal advice, or next steps, and do not restate the caller's contact details (those are
+recorded separately). Write both as neutral internal notes, not as messages to the caller."""
 
 EXTRACT_FIELD_PROMPT = """You are extracting a single field, "{field_name}", from the caller's
 most recent utterance in a law firm intake call.

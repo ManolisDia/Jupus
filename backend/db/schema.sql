@@ -84,3 +84,24 @@ CREATE TABLE trace_events (
 -- that into a loud, immediate failure instead of silently corrupting trace
 -- ordering (docs/code-review-2026-08-24.md finding #2).
 CREATE UNIQUE INDEX idx_trace_events_call_seq ON trace_events(call_id, seq);
+
+-- The human-handoff record: what a person picking this call up off the
+-- queue needs before they ring the caller back. One row per escalated call
+-- — why they rang, whatever contact details we managed to confirm, and why
+-- the agent gave up. docs/handoffs/{call_id}.md is the same data rendered
+-- for a human to read; this table is the queryable copy.
+-- reason_for_call/escalation_explanation are nullable because the
+-- deterministic fallback path (an escalation triggered BY an LLM failure)
+-- deliberately doesn't make another Claude call to fill them in — see
+-- node_escalation in backend/supervisor/graph.py.
+CREATE TABLE escalations (
+    call_id TEXT PRIMARY KEY REFERENCES calls(call_id),
+    escalated_at TEXT NOT NULL,
+    escalation_reason TEXT,
+    reason_for_call TEXT,
+    escalation_explanation TEXT,
+    practice_area TEXT,
+    caller_name TEXT,
+    caller_email TEXT,
+    caller_phone TEXT
+);

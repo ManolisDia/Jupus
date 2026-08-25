@@ -27,7 +27,12 @@ from backend import dispatcher
 from backend.db.repositories import Repositories
 from backend.dispatcher import run_supervisor_turn
 from backend.supervisor.state import CALL_STATES
-from backend.tests.fakes import FakeCallRepository, FakeSlotRepository, FakeTraceRepository
+from backend.tests.fakes import (
+    FakeCallRepository,
+    FakeEscalationRepository,
+    FakeSlotRepository,
+    FakeTraceRepository,
+)
 
 SLOT_A = {"id": 1, "area": "tenancy", "start_time": "2026-09-03T14:00:00", "is_booked": 0}
 SLOT_B = {"id": 2, "area": "tenancy", "start_time": "2026-09-03T15:00:00", "is_booked": 0}
@@ -44,12 +49,22 @@ def clear_dispatcher_state():
 
 @pytest.fixture
 def repos():
-    return Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    return Repositories(
+        calls=FakeCallRepository(),
+        slots=None,
+        trace=FakeTraceRepository(),
+        escalations=FakeEscalationRepository(),
+    )
 
 
 @pytest.fixture
 def booking_repos():
-    return Repositories(calls=FakeCallRepository(), slots=FakeSlotRepository(), trace=FakeTraceRepository())
+    return Repositories(
+        calls=FakeCallRepository(),
+        slots=FakeSlotRepository(),
+        trace=FakeTraceRepository(),
+        escalations=FakeEscalationRepository(),
+    )
 
 
 async def _turn(repos, call_id, tool_call_id, utterance) -> str:
@@ -439,7 +454,13 @@ async def test_scenario_s5_model_judged_escalation_multi_area(repos, tmp_path):
     # routing node's own turn).
     with (
         patch.object(dispatcher.tools, "HANDOFFS_DIR", tmp_path),
-        patch("backend.supervisor.tools.generate_call_summary", return_value="Multi-area issue, needs a human."),
+        patch(
+            "backend.supervisor.tools.summarize_escalation",
+            return_value={
+                "reason_for_call": "Employment dispute tangled with a visa question.",
+                "escalation_explanation": "Multi-area issue, needs a human.",
+            },
+        ),
     ):
         await _turn(repos, call_id, "tool-2", "(silence)")
 
@@ -454,7 +475,13 @@ async def test_scenario_s6_explicit_escalation(repos, tmp_path):
 
     with (
         patch.object(dispatcher.tools, "HANDOFFS_DIR", tmp_path),
-        patch("backend.supervisor.tools.generate_call_summary", return_value="Caller explicitly asked for a human."),
+        patch(
+            "backend.supervisor.tools.summarize_escalation",
+            return_value={
+                "reason_for_call": "Not stated before asking for a person.",
+                "escalation_explanation": "Caller explicitly asked for a human.",
+            },
+        ),
     ):
         # escalation happens on the FIRST ask_supervisor call, before
         # routing/capture ever run

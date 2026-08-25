@@ -102,6 +102,15 @@ class CallState(TypedDict):
     background_search_query: Optional[str]
 
 
+def confirmed_value(profile: CallerProfile, field_name: str) -> Optional[str]:
+    """The caller-supplied value for `field_name`, but only once it's been
+    read back and confirmed. A "pending_confirm" value is a guess at what a
+    noisy mic picked up, not a fact — persisting or handing it to a human as
+    though it were is how a wrong phone number gets called back."""
+    field = profile[field_name]
+    return field["value"] if field["status"] == "confirmed" else None
+
+
 def _new_field_capture() -> FieldCapture:
     return FieldCapture(value=None, confidence=0.0, status="missing", attempts=0, validated=True)
 

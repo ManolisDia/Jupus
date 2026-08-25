@@ -9,7 +9,7 @@ from backend import dispatcher
 from backend.db.repositories import Repositories
 from backend.dispatcher import mark_call_abandoned, run_supervisor_turn
 from backend.supervisor.state import CALL_STATES, new_call_state
-from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
+from backend.tests.fakes import FakeCallRepository, FakeEscalationRepository, FakeTraceRepository
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,12 @@ def clear_dispatcher_state():
 
 @pytest.fixture
 def repos():
-    return Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    return Repositories(
+        calls=FakeCallRepository(),
+        slots=None,
+        trace=FakeTraceRepository(),
+        escalations=FakeEscalationRepository(),
+    )
 
 
 def _seed_state(call_id: str, stage: str = "routing") -> dict:
@@ -210,18 +215,26 @@ async def test_unexpected_exception_in_graph_invoke_delivers_fallback_not_dead_a
     assert repos.calls.get("call-1") is not None
 
 
-async def test_unexpected_exception_writes_handoff_note(repos):
+async def test_unexpected_exception_records_the_handoff(repos):
+    """The crash path must leave the same trail as node_escalation: a row in
+    `escalations` AND the markdown note. It never reaches that node — the
+    graph invocation is what blew up — so this is the only thing standing
+    between an unhandled error and a caller nobody knows to call back."""
     _seed_state("call-1")
 
     with (
         patch("backend.dispatcher.GRAPH.invoke", side_effect=RuntimeError("boom")),
-        patch("backend.dispatcher.tools.write_minimal_handoff_note") as note_spy,
-        patch("backend.dispatcher.tools.write_handoff_note") as full_note_spy,
+        patch("backend.supervisor.graph.tools.write_handoff_note") as note_spy,
     ):
         reply, _stage = await run_supervisor_turn(repos, "call-1", "tool-1", "hi")
 
     note_spy.assert_called_once()
-    full_note_spy.assert_not_called()
+    assert "call-1" in repos.escalations.rows
+    row = repos.escalations.rows["call-1"]
+    assert row["escalation_reason"] == "system_error"
+    # Deterministic summary only — no second Claude call straight after an
+    # unhandled failure.
+    assert "boom" in row["escalation_explanation"]
 
 
 async def test_unexpected_exception_records_trace_event(repos):

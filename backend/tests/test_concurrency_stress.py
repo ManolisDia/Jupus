@@ -22,7 +22,7 @@ from backend import dispatcher
 from backend.db.repositories import Repositories
 from backend.dispatcher import run_supervisor_turn
 from backend.supervisor.state import CALL_STATES, new_call_state
-from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
+from backend.tests.fakes import FakeCallRepository, FakeEscalationRepository, FakeTraceRepository
 from eval.concurrency_stress_test import _check_leakage, _mock_graph_invoke, _seed_utterance
 
 
@@ -49,7 +49,12 @@ def clear_dispatcher_state():
 
 @pytest.fixture
 def repos():
-    return Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    return Repositories(
+        calls=FakeCallRepository(),
+        slots=None,
+        trace=FakeTraceRepository(),
+        escalations=FakeEscalationRepository(),
+    )
 
 
 async def _fire_n_distinct_calls(repos: Repositories, n: int) -> list[str]:

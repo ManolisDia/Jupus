@@ -3,6 +3,7 @@ from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schema.sql"
 SCHEMA_TABLES = (
+    "escalations",
     "trace_events",
     "human_annotations",
     "call_reviews",
