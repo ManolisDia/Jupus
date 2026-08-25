@@ -15,6 +15,13 @@ from backend.supervisor.tracing import traced_call
 # after repeated prompt tightening — upgraded per the revisit condition
 # logged in docs/DECISIONS.md.
 MODEL_ID = "claude-sonnet-5"
+# Phase 13 (latency reduction), Decision 3 — a candidate override for
+# specific closed-set classification tool calls (select_offered_slot,
+# confirm_field_answer, confirm_booking_answer, classify_practice_area),
+# never a project-wide default. Only used via call_claude_tool's `model=`
+# kwarg, and only after a live-transcript eval/compare_runs.py check shows
+# no error-class regression for that specific tool.
+HAIKU_MODEL_ID = "claude-haiku-4-5-20251001"
 RETRY_BACKOFF_SECONDS = 0.5
 # json.JSONDecodeError/StopIteration: a malformed or truncated response is
 # functionally the same failure as an API error from the caller's
@@ -40,6 +47,19 @@ class LLMCallFailed(Exception):
 # thread later reused by the pool never sees a stale value.
 _last_usage = threading.local()
 
+# Phase 13 (latency reduction), Decision 3 — same thread-local-stash shape
+# as _last_usage above, and safe for the identical reason (call_claude_tool's
+# call to `fn` and any nested call_claude_json/call_claude_text call inside
+# it always run synchronously in the same OS thread). Set by call_claude_tool
+# before invoking `fn`, read by call_claude_json/call_claude_text, cleared
+# in call_claude_tool's `finally` so it can never leak into an unrelated
+# later call on a reused worker thread.
+_model_override = threading.local()
+
+
+def _resolve_model() -> str:
+    return getattr(_model_override, "value", None) or MODEL_ID
+
 
 # Phase 13 (latency reduction), Decision 1 — every node's system prompt
 # (backend/supervisor/prompts.py) is static per node and resent verbatim on
@@ -53,7 +73,11 @@ def _cached_system_block(system: str) -> list[dict]:
 
 def _record_usage(response) -> None:
     _last_usage.value = {
-        "model": MODEL_ID,
+        # Read off the response itself, not the MODEL_ID constant — accurate
+        # regardless of whether a per-call model override (Decision 3) was
+        # in effect, which cost accounting depends on to price the right
+        # model's tokens at the right rate (see eval/pricing.py).
+        "model": response.model,
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
         # Anthropic reports cache activity as separate usage fields, not
@@ -66,7 +90,7 @@ def _record_usage(response) -> None:
 
 def call_claude_json(system: str, user_content: str, json_schema: dict, max_tokens: int = 512) -> dict:
     response = _client.messages.create(
-        model=MODEL_ID,
+        model=_resolve_model(),
         max_tokens=max_tokens,
         system=_cached_system_block(system),
         messages=[{"role": "user", "content": user_content}],
@@ -79,7 +103,7 @@ def call_claude_json(system: str, user_content: str, json_schema: dict, max_toke
 
 def call_claude_text(system: str, user_content: str, max_tokens: int = 512) -> str:
     response = _client.messages.create(
-        model=MODEL_ID,
+        model=_resolve_model(),
         max_tokens=max_tokens,
         system=_cached_system_block(system),
         messages=[{"role": "user", "content": user_content}],
@@ -106,15 +130,26 @@ def _run_and_record_usage(
 
 
 def call_claude_tool(
-    trace_repo: TraceRepository, call_id: str, node: str, tool_name: str, fn: Callable, *args, **kwargs
+    trace_repo: TraceRepository, call_id: str, node: str, tool_name: str, fn: Callable, *args,
+    model: str | None = None, **kwargs,
 ):
+    # Phase 13, Decision 3 — `model` is consumed here, never forwarded to
+    # `fn` itself (tools.py functions take no model parameter; they call
+    # call_claude_json/call_claude_text, which read the override via the
+    # thread-local instead). Cleared in `finally` so a retry attempt still
+    # sees it (same call, same intended model) but no later, unrelated
+    # call_claude_tool invocation on a reused worker thread ever could.
+    _model_override.value = model
     try:
-        return _run_and_record_usage(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
-    except RETRYABLE_ERRORS as e:
-        trace_repo.record_event(call_id, "llm_retry", node=node, tool_name=tool_name, attempt=1, error=str(e))
-        time.sleep(RETRY_BACKOFF_SECONDS)
         try:
             return _run_and_record_usage(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
-        except RETRYABLE_ERRORS as retry_error:
-            trace_repo.record_event(call_id, "llm_call_failed", node=node, tool_name=tool_name, error=str(retry_error))
-            raise LLMCallFailed(retry_error) from retry_error
+        except RETRYABLE_ERRORS as e:
+            trace_repo.record_event(call_id, "llm_retry", node=node, tool_name=tool_name, attempt=1, error=str(e))
+            time.sleep(RETRY_BACKOFF_SECONDS)
+            try:
+                return _run_and_record_usage(trace_repo, call_id, node, tool_name, fn, *args, **kwargs)
+            except RETRYABLE_ERRORS as retry_error:
+                trace_repo.record_event(call_id, "llm_call_failed", node=node, tool_name=tool_name, error=str(retry_error))
+                raise LLMCallFailed(retry_error) from retry_error
+    finally:
+        _model_override.value = None

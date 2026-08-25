@@ -355,3 +355,69 @@ instead of a simulated one. All 5 independently resolved the correct practice ar
 cross-call mixing in the stored transcripts, though a single live turn only reaches classification
 and the first capture question — narrower leakage coverage than the mocked sweep's fully-populated
 profiles, since less state exists yet to check for contamination.
+
+### Phase 13: `extract_field` + `generate_confirm_back` merged into one call — the originally-planned second merge doesn't exist
+`node_capture`'s fresh-extraction branch (`backend/supervisor/graph.py`) made two sequential Claude
+calls whenever a field needed confirming: extract, then a separate round trip for the confirm-back
+phrasing. `tools.extract_and_confirm_field` now does both in one JSON-schema call. Real live-call
+measurement (`replay-s4-62114f1c` baseline vs. `phase13-merge-capture`) showed the identical turn
+shape going from two round trips (`extract_field` 1522ms + `generate_confirm_back` 2552ms = 4074ms)
+to one (`extract_and_confirm_field` 3221ms) with zero error-class regression — ~21% faster, and
+structurally more significant than the percentage: one fewer full request/response cycle, and one
+fewer place for the retry tail (below) to strike.
+
+This doc's phase-13 planning originally also claimed a second merge —
+`select_offered_slot`+`generate_confirmation_summary` in `node_booking` — as a mirror-image
+opportunity. **Found to be wrong while implementing**: re-reading `node_booking` in full shows
+`select_offered_slot`'s branch never calls `generate_confirmation_summary` at all (it books directly
+and replies with a fixed string); `generate_confirmation_summary`'s actual neighbor is
+`extract_datetime`, separated by a deterministic `check_availability` call whose *result* (which
+slot, if any, is available) `generate_confirmation_summary` needs as input — genuinely blocked by a
+data dependency, not just unexplored. A second real capture-side candidate,
+`_finish_fast_pass`'s own extract+confirm-back pair, was also considered and deliberately left
+unmerged: unlike `node_capture`'s branch, its confirm-back can be for an *earlier* field than the one
+just extracted (Phase 7's background verification can resolve an earlier field first), so merging
+would need either drafting confirm-back phrasing for a value the model never saw, or conditional
+fallback logic — real complexity risk in code with a documented history of confirm-back
+misattribution bugs (`docs/fixes/`), for the single-call saving on the least-frequent capture turn.
+
+### Phase 13: `confirm_field_answer`'s retry-driven latency tail — root-caused via real trace data, fixed at the prompt, not the token ceiling
+A live call's `trace_events` (`call_id=56e57e0f-...`) showed `confirm_field_answer`'s `output_tokens`
+climbing unpredictably (201, 351, a truncated failure, 274, 178, 30) for what should be a compact
+3-field JSON object, while a caller repeatedly re-spelled a garbled email. The failing call's
+`corrected_value` generation grew long enough to exceed `call_claude_json`'s `max_tokens=512`
+mid-generation, producing invalid truncated JSON, triggering the existing retry-once path — two
+~7.5s failed attempts is exactly where the previously-observed 10s+ max came from.
+`confirm_booking_answer` (boolean-only schema, no free-text field) showed zero retries in the same
+data, confirming the fix belongs on `CONFIRM_FIELD_ANSWER_PROMPT`'s verbosity, not the retry
+machinery or a larger token ceiling — raising `max_tokens` would let the wasteful generation succeed
+without making it any faster. See `docs/fixes/2026-08-25-002.md`.
+
+### Phase 13: per-tool model choice via a thread-local override, not a project-wide `MODEL_ID` change — one candidate shipped, three left for follow-up
+`call_claude_tool` gained an optional `model=` kwarg (a thread-local stash cleared in `finally`, same
+shape as Decision 8's usage-capture stash) so a specific tool call can use `HAIKU_MODEL_ID` without
+touching the project-wide default. `docs/DECISIONS.md`'s existing Haiku-rejection entry is scoped
+to free-text extraction-with-formatting (`extract_field`'s spoken "at"/"dot" → `@`/`.` conversion) —
+closed-set classification is a different task shape and was never actually re-tested until now.
+`select_offered_slot` (pick an index / decline / needs-clarification from a short offered list)
+shipped on `HAIKU_MODEL_ID` after `eval/replay_scenarios.py --label phase13-haiku-select-slot` +
+`eval/compare_runs.py` showed zero error-class regression against the Sonnet baseline. Notably,
+Haiku returned `needs_clarification: True` for the same ambiguous "Yes, the alternative works."
+utterance (against 3 offered slots) that Sonnet's own baseline run *also* returned
+`needs_clarification: True` for — identical behavior, not a regression, and this incidentally
+surfaces that scenario S3's scripted utterance is genuinely ambiguous against the "offer up to
+three alternatives" feature, independent of model choice (not chased further, out of scope here).
+On the unambiguous cases, Haiku resolved the same call shape in 1092-1782ms vs. Sonnet's 3500ms in
+baseline — roughly 2-3x faster. `confirm_field_answer`, `confirm_booking_answer`, and
+`classify_practice_area` remain untested Haiku candidates — one demonstrated, measured swap was
+judged sufficient to prove the pattern within this phase, not evidence the others would also be
+safe; each needs its own `eval/compare_runs.py` check before switching.
+
+Shipping a real per-call model override also required fixing a latent cost-accounting gap:
+`llm_usage`'s recorded `model` field previously hardcoded `MODEL_ID` rather than reading
+`response.model`, and `eval/pricing.py`'s cost estimator assumed every Claude call in a batch was
+priced at one model's rate. `eval/pricing.py` now has a `CLAUDE_MODEL_RATES` table (Haiku confirmed
+at $1/$5 per million input/output vs. Sonnet's $2/$10, 2026-08-25) and `estimate_claude_cost_usd`
+prices per-event by whichever model that specific call actually used; an unrecognized model id falls
+back to the (more expensive) Sonnet rate rather than silently pricing at zero, so a missing pricing
+entry shows up as an overestimate worth investigating, never a hidden underestimate.

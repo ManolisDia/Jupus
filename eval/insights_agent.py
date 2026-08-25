@@ -19,7 +19,7 @@ from backend.db.repositories.base import TraceRepository
 from backend.supervisor import tools
 from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
 from eval.error_classes import get_active_error_classes
-from eval.pricing import estimate_cost_usd
+from eval.pricing import estimate_claude_cost_usd, estimate_cost_usd
 
 logger = logging.getLogger(__name__)
 
@@ -209,20 +209,36 @@ def _cost_for_call(events: list[dict]) -> dict:
     all-zero totals and $0.00 — never raises."""
     claude_input_tokens = claude_output_tokens = 0
     claude_cache_write_tokens = claude_cache_read_tokens = 0
+    claude_cost = 0.0
     realtime_audio_in = realtime_audio_out = realtime_text_in = realtime_text_out = 0
 
     for event in events:
         payload = _payload(event)
         if event["event_type"] == "llm_usage":
-            claude_input_tokens += payload.get("input_tokens", 0)
-            claude_output_tokens += payload.get("output_tokens", 0)
-            claude_cache_write_tokens += payload.get("cache_write_tokens", 0)
-            claude_cache_read_tokens += payload.get("cache_read_tokens", 0)
+            input_tokens = payload.get("input_tokens", 0)
+            output_tokens = payload.get("output_tokens", 0)
+            cache_write_tokens = payload.get("cache_write_tokens", 0)
+            cache_read_tokens = payload.get("cache_read_tokens", 0)
+            claude_input_tokens += input_tokens
+            claude_output_tokens += output_tokens
+            claude_cache_write_tokens += cache_write_tokens
+            claude_cache_read_tokens += cache_read_tokens
+            # Phase 13, Decision 3 — priced per-event by whichever model
+            # that specific call actually used (a per-tool override may mix
+            # Sonnet and Haiku calls within one call_id), not assumed to be
+            # uniformly Sonnet across the whole call. Falls back to Sonnet
+            # for events recorded before this field existed.
+            claude_cost += estimate_claude_cost_usd(
+                payload.get("model", "claude-sonnet-5"),
+                input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+            )
         elif event["event_type"] == "realtime_usage":
             realtime_audio_in += payload.get("input_audio_tokens", 0)
             realtime_audio_out += payload.get("output_audio_tokens", 0)
             realtime_text_in += payload.get("input_text_tokens", 0)
             realtime_text_out += payload.get("output_text_tokens", 0)
+
+    realtime_cost = estimate_cost_usd(0, 0, realtime_audio_in, realtime_audio_out, realtime_text_in, realtime_text_out)
 
     return {
         "claude_input_tokens": claude_input_tokens,
@@ -233,11 +249,7 @@ def _cost_for_call(events: list[dict]) -> dict:
         "realtime_audio_output_tokens": realtime_audio_out,
         "realtime_text_input_tokens": realtime_text_in,
         "realtime_text_output_tokens": realtime_text_out,
-        "cost_usd": estimate_cost_usd(
-            claude_input_tokens, claude_output_tokens,
-            realtime_audio_in, realtime_audio_out, realtime_text_in, realtime_text_out,
-            claude_cache_write_tokens, claude_cache_read_tokens,
-        ),
+        "cost_usd": claude_cost + realtime_cost,
     }
 
 

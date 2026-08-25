@@ -6,7 +6,7 @@ from langgraph.graph import END, StateGraph
 
 from backend.db.repositories.base import SlotAlreadyBookedError
 from backend.supervisor import heuristics, tools
-from backend.supervisor.llm_utils import LLMCallFailed, call_claude_tool
+from backend.supervisor.llm_utils import HAIKU_MODEL_ID, LLMCallFailed, call_claude_tool
 from backend.supervisor.state import FIELD_PRIORITY, CallState
 from backend.supervisor.tracing import traced_call
 from backend.utils import now_iso
@@ -804,9 +804,16 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
     if state.get("offered_slots"):
         offered = state["offered_slots"]
         try:
+            # Phase 13 (latency reduction), Decision 3 — a candidate for
+            # Haiku: closed-set index selection, not free-text extraction,
+            # a materially different task shape than the one that got
+            # Haiku rejected project-wide (docs/DECISIONS.md). Shipped only
+            # after eval/compare_runs.py showed no error-class regression
+            # against the Sonnet baseline for this specific tool.
             answer = call_claude_tool(
                 repos.trace, call_id, "booking", "select_offered_slot",
                 tools.select_offered_slot, utterance, offered,
+                model=HAIKU_MODEL_ID,
             )
         except LLMCallFailed:
             return _llm_failure_fallback(repos, state, "booking")

@@ -1,4 +1,6 @@
 from eval.pricing import (
+    CLAUDE_HAIKU_INPUT_PER_MILLION,
+    CLAUDE_HAIKU_OUTPUT_PER_MILLION,
     CLAUDE_SONNET_CACHE_READ_PER_MILLION,
     CLAUDE_SONNET_CACHE_WRITE_PER_MILLION,
     CLAUDE_SONNET_INPUT_PER_MILLION,
@@ -7,6 +9,7 @@ from eval.pricing import (
     REALTIME_AUDIO_OUTPUT_PER_MILLION,
     REALTIME_TEXT_INPUT_PER_MILLION,
     REALTIME_TEXT_OUTPUT_PER_MILLION,
+    estimate_claude_cost_usd,
     estimate_cost_usd,
 )
 
@@ -49,3 +52,28 @@ def test_estimate_cost_usd_includes_cache_write_and_read():
     )
     expected = (1000 * CLAUDE_SONNET_CACHE_WRITE_PER_MILLION + 2000 * CLAUDE_SONNET_CACHE_READ_PER_MILLION) / 1_000_000
     assert result == expected
+
+
+def test_estimate_claude_cost_usd_prices_sonnet():
+    result = estimate_claude_cost_usd("claude-sonnet-5", 1000, 500)
+    expected = (1000 * CLAUDE_SONNET_INPUT_PER_MILLION + 500 * CLAUDE_SONNET_OUTPUT_PER_MILLION) / 1_000_000
+    assert result == expected
+
+
+def test_estimate_claude_cost_usd_prices_haiku_cheaper_than_sonnet():
+    # Phase 13, Decision 3 — the whole point of a per-tool Haiku override is
+    # that it's cheaper; a regression here would silently erase that.
+    haiku = estimate_claude_cost_usd("claude-haiku-4-5-20251001", 1000, 500)
+    sonnet = estimate_claude_cost_usd("claude-sonnet-5", 1000, 500)
+    expected_haiku = (1000 * CLAUDE_HAIKU_INPUT_PER_MILLION + 500 * CLAUDE_HAIKU_OUTPUT_PER_MILLION) / 1_000_000
+    assert haiku == expected_haiku
+    assert haiku < sonnet
+
+
+def test_estimate_claude_cost_usd_unknown_model_falls_back_to_sonnet_rate():
+    # An unrecognized model id must never silently price at zero — falling
+    # back to the more expensive known rate surfaces as an overestimate
+    # worth investigating, not a hidden underestimate.
+    assert estimate_claude_cost_usd("some-future-model", 1000, 500) == estimate_claude_cost_usd(
+        "claude-sonnet-5", 1000, 500
+    )
