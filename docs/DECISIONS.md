@@ -317,6 +317,33 @@ showing the N levels that looked good:
   threads. Raising the real ceiling in production is a one-line change:
   `loop.set_default_executor(ThreadPoolExecutor(max_workers=N))` at startup.
 
+### Phase 13: prompt caching shipped, measured, and confirmed to have zero effect on this project's real system prompts — kept anyway
+`call_claude_json`/`call_claude_text` (`backend/supervisor/llm_utils.py`) send the system prompt as
+a `cache_control: {"type": "ephemeral"}` content block rather than a plain string, on the reasoning
+that `prompts.py`'s per-node system prompts are static and resent every turn. A live `eval/
+replay_scenarios.py --label phase13-baseline` run (2026-08-25, all 8 canonical-scenario calls, real
+Claude API) showed `cache_write_tokens=0, cache_read_tokens=0` on every single `llm_usage` event —
+including tool names called 8-10 times in the same batch with an identical system prompt
+(`classify_practice_area`, `confirm_field_answer`). Root cause, confirmed against Anthropic's
+current published prompt-caching docs: a system block must be **at least 1024 tokens** (Sonnet-class
+minimum) before it's eligible for caching at all — anything shorter is silently never cached, no
+error, no signal. This project's node system prompts, judged by the same batch's `input_tokens`
+figures (roughly 100–650 tokens total per call, system prompt included), sit well under that floor.
+This was measured, not assumed, precisely because Decision-making-by-assumption is what this whole
+latency-reduction effort started by rejecting (see the LiveKit/filler-masking conversation that led
+to this phase).
+
+**Kept in place rather than reverted** — it costs nothing (Anthropic ignores `cache_control` below
+the minimum, no error, no latency/pricing penalty for the attempt) and it correctly reports zero
+cache activity rather than silently mispricing anything, so there's no downside to leaving it wired
+up. It becomes a real, zero-further-effort win the moment any node's system prompt grows past 1024
+tokens (plausible if Phase 14's filler/interrupt logic or a future stretch adds a substantially
+richer prompt to a node) — this is not speculative future-proofing kept "just in case" so much as an
+already-paid-for mechanism sitting dormant until a real trigger. The actual Phase 13 latency win, per
+this finding, has to come from the other three levers in `phase-13-latency-reduction.md` (merging
+sequential Claude calls, the retry-tail root cause, per-tool model choice) — none of which depend on
+prompt length.
+
 Neither bottleneck is fixed as part of this phase — measuring and reporting them honestly is the
 job here, per `docs/phases/phase-12-concurrency-stress-test.md`'s own non-goals. See
 `docs/answers.md`'s Q3 for the full per-N table.
