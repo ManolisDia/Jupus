@@ -94,9 +94,84 @@ the WebSocket bridge entirely (see that script's own docstring). The two metrics
 underlying thing (the graph/Claude round-trip), just via different instrumentation; a live-call
 re-measurement through the real bridge would be needed to update the stage-breakdown table itself.
 
+### Phase 14: attacking the *perceived* wait, once the real one stopped shrinking
+
+Phases 11-13 took the round trip about as far as prompt- and model-level work could: instrument it,
+merge two calls into one, root-cause a retry tail, move two tools to Haiku. What that leaves is a
+floor. `confirm_field_answer` still costs ~2.5s and a booking-proposal turn ~4.9s, because there is
+a real model call in the middle and no amount of transport work removes it.
+
+So Phase 14 attacks a different quantity: not how long the caller waits, but how long they wait *in
+silence*. On most turns this project already hides the wait behind a real question — Phase 7 asks
+for the next field while the previous one verifies in the background, Phase 8 asks a filler question
+while a statute search runs. Three turns have no such cover, because on them the caller has just
+answered and the reply *is* the next thing they are waiting for. Those three get a short, canned,
+pre-rendered line ("Okay, one sec.") scheduled on a continuous-idle dwell.
+
+Measured live over the real transport (`eval/filler_latency_report.py`, 14 filler turns):
+
+| | round trip | time to first audio | dead air removed |
+|---|---:|---:|---:|
+| p50 | 2574ms | 399ms | 2175ms |
+| p95 | 6171ms | 410ms | 5761ms |
+
+**The left column is unchanged and is not claimed as an improvement** — it is the same Claude work
+Phase 13 measured. Only the middle column moves, and it moves to a flat ~400ms, which is the
+configured idle dwell reproducing itself almost exactly in live data.
+
+Two design points are what make this different from the filler this project tried and *removed*
+back in Phase 2 (see `docs/DECISIONS.md`, "No filler acknowledgment ... reversed after live
+testing"). That earlier attempt had the model narrate "one moment" at the top of every turn, and
+the complaint was precise: a spoken promise followed by dead air reads worse than an unannounced
+pause. So: (1) the filler fires only after the session has been continuously idle, meaning a fast
+turn is never narrated at all and the filler can never talk over the caller; and (2) a turn still
+running four seconds later gets a second line, so a long wait is re-acknowledged rather than
+promised once and abandoned. The Phase 2 finding is treated as still correct — the mechanism is
+what changed.
+
 ## Q2 — Turn-taking / interruptions
 
-*TBD — Phase 15 (polish/submission), updated with Phase 14's real filler/interrupt-handling design.*
+Turn-taking is deliberately **not** owned by this project. OpenAI Realtime's `semantic_vad` decides
+when the caller has finished speaking, using the model's own judgement of utterance completion
+rather than a silence timer — which is what handles "umm..." mid-sentence without a bespoke
+end-of-turn model. `eagerness: "low"` plus `near_field` noise reduction were both tuned against
+live failures where background noise was read as speech (`docs/DECISIONS.md`). Third-party
+turn-detection packages were considered and rejected: they assume you own the raw audio stream,
+which means disabling Realtime's own turn handling and rebuilding the chained-pipeline turn-taking
+this project deliberately avoided.
+
+Since Phase 14, the *transport* around that is LiveKit Agents (still hosting the same Realtime
+model). That deleted a substantial amount of hand-rolled turn-taking machinery: a one-deep
+`response.create` collision queue, a `transcriptionPending`/`awaitingToolCall` fix for
+`ask_supervisor` racing ASR completion, and the dispatcher's own `SPEAKING`/`DEFERRED` bookkeeping
+that decided whether a ready reply could be spoken yet. Each of those was a real live bug with its
+own entry in `docs/fixes/`. They are the kind of thing a transport library should own.
+
+**Interruptions.** `interrupt_response: true` is kept, so a caller can barge in on the agent
+mid-sentence. The interesting case Phase 14 added is barge-in *during a filler*, where the caller
+talks over "Okay, one sec." while the real answer is still being computed. That needs a policy,
+because the two possibilities want opposite handling:
+
+- A **backchannel** ("mhm", "okay", "got it") means "I heard you, keep going." Feeding it to the
+  graph as a real utterance would reroute the turn for no reason.
+- A **substantive** interruption ("actually it's Alesh with an H") is a correction the caller
+  needs heard, and dropping it makes them repeat themselves.
+
+The distinction is a closed-token-set check (`looks_like_acknowledgment`, `heuristics.py`) —
+deliberately not an LLM call, since that would reintroduce exactly the round trip the filler exists
+to hide. Backchannels are dropped; substantive interruptions fall through and reach the graph as
+the next turn's input, serialized behind the in-flight turn by the per-call lock. The check
+diverges from its sibling `looks_like_bare_affirmation` on one point that matters: a bare "no" is
+contentless for "did the caller answer the research question?", but over a filler it is a decline
+that must not be swallowed — same word, opposite correct answer, because the cost of being wrong
+differs.
+
+**What isn't solved.** If a caller substantively corrects themselves mid-turn, the first turn's now
+stale reply is still spoken before the correction is processed. The `/bridge` transport had the
+same gap (its staleness check only dropped replies whose *stage* had changed, and both turns here
+share a stage), so Phase 14 neither introduced nor fixed it. Fixing it properly means letting a
+turn be cancelled once its input is superseded, which reaches into the graph rather than the
+transport, and the phase scoped itself to transport deliberately.
 
 ## Q3 — Iteration / scaling / operational health
 
