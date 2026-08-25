@@ -1,7 +1,7 @@
 # Written Answers
 
 One section per required question, referencing actual file paths and specific behavior — not
-abstract description. Structure per `docs/phases/phase-13-polish-submission.md`.
+abstract description. Structure per `docs/phases/phase-15-polish-submission.md`.
 
 ---
 
@@ -59,7 +59,7 @@ in conversation — this is a real, measured answer to it, not a guess.
 
 ## Q2 — Turn-taking / interruptions
 
-*TBD — Phase 13 (polish/submission).*
+*TBD — Phase 15 (polish/submission), updated with Phase 14's real filler/interrupt-handling design.*
 
 ## Q3 — Iteration / scaling / operational health
 
@@ -115,4 +115,4 @@ a third: at what concurrent-call volume does either of those two start to move, 
 ## Q4 — Telephony / warm transfer / failure handling
 
 *TBD — Phase 10 (telephony), if built. Design sketch otherwise per
-`docs/phases/phase-13-polish-submission.md`.*
+`docs/phases/phase-15-polish-submission.md`.*
