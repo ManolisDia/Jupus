@@ -25,6 +25,29 @@ whether barge-in felt right — the phase DoD still requires a real human call
 for those. What it does give is a repeatable, unattended check that the
 transport carries a full conversation correctly.
 
+## Known limitation: scripted utterances can desynchronize
+
+The scenario scripts in `eval/replay_scenarios.py` were written for MOCKED
+extraction, where each turn's outcome is fixed in advance and the Nth scripted
+utterance is guaranteed to be answering the question the agent actually asked.
+Nothing guarantees that live.
+
+Observed on the first full run (2026-08-25): S2's scripted phone `"5551234567"`
+came back from the TTS→ASR round trip as `"555-1234-67"` with low enough
+extraction confidence to trigger the deterministic "read it out one digit at a
+time" re-ask. That re-ask is *correct* behaviour — but the next scripted line
+(`"Yes, that's right."`) was written to answer the EMAIL confirm-back, so it
+landed on a phone re-ask that isn't a yes/no question. From that point the rest
+of the script is answering the wrong questions, and S7b duly escalated with
+`capture_failed` after three failed attempts. The supervisor did exactly the
+right thing; the script simply stopped being valid input.
+
+So read a live run as: an outcome matching `docs/scenarios.md` is strong
+evidence, and an outcome that doesn't is a prompt to read the transcript, not
+an automatic failure. Making this fully reliable needs an ADAPTIVE caller that
+picks its next line from what the agent actually just asked, rather than
+replaying a fixed list — worth building if live scenario runs become routine.
+
 Costs real OpenAI credit per run (TTS for the caller + a live Realtime session)
 and real Anthropic credit (the supervisor turns), so it is a deliberate,
 explicitly-invoked script rather than part of `pytest`.
