@@ -2,6 +2,7 @@ import pytest
 
 from backend.supervisor.heuristics import (
     is_explicit_human_request,
+    looks_like_acknowledgment,
     looks_like_bare_affirmation,
     looks_like_field_shape,
     looks_like_tangent,
@@ -127,3 +128,73 @@ def test_bare_affirmation_detected(utterance):
 )
 def test_substantive_answers_not_flagged_as_bare_affirmation(utterance):
     assert looks_like_bare_affirmation(utterance) is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 (Decision 3) — telling a backchannel over the filler from a real
+# interruption. Dropping a real correction is a visible failure the caller has
+# to repeat; treating a backchannel as substantive costs one harmless turn.
+# So these tests lean hard on the negations and near-misses.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "mhm",
+        "mm hmm",
+        "uh huh",
+        "okay",
+        "Okay!",
+        "yeah okay",
+        "got it",
+        "alright",
+        "sure",
+        "sounds good",
+        "fair enough",
+        "yep, thanks",
+        "",
+        "...",
+    ],
+)
+def test_acknowledgment_detected(utterance):
+    assert looks_like_acknowledgment(utterance) is True
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "actually it's Alesh with an H",
+        "can we do Friday instead",
+        "sorry, can you repeat that",
+        "my email is bob at gmail dot com",
+        "wait, that's the wrong number",
+    ],
+)
+def test_substantive_interruption_not_flagged_as_acknowledgment(utterance):
+    assert looks_like_acknowledgment(utterance) is False
+
+
+@pytest.mark.parametrize("utterance", ["no", "Nope.", "nah", "no wait", "no thanks"])
+def test_negations_are_never_acknowledgments(utterance):
+    assert looks_like_acknowledgment(utterance) is False
+
+
+@pytest.mark.parametrize("utterance", ["no", "Nope.", "nah"])
+def test_bare_negation_diverges_from_bare_affirmation(utterance):
+    # Deliberately divergent: looks_like_bare_affirmation DOES treat a bare
+    # "no" as contentless (right for "did the caller answer the research
+    # question?"), but over a filler "no" is a correction the caller needs
+    # heard — swallowing it on the booking-confirm turn would silently drop a
+    # decline. Same word, opposite correct answer, because the consequence of
+    # being wrong differs.
+    assert looks_like_bare_affirmation(utterance) is True
+    assert looks_like_acknowledgment(utterance) is False
+
+
+def test_acknowledgment_set_does_not_widen_bare_affirmation():
+    # looks_like_bare_affirmation gates node_research_gather's "did the caller
+    # actually answer" check; widening it would start swallowing real, terse
+    # answers to "tell me what happened". The two sets must stay independent.
+    assert looks_like_bare_affirmation("mhm") is False
+    assert looks_like_acknowledgment("mhm") is True

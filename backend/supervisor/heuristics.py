@@ -102,3 +102,54 @@ def looks_like_bare_affirmation(utterance: str) -> bool:
     if not tokens:
         return True
     return all(token in _BARE_AFFIRMATION_TOKENS for token in tokens)
+
+
+# Phase 14 (filler/interrupt handling) — Decision 3 needs to tell a caller
+# talking OVER the filler because they have something real to say ("actually
+# it's Alesh with an H") from one merely acknowledging that they heard it
+# ("mhm", "okay"). The first must reach the graph as this turn's real input;
+# the second must be dropped, or every backchannel would reroute the turn.
+#
+# A deliberate sibling of _BARE_AFFIRMATION_TOKENS rather than an extension of
+# it: that set is load-bearing for node_research_gather's "did the caller
+# actually answer the research question" check, and widening it there would
+# start swallowing real (if terse) answers to "tell me what happened". This
+# set can be more generous precisely because its consequence is narrower —
+# dropping a backchannel that interrupted a one-second filler, not skipping a
+# call's one shot at a statute citation.
+#
+# Same closed-token-set mechanism as above, and for the same reason: no LLM
+# call. Routing this through a model would reintroduce exactly the round trip
+# the filler exists to hide.
+# Built explicitly rather than by unioning _BARE_AFFIRMATION_TOKENS, so that
+# set's negations are deliberately EXCLUDED here. "no" / "nope" / "nah" spoken
+# over a filler is almost always a correction the caller needs heard ("no, wait
+# —"), not a backchannel; real backchannels are affirmative by nature. Getting
+# that wrong would silently swallow a decline on exactly the booking-confirm
+# turn where a decline matters most.
+_ACKNOWLEDGMENT_TOKENS = frozenset(
+    "yes yeah yep yup ya correct right ok okay okays sure thing true indeed "
+    "exactly mhm mm mmm hm hmm uh huh uhhuh mhmm aha ah oh gotcha got it "
+    "alright cool fine great perfect good nice thanks thank you please "
+    "sorry go ahead sounds well fair enough understood makes sense that is "
+    "thats was".split()
+)
+
+
+def looks_like_acknowledgment(utterance: str) -> bool:
+    """True when an utterance carries no new content — a backchannel, not a
+    substantive interruption. Used only to decide whether a caller talking over
+    a filler phrase should be handed to the graph as real input (Decision 3).
+
+    Errs toward False (substantive) on anything with a content word in it: a
+    dropped real correction is a visible failure the caller has to repeat,
+    while a backchannel wrongly treated as substantive just costs one harmless
+    extra turn.
+    """
+    stripped = utterance.strip().lower().replace("'", "")
+    if not stripped:
+        return True
+    tokens = _WORD_RE.findall(stripped)
+    if not tokens:
+        return True
+    return all(token in _ACKNOWLEDGMENT_TOKENS for token in tokens)
