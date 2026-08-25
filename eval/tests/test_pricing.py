@@ -1,4 +1,6 @@
 from eval.pricing import (
+    CLAUDE_SONNET_CACHE_READ_PER_MILLION,
+    CLAUDE_SONNET_CACHE_WRITE_PER_MILLION,
     CLAUDE_SONNET_INPUT_PER_MILLION,
     CLAUDE_SONNET_OUTPUT_PER_MILLION,
     REALTIME_AUDIO_INPUT_PER_MILLION,
@@ -27,4 +29,23 @@ def test_estimate_cost_usd_matches_hand_computed_value():
         + 300 * REALTIME_TEXT_INPUT_PER_MILLION
         + 100 * REALTIME_TEXT_OUTPUT_PER_MILLION
     ) / 1_000_000
+    assert result == expected
+
+
+def test_estimate_cost_usd_defaults_cache_tokens_to_zero():
+    # Positional 6-arg call (no cache args) must behave identically to
+    # before Phase 13 added cache pricing — existing call sites that
+    # haven't been touched yet must not silently start costing differently.
+    assert estimate_cost_usd(1000, 500, 0, 0, 0, 0) == estimate_cost_usd(
+        1000, 500, 0, 0, 0, 0, claude_cache_write_tokens=0, claude_cache_read_tokens=0
+    )
+
+
+def test_estimate_cost_usd_includes_cache_write_and_read():
+    result = estimate_cost_usd(
+        claude_input_tokens=0, claude_output_tokens=0,
+        realtime_audio_in=0, realtime_audio_out=0, realtime_text_in=0, realtime_text_out=0,
+        claude_cache_write_tokens=1000, claude_cache_read_tokens=2000,
+    )
+    expected = (1000 * CLAUDE_SONNET_CACHE_WRITE_PER_MILLION + 2000 * CLAUDE_SONNET_CACHE_READ_PER_MILLION) / 1_000_000
     assert result == expected

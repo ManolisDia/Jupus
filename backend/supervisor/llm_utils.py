@@ -41,19 +41,38 @@ class LLMCallFailed(Exception):
 _last_usage = threading.local()
 
 
-def call_claude_json(system: str, user_content: str, json_schema: dict, max_tokens: int = 512) -> dict:
-    response = _client.messages.create(
-        model=MODEL_ID,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-        output_config={"format": {"type": "json_schema", "schema": json_schema}},
-    )
+# Phase 13 (latency reduction), Decision 1 — every node's system prompt
+# (backend/supervisor/prompts.py) is static per node and resent verbatim on
+# every turn, so marking it as an ephemeral cache block costs nothing in
+# correctness (the prompt content sent to the model is unchanged) and lets
+# repeat calls within the ~5-minute TTL read it at a fraction of the input
+# token cost instead of paying full price every turn.
+def _cached_system_block(system: str) -> list[dict]:
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
+def _record_usage(response) -> None:
     _last_usage.value = {
         "model": MODEL_ID,
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
+        # Anthropic reports cache activity as separate usage fields, not
+        # folded into input_tokens — getattr'd defensively since a response
+        # from a mocked/older test double may not carry them at all.
+        "cache_write_tokens": getattr(response.usage, "cache_creation_input_tokens", 0),
+        "cache_read_tokens": getattr(response.usage, "cache_read_input_tokens", 0),
     }
+
+
+def call_claude_json(system: str, user_content: str, json_schema: dict, max_tokens: int = 512) -> dict:
+    response = _client.messages.create(
+        model=MODEL_ID,
+        max_tokens=max_tokens,
+        system=_cached_system_block(system),
+        messages=[{"role": "user", "content": user_content}],
+        output_config={"format": {"type": "json_schema", "schema": json_schema}},
+    )
+    _record_usage(response)
     text = next(block.text for block in response.content if block.type == "text")
     return json.loads(text)
 
@@ -62,14 +81,10 @@ def call_claude_text(system: str, user_content: str, max_tokens: int = 512) -> s
     response = _client.messages.create(
         model=MODEL_ID,
         max_tokens=max_tokens,
-        system=system,
+        system=_cached_system_block(system),
         messages=[{"role": "user", "content": user_content}],
     )
-    _last_usage.value = {
-        "model": MODEL_ID,
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens,
-    }
+    _record_usage(response)
     return next(block.text for block in response.content if block.type == "text")
 
 

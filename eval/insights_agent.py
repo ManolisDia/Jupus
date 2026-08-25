@@ -208,6 +208,7 @@ def _cost_for_call(events: list[dict]) -> dict:
     with zero usage events (e.g. abandoned before any real turn) returns
     all-zero totals and $0.00 — never raises."""
     claude_input_tokens = claude_output_tokens = 0
+    claude_cache_write_tokens = claude_cache_read_tokens = 0
     realtime_audio_in = realtime_audio_out = realtime_text_in = realtime_text_out = 0
 
     for event in events:
@@ -215,6 +216,8 @@ def _cost_for_call(events: list[dict]) -> dict:
         if event["event_type"] == "llm_usage":
             claude_input_tokens += payload.get("input_tokens", 0)
             claude_output_tokens += payload.get("output_tokens", 0)
+            claude_cache_write_tokens += payload.get("cache_write_tokens", 0)
+            claude_cache_read_tokens += payload.get("cache_read_tokens", 0)
         elif event["event_type"] == "realtime_usage":
             realtime_audio_in += payload.get("input_audio_tokens", 0)
             realtime_audio_out += payload.get("output_audio_tokens", 0)
@@ -224,6 +227,8 @@ def _cost_for_call(events: list[dict]) -> dict:
     return {
         "claude_input_tokens": claude_input_tokens,
         "claude_output_tokens": claude_output_tokens,
+        "claude_cache_write_tokens": claude_cache_write_tokens,
+        "claude_cache_read_tokens": claude_cache_read_tokens,
         "realtime_audio_input_tokens": realtime_audio_in,
         "realtime_audio_output_tokens": realtime_audio_out,
         "realtime_text_input_tokens": realtime_text_in,
@@ -231,6 +236,7 @@ def _cost_for_call(events: list[dict]) -> dict:
         "cost_usd": estimate_cost_usd(
             claude_input_tokens, claude_output_tokens,
             realtime_audio_in, realtime_audio_out, realtime_text_in, realtime_text_out,
+            claude_cache_write_tokens, claude_cache_read_tokens,
         ),
     }
 

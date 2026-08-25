@@ -193,6 +193,24 @@ def test_cost_for_call_includes_realtime_usage_even_without_supervisor_call():
     assert cost["cost_usd"] > 0
 
 
+def test_cost_for_call_includes_cache_usage_tokens():
+    """Phase 13 (prompt caching) — cache_write_tokens/cache_read_tokens on
+    an llm_usage event must be summed and priced, not silently dropped
+    (they're billed at different rates than plain input/output tokens)."""
+    trace_repo = FakeTraceRepository()
+    _push(
+        trace_repo, "c1", "llm_usage", "2026-01-01T00:00:00+00:00",
+        node="capture", input_tokens=50, output_tokens=20,
+        cache_write_tokens=800, cache_read_tokens=1500,
+    )
+
+    cost = _cost_for_call(trace_repo.get_trace("c1"))
+
+    assert cost["claude_cache_write_tokens"] == 800
+    assert cost["claude_cache_read_tokens"] == 1500
+    assert cost["cost_usd"] > 0
+
+
 def test_average_cost_per_call_empty_input_returns_zero():
     trace_repo = FakeTraceRepository()
     assert average_cost_per_call([], trace_repo) == {"average_usd": 0.0, "p50_usd": 0.0, "p95_usd": 0.0}
