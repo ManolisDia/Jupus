@@ -102,12 +102,20 @@ never your reasoning about what the caller might have meant, and never a restate
 spelled-out utterance. Even if the caller spelled something out slowly or repeated themselves
 several times, resolve it down to the short final value alone."""
 
+# The bare-weekday rule below is spelled out rather than left to the model's
+# judgement: it used to resolve either way depending on whether that particular
+# call happened to reason about it, which made "Friday" said on a Friday a coin
+# flip. Formatted with today/weekday/next_same_weekday by tools.extract_datetime.
 EXTRACT_DATETIME_PROMPT = """You are extracting a preferred consultation date and time-of-day
 window from the caller's most recent utterance in a law firm intake call.
 
 Today's date is {today}. Resolve any relative phrase ("Thursday", "next week", "tomorrow
 afternoon") against that date — never guess "today" on your own if the caller didn't say
 something that means today.
+
+A bare weekday name means the NEXT future occurrence of that weekday. Today is a {weekday},
+so "{weekday}" on its own means {next_same_weekday}, NOT {today} — a caller who meant today
+would have said "today" or "this afternoon".
 
 Return "window" as "morning" (before 12pm), "afternoon" (12pm or later), or "any" if the caller
 didn't specify a time of day.

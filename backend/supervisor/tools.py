@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from backend.supervisor import prompts
@@ -270,7 +270,14 @@ def validate_phone(phone: str) -> bool:
 
 def extract_datetime(utterance: str, today: date) -> dict:
     return call_claude_json(
-        system=prompts.EXTRACT_DATETIME_PROMPT.format(today=today.isoformat()),
+        system=prompts.EXTRACT_DATETIME_PROMPT.format(
+            today=today.isoformat(),
+            weekday=today.strftime("%A"),
+            # Spelled out rather than left implicit: "Friday" said ON a Friday
+            # is the one genuinely ambiguous case, and it came up on the first
+            # real call that reached booking.
+            next_same_weekday=(today + timedelta(days=7)).isoformat(),
+        ),
         user_content=utterance,
         json_schema=EXTRACT_DATETIME_SCHEMA,
     )
