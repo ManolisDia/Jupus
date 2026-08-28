@@ -268,11 +268,12 @@ Writes `docs/handoffs/{call_id}.md` with the escalation reason, whatever caller 
 
 | Reason | Fires when | Checked where |
 |---|---|---|
-| `explicit_request` | `heuristics.is_explicit_human_request(utterance)` matches one of twelve phrases | `run_supervisor_turn`, **before the graph**, from any stage |
+| `explicit_request` | `heuristics.is_explicit_human_request(utterance)` matches — a literal phrase list, plus structural regexes covering the {speak,talk,chat} x {to,with} x {a real, an actual, ...} x {human, person, someone, ...} cross-product a flat list can't enumerate | `run_supervisor_turn`, **before the graph**, from any stage |
 | `out_of_scope_multi_area` | `classify_practice_area` returns `multiple_areas` | `node_routing` |
 | `unable_to_classify` | `unclear` twice | `node_routing` |
 | `capture_failed` | a field's `attempts` reaches 3 | `node_capture`, `_finish_fast_pass` |
 | `no_acceptable_slot` | no alternatives available, or 2 individual declines | `node_booking` |
+| `booking_failed` | `extract_datetime` finds no usable date/time 3 turns running | `node_booking` |
 | `system_error` | `consecutive_llm_failures` reaches 3; also set by the dispatcher's outer exception handler | `_llm_failure_fallback`, `run_supervisor_turn` |
 
 Two of these can fire from anywhere and are not real graph states — that is what the "any stage, any time" node in [`../diagrams.md`](../diagrams.md) represents.
@@ -288,6 +289,7 @@ Two of these can fire from anywhere and are not real graph states — that is wh
 | capture `attempts` limit | `3` | `graph.py` | → `capture_failed` |
 | `retry_counts["classification"]` limit | `2` | `graph.py` | → `unable_to_classify` |
 | declined-slot limit | `2` | `graph.py` | → `no_acceptable_slot` (individual proposals only) |
+| `retry_counts["booking_datetime"]` limit | `3` | `graph.py` | → `booking_failed`; reset to 0 by any turn whose date/time is understood |
 | `consecutive_llm_failures` limit | `3` | `graph.py` | → `system_error` |
 | `BM25_RELEVANCE_FLOOR` | `2.0` | `tools.py` | Below this, skip the grounding call entirely |
 | `RETRY_BACKOFF_SECONDS` | `0.5` | `llm_utils.py` | One retry, then `LLMCallFailed` |

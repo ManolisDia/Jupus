@@ -437,3 +437,52 @@ def test_counter_offer_llm_failure_keeps_the_offer_on_the_table(repos):
     assert result["offered_slots"] == [SLOT_A, SLOT_B]
     assert result["consecutive_llm_failures"] == 1
     assert repos.slots.book_calls == []
+
+
+# --- the "I didn't catch a date" re-ask must terminate -----------------
+
+
+def test_unparseable_time_escalates_on_the_third_try_instead_of_looping(repos):
+    # Live call (docs/fixes/2026-08-28-007.md): a caller who wanted
+    # something other than a booking got "Sorry, I didn't catch a date or
+    # time there" on a loop — this branch was the only "I didn't understand
+    # you" path in the graph with no ceiling — until they hung up.
+    state = _booking_state()
+    state["transcript"][-1]["text"] = "I just want to speak to a real human."
+    state["retry_counts"] = {"booking_datetime": 2}
+    with patch(
+        "backend.supervisor.tools.extract_datetime",
+        return_value={"date": "", "window": "any", "time": None, "confidence": 0.0},
+    ):
+        result = _invoke(state, repos)
+    assert result["stage"] == "escalation"
+    assert result["escalation_reason"] == "booking_failed"
+    assert result["retry_counts"]["booking_datetime"] == 3
+
+
+def test_unparseable_time_counts_up_before_escalating(repos):
+    state = _booking_state()
+    state["transcript"][-1]["text"] = "hmm"
+    with patch(
+        "backend.supervisor.tools.extract_datetime",
+        return_value={"date": "", "window": "any", "time": None, "confidence": 0.0},
+    ):
+        result = _invoke(state, repos)
+    assert result.get("stage", "booking") == "booking"
+    assert "didn\'t catch a date" in result["pending_reply"]
+    assert result["retry_counts"]["booking_datetime"] == 1
+
+
+def test_a_understood_time_clears_earlier_confusion(repos):
+    # Two mumbles then a real answer must not leave the caller one bad
+    # utterance away from an escalation later in the same booking.
+    repos.slots.availability_result = SLOT_A
+    state = _booking_state()
+    state["retry_counts"] = {"booking_datetime": 2}
+    state["transcript"][-1]["text"] = "Thursday afternoon"
+    with patch("backend.supervisor.tools.generate_confirmation_summary", return_value="Sounds right?"), patch(
+        "backend.supervisor.tools.extract_datetime",
+        return_value={"date": "2026-09-03", "window": "afternoon", "time": None, "confidence": 0.9},
+    ):
+        result = _invoke(state, repos)
+    assert result["retry_counts"]["booking_datetime"] == 0

@@ -2,6 +2,16 @@
 
 import re
 
+# Checked on EVERY turn, before the graph runs (backend/dispatcher.py), and
+# a miss is expensive: the caller has explicitly opted out of the automated
+# intake and every further question is one they've already refused to
+# answer. Confirmed live — "I just want to speak to a real human", said
+# twice during booking, was answered both times with "what day and time
+# would work for you?" until the caller hung up (docs/fixes/).
+#
+# These literals are kept exactly as they were, and matched first: they're
+# proven, and several are bare nouns ("representative") that the structural
+# patterns below deliberately don't reach.
 EXPLICIT_REQUEST_PHRASES = [
     "speak to a person", "talk to a human", "real person",
     "representative", "talk to someone", "human agent",
@@ -9,10 +19,48 @@ EXPLICIT_REQUEST_PHRASES = [
     "speak to someone else", "human being",
 ]
 
+# The literals above carried "talk to a human" and "real person" but not
+# "speak to a human" or "real human", which is how the live miss happened.
+# The gap was never one missing phrase — a flat list has to enumerate a
+# cross-product it can't finish: {speak,talk,chat} x {to,with} x
+# {a, a real, an actual, a live, ...} x {human, person, someone, ...}.
+# Matching the structure covers the whole product at once. Still plain
+# regex: deterministic, no LLM on this path (CLAUDE.md rule 2).
+#
+# Deliberately EXCLUDES lawyer/solicitor/attorney/advisor-of-law: "I want to
+# speak to a lawyer" is what every caller on this line wants, and it is what
+# booking a consultation delivers. Escalating on it would hand every
+# successful call to a human.
+_HUMAN_NOUN = (
+    r"(?:human(?:\s+being)?|person|people|someone|somebody"
+    r"|agent|representative|operator|receptionist)"
+)
+
+_EXPLICIT_REQUEST_PATTERNS = [
+    # "speak to a real human", "talk with someone", "chat to an actual person".
+    # The bounded word gap absorbs qualifiers without letting the noun drift
+    # into an unrelated later clause. Present tense only — "I spoke to
+    # someone at the council last week" is a caller describing their
+    # situation, not asking to be transferred.
+    re.compile(rf"\b(?:speak|talk|chat)\s+(?:to|with)\s+(?:\w+\s+){{0,3}}{_HUMAN_NOUN}\b"),
+    # "get me a person", "can I get a human", "give me a real person".
+    # Requires the article, so it can't fire on "I need someone to help me
+    # with my landlord" — a description of need, not a transfer request.
+    re.compile(rf"\b(?:get|give)\s+(?:me\s+)?(?:a|an|the)\s+(?:\w+\s+){{0,2}}{_HUMAN_NOUN}\b"),
+    # "transfer me", "connect me", "put me through". "put me" alone is NOT
+    # enough — "put me down for Tuesday at ten" is a booking, not an exit.
+    re.compile(r"\b(?:transfer|connect)\s+me\b"),
+    re.compile(r"\bput\s+me\s+through\b"),
+    # Bare qualifier + noun, no verb at all: "a real human", "an actual person".
+    re.compile(rf"\b(?:real|actual|live)\s+{_HUMAN_NOUN}\b"),
+]
+
 
 def is_explicit_human_request(utterance: str) -> bool:
     lowered = utterance.lower()
-    return any(phrase in lowered for phrase in EXPLICIT_REQUEST_PHRASES)
+    if any(phrase in lowered for phrase in EXPLICIT_REQUEST_PHRASES):
+        return True
+    return any(pattern.search(lowered) for pattern in _EXPLICIT_REQUEST_PATTERNS)
 
 
 # Phase 7 (optimistic capture) — used by node_capture_fast to decide whether
