@@ -198,3 +198,56 @@ def test_acknowledgment_set_does_not_widen_bare_affirmation():
     # answers to "tell me what happened". The two sets must stay independent.
     assert looks_like_bare_affirmation("mhm") is False
     assert looks_like_acknowledgment("mhm") is True
+
+
+# --- asking for a human must not depend on phrasing luck ---------------
+# Live call (docs/fixes/2026-08-28-007.md): "I just want to speak to a real
+# human", said twice during booking, matched nothing and was answered both
+# times with "what day and time would work for you?" until the caller hung
+# up. The old list held "talk to a human" and "real person" but neither
+# "speak to a human" nor "real human".
+
+ESCALATES = [
+    # the exact live utterances
+    "Actually, stop. I don't want to do this. I actually just want to speak to a real human.",
+    "I just want to speak to a real human.",
+    # the cross-product a flat list can never finish
+    "can I speak to a human", "I want to talk to a real person",
+    "chat to an actual person", "speak with somebody", "talk to an operator",
+    "can I get a human please", "get me a person", "give me a real person",
+    "transfer me", "connect me to someone", "put me through",
+    "just a real human please",
+]
+
+# every literal the pre-regex list carried, so the rewrite can only widen
+LEGACY_PHRASES = [
+    "speak to a person", "talk to a human", "real person", "representative",
+    "talk to someone", "human agent", "speak with someone", "get me a person",
+    "transfer me", "speak to someone else", "human being",
+]
+
+DOES_NOT_ESCALATE = [
+    # the whole point of the call — booking a consultation IS this
+    "I want to speak to a lawyer about my eviction",
+    "can I talk to a solicitor",
+    # describing a need, not requesting a transfer
+    "I need someone to help me with my landlord",
+    "I spoke to someone at the council last week",
+    "I've been talking to my landlord about it",
+    # a booking, not an exit
+    "put me down for Tuesday at ten",
+    # ordinary intake answers
+    "It's Manos.", "manos at gmail dot com", "O7577670101.", "Yep, that's correct.",
+    "my landlord is trying to kick me out", "Thursday afternoon works",
+    "do you have an office in London?", "I live with two people",
+]
+
+
+@pytest.mark.parametrize("utterance", ESCALATES + LEGACY_PHRASES)
+def test_explicit_human_request_detected(utterance):
+    assert is_explicit_human_request(utterance)
+
+
+@pytest.mark.parametrize("utterance", DOES_NOT_ESCALATE)
+def test_not_an_explicit_human_request(utterance):
+    assert not is_explicit_human_request(utterance)
