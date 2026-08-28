@@ -148,3 +148,28 @@ def test_extract_datetime_prompt_pins_the_bare_weekday_reading():
     )
     assert "Today is a Friday" in rendered
     assert '"Friday" on its own means 2026-09-04, NOT 2026-08-28' in rendered
+
+
+def test_the_name_guard_is_scoped_to_the_name_field():
+    # The symbol-conversion instruction is field-agnostic, which for "name"
+    # meant "manos at gmail dot com" was converted into "manos@gmail.com"
+    # and returned as a NAME (docs/fixes/2026-08-28-008.md). email/phone
+    # must keep the conversion; name must not.
+    from backend.supervisor import prompts
+
+    assert "name" in prompts.FIELD_GUARDS
+    assert "email" not in prompts.FIELD_GUARDS
+    assert "phone" not in prompts.FIELD_GUARDS
+
+    def render(field):
+        return prompts.EXTRACT_FIELD_PROMPT.format(
+            field_name=field,
+            field_guard=prompts.FIELD_GUARDS.get(field, ""),
+            previous_attempt_note="",
+        )
+
+    assert "do not apply to this field" in render("name")
+    assert "do not apply to this field" not in render("email")
+    assert "do not apply to this field" not in render("phone")
+    # the conversion itself is still there for email
+    assert '"at" -> "@"' in render("email")

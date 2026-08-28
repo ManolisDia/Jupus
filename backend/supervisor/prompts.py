@@ -26,7 +26,7 @@ Convert standard spoken-aloud conventions into their symbol when the caller actu
 word: "at" -> "@", "dot" -> ".", spelled-out digits/letters -> the digits/letters themselves.
 That is normal transcription, not invention, because the caller did say something that maps to
 that symbol.
-
+{field_guard}
 What you must NOT do is add or guess anything the caller did not say in any form, spoken word or
 symbol — never invent a domain, a missing "@", or extra digits/characters that have no
 corresponding word in the utterance at all, even if it would make the value look more complete
@@ -73,6 +73,31 @@ to force a fit, and never treat two competing complete values as fragments of ea
 are unsure which case applies, use the new answer alone and lower your confidence.
 """
 
+
+# Formatted into both extraction prompts' {field_guard} slot; the empty
+# string for any field without an entry, so those prompts are byte-for-byte
+# unchanged.
+#
+# The symbol-conversion paragraph above is field-agnostic, and for "name"
+# that is actively wrong: asked for a name and given "manos at gmail dot
+# com", the model dutifully applied the spoken conventions and returned
+# "manos@gmail.com" as a NAME, at confidence 0.6, which was then stored as
+# the caller's name (confirmed live, see docs/fixes/). The conversion is
+# right for email and phone and needs turning OFF for a name, not softening.
+#
+# Backed by heuristics.looks_like_a_name in code rather than left to the
+# prompt alone — same lesson as docs/DECISIONS.md's Haiku->Sonnet entry:
+# where the model reliably doing X actually matters, enforce X in code.
+FIELD_GUARDS = {
+    "name": """
+"name" is a person's name. An email address, a phone number, or a description of the caller's
+legal problem is NOT a name, however clearly they said it — if that is what they gave you, return
+an empty value with confidence 0 rather than reshaping it into something name-shaped. The
+"at" -> "@" and "dot" -> "." conversions above do not apply to this field at all: a name contains
+no "@" and no domain. Spelled-out letters still do ("M A N O S" -> "Manos").
+""",
+}
+
 CONFIRM_BACK_PROMPT = """Generate a short, natural confirm-back question for the caller about
 their "{field_name}", which we heard as "{candidate_value}".
 
@@ -96,7 +121,7 @@ Convert standard spoken-aloud conventions into their symbol when the caller actu
 word: "at" -> "@", "dot" -> ".", spelled-out digits/letters -> the digits/letters themselves.
 That is normal transcription, not invention, because the caller did say something that maps to
 that symbol.
-
+{field_guard}
 What you must NOT do is add or guess anything the caller did not say in any form, spoken word or
 symbol — never invent a domain, a missing "@", or extra digits/characters that have no
 corresponding word in the utterance at all, even if it would make the value look more complete

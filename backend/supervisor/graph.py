@@ -169,6 +169,17 @@ def apply_extraction(field_name: str, value, confidence: float):
         if confidence <= 0 or value is None:
             return None, "missing"
         return value, "pending_confirm"
+    # Everything below is name-only (FIELD_PRIORITY is name/email/phone and
+    # the two others returned above). Confidence bands alone were the whole
+    # check, which meant any string the model produced became the caller's
+    # name as long as it sounded sure enough — live, "manos at gmail dot
+    # com" was extracted for the name field at 0.6 and stored as a name of
+    # "manos@gmail.com" (docs/fixes/). Confidence answers "did I hear that
+    # right", never "is that the kind of thing I was asking for", so the
+    # shape has to be checked separately, the same way email and phone are
+    # validated above the bands rather than through them.
+    if not heuristics.looks_like_a_name(value):
+        return None, "missing"
     if confidence >= 0.75:
         return value, "confirmed"
     elif confidence >= 0.4:
@@ -473,6 +484,23 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                 new_value, new_status = candidate, "pending_confirm"
             else:
                 new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
+                if new_status == "missing":
+                    # A name that didn't extract is a failed ATTEMPT, the
+                    # same as an unusable email or phone directly above.
+                    # Without this it fell through to the "Thanks - and
+                    # what's your name?" re-ask at the bottom of this
+                    # function with attempts untouched, so a caller whose
+                    # name never extracted got asked forever and never
+                    # escalated (verified: three turns, attempts still 0).
+                    # Rarely reached before, because the fast path would
+                    # optimistically advance past such an utterance instead
+                    # of falling back here; now that looks_like_field_shape
+                    # has real negative signals for name, this is the
+                    # ordinary path for "that wasn't a name" and has to
+                    # terminate.
+                    return _deny_and_reprompt(
+                        target_field, _invalid_format_reply(target_field), utterance
+                    )
     except LLMCallFailed:
         return _llm_failure_fallback(repos, state, "capture")
 

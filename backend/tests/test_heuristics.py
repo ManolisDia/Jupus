@@ -2,6 +2,7 @@ import pytest
 
 from backend.supervisor.heuristics import (
     is_explicit_human_request,
+    looks_like_a_name,
     looks_like_acknowledgment,
     looks_like_bare_affirmation,
     looks_like_field_shape,
@@ -251,3 +252,57 @@ def test_explicit_human_request_detected(utterance):
 @pytest.mark.parametrize("utterance", DOES_NOT_ESCALATE)
 def test_not_an_explicit_human_request(utterance):
     assert not is_explicit_human_request(utterance)
+
+
+# --- "name" needs negative shape signals ------------------------------
+# Live call (docs/fixes/2026-08-28-008.md): looks_like_field_shape returned
+# True for every utterance when the field was name, so the fast path
+# optimistically accepted a caller's late answer to the ROUTING question as
+# their name, and a turn later accepted their spoken email address too.
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        # the two live utterances
+        "Yeah, it's about my home. He's basically trying to kick me out with little notice.",
+        "manos at gmail dot com.",
+        # other fields' answers, arriving a turn late
+        "manos@gmail.com", "07577670101", "oh seven five seven seven six seven zero one zero one",
+        # narrative, not an answer to "what's your name"
+        "he told me on Tuesday that I had to be out of the flat by the end of the week",
+    ],
+)
+def test_utterance_is_not_plausibly_a_name(utterance):
+    assert not looks_like_field_shape("name", utterance)
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "Manos", "It's Manos.", "Yeah, it's Manos Diamantopoulos",
+        "my name is Manos Diamantopoulos",
+        # spelling it out is long but still well inside the ceiling
+        "It's Manos, that's M A N O S",
+        "Jean-Luc", "O'Brien", "Sarah",
+    ],
+)
+def test_utterance_is_plausibly_a_name(utterance):
+    assert looks_like_field_shape("name", utterance)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["manos@gmail.com", "07577670101", "", "   ",
+     "he told me on Tuesday that I had to be out of the flat by the end of the week"],
+)
+def test_extracted_value_rejected_as_a_name(value):
+    assert not looks_like_a_name(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Manos", "Manos Diamantopoulos", "Jean-Luc Picard", "O'Brien", "Ng", "María José García"],
+)
+def test_extracted_value_accepted_as_a_name(value):
+    assert looks_like_a_name(value)
