@@ -1,7 +1,7 @@
 // Phase 14 — the LiveKit half of the caller client.
 //
 // Loaded after app.js, so it can call app.js's UI functions directly
-// (setStatus, appendTranscriptTurn, renderCallState, ...). Those are top-level
+// (setStatus, upsertTranscriptTurn, renderCallState, ...). Those are top-level
 // bindings in a classic script, visible to every script that follows.
 //
 // What this file deliberately does NOT contain, compared to the WebRTC path it
@@ -80,6 +80,11 @@ async function startLiveKitCall(callId) {
   return room;
 }
 
+// Set by livekit-agents on every lk.transcription stream; see its
+// agents/types.py (ATTRIBUTE_TRANSCRIPTION_SEGMENT_ID / _FINAL).
+const SEGMENT_ID_ATTRIBUTE = "lk.segment_id";
+const FINAL_ATTRIBUTE = "lk.transcription_final";
+
 function registerTranscriptHandlers(room) {
   // LiveKit Agents publishes transcriptions as text streams on a reserved
   // topic. Wrapped in a guard because this is the one client API most likely
@@ -90,20 +95,33 @@ function registerTranscriptHandlers(room) {
       const isAgent = participant?.identity !== "caller";
       const text = await reader.readAll();
       if (!text) return;
-      if (isAgent) {
-        removeThinkingBubble();
-      } else {
-        // The caller's final transcript is the start of a turn, and the
-        // supervisor round trip begins right after it — so this is where the
-        // "…" indicator belongs now. Under the old transport it hung off
-        // response.function_call_arguments.done, a Realtime data-channel event
-        // this page no longer sees. Deliberately driven by transcripts rather
-        // than the agent's published state attribute: these are the same two
-        // signals the transcript itself uses, so the bubble can never be left
-        // stranded by an attribute name changing between SDK versions.
-        showThinkingBubble();
-      }
-      appendTranscriptTurn(isAgent ? "agent" : "caller", text);
+
+      // livekit-agents publishes one segment as a series of text streams that
+      // share lk.segment_id: interim results tagged lk.transcription_final
+      // "false", then a closing one tagged "true" (see its
+      // voice/room_io/_output.py). Both attributes are optional as far as this
+      // page is concerned — an SDK that omits the id falls back to appending,
+      // and one that omits the flag is treated as already final.
+      const attributes = reader.info?.attributes || {};
+      const segmentId = attributes[SEGMENT_ID_ATTRIBUTE];
+      const isFinal = attributes[FINAL_ATTRIBUTE] !== "false";
+
+      if (isAgent) removeThinkingBubble();
+      upsertTranscriptTurn(isAgent ? "agent" : "caller", text, segmentId);
+
+      // The caller's FINAL transcript is the start of a turn, and the
+      // supervisor round trip begins right after it — so this is where the
+      // "…" indicator belongs now. Under the old transport it hung off
+      // response.function_call_arguments.done, a Realtime data-channel event
+      // this page no longer sees. Deliberately driven by transcripts rather
+      // than the agent's published state attribute: these are the same two
+      // signals the transcript itself uses, so the bubble can never be left
+      // stranded by an attribute name changing between SDK versions.
+      //
+      // Gated on isFinal because every interim used to raise its own "…", and
+      // showThinkingBubble overwrites the handle it removes by — so all but
+      // the last were orphaned on screen for the rest of the call.
+      if (!isAgent && isFinal) showThinkingBubble();
     });
   } catch (err) {
     console.warn("transcription stream unavailable on this SDK version", err);
