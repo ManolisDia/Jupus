@@ -801,6 +801,70 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
             result["declined_slot_ids"] = declined_delta
         return result
 
+    def _handle_time_request(clear_offered=False):
+        """Look up whatever day/time the caller just asked for and answer it.
+
+        Reached from two places: a caller who has no proposal on the table yet
+        (the ordinary "what day works?" reply), and a caller who answered an
+        offer with a time of their own instead of picking one. Those are the
+        same question, so they get the same code rather than a second, subtly
+        different copy of it.
+        """
+        try:
+            parsed = call_claude_tool(
+                repos.trace, call_id, "booking", "extract_datetime",
+                tools.extract_datetime, utterance, date_cls.today(),
+            )
+        except LLMCallFailed:
+            # Deliberately NOT cleared here, unlike every other exit: the
+            # fallback asks the caller to say it again, and a repeat of
+            # "let's go with ten" wants select_offered_slot, not
+            # extract_datetime. Failing a turn shouldn't change which
+            # question the next one is answering.
+            return _llm_failure_fallback(repos, state, "booking")
+
+        if not parsed.get("date") or parsed.get("confidence", 0) < 0.4:
+            # nothing recognizable as a date/time was said at all — never
+            # fabricate a proposal from an empty/garbage date (an empty
+            # string passes every "date(start_time) >= ?" filter, which
+            # silently produced a bogus proposal the caller never asked for)
+            reply = "Sorry, I didn't catch a date or time there — what day and time would work for you?"
+            repos.trace.record_event(
+                call_id, "node_exited", node="booking",
+                stage_from="booking", stage_to="booking", pending_reply=reply,
+            )
+            result = {"consecutive_llm_failures": 0, **_agent_turn(reply)}
+        else:
+            requested_date, requested_window, requested_time = (
+                parsed["date"], parsed["window"], parsed.get("time")
+            )
+            slot = traced_call(
+                repos.trace, call_id, "booking", "check_availability",
+                repos.slots.check_availability, requested_date, requested_window, state["practice_area"],
+                requested_time, state["declined_slot_ids"],
+            )
+            if slot:
+                result = _propose_slot(slot, requested_date, requested_window)
+            else:
+                alternatives = traced_call(
+                    repos.trace, call_id, "booking", "suggest_alternative_slots",
+                    repos.slots.suggest_alternatives, requested_date, state["practice_area"],
+                    state["declined_slot_ids"],
+                )
+                if not alternatives:
+                    result = _escalate_no_slot(requested_date, requested_window)
+                else:
+                    result = _offer_alternatives(
+                        alternatives, requested_date, requested_window, unavailable_time=requested_time
+                    )
+        if clear_offered:
+            # The previous round's offer is dead once we answer a new time.
+            # Defaulted rather than forced, so _offer_alternatives' own fresh
+            # list still wins — leaving the stale list in state would send the
+            # next turn back into the select_offered_slot branch.
+            result = {"offered_slots": None, **result}
+        return result
+
     if state.get("offered_slots"):
         offered = state["offered_slots"]
         try:
@@ -818,8 +882,23 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
         except LLMCallFailed:
             return _llm_failure_fallback(repos, state, "booking")
 
+        if answer.get("proposed_new_time"):
+            # The caller answered the offer with a time of their own. Look it
+            # up like any other request instead of re-reading the same list
+            # back at them, which is what happened while this outcome had
+            # nowhere to go but "needs_clarification".
+            #
+            # The offered slots are deliberately NOT added to
+            # declined_slot_ids here: asking "can you do 3pm?" is not the same
+            # as refusing 9/9:30/10, and a caller who circles back with "fine,
+            # let's do ten" must still be able to get it.
+            return _handle_time_request(clear_offered=True)
+
         if answer.get("needs_clarification"):
-            repeat_reply = _last_agent_reply(state["transcript"], "Sorry, do any of those times work for you?")
+            repeat_reply = traced_call(
+                repos.trace, call_id, "booking", "generate_offer_reprompt",
+                tools.generate_offer_reprompt, offered,
+            )
             repos.trace.record_event(
                 call_id, "node_exited", node="booking",
                 stage_from="booking", stage_to="booking", pending_reply=repeat_reply,
@@ -885,44 +964,7 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
         }
 
     if state["proposed_slot_id"] is None:
-        try:
-            parsed = call_claude_tool(
-                repos.trace, call_id, "booking", "extract_datetime",
-                tools.extract_datetime, utterance, date_cls.today(),
-            )
-        except LLMCallFailed:
-            return _llm_failure_fallback(repos, state, "booking")
-
-        if not parsed.get("date") or parsed.get("confidence", 0) < 0.4:
-            # nothing recognizable as a date/time was said at all — never
-            # fabricate a proposal from an empty/garbage date (an empty
-            # string passes every "date(start_time) >= ?" filter, which
-            # silently produced a bogus proposal the caller never asked for)
-            reply = "Sorry, I didn't catch a date or time there — what day and time would work for you?"
-            repos.trace.record_event(
-                call_id, "node_exited", node="booking",
-                stage_from="booking", stage_to="booking", pending_reply=reply,
-            )
-            return {"consecutive_llm_failures": 0, **_agent_turn(reply)}
-
-        requested_date, requested_window, requested_time = parsed["date"], parsed["window"], parsed.get("time")
-        slot = traced_call(
-            repos.trace, call_id, "booking", "check_availability",
-            repos.slots.check_availability, requested_date, requested_window, state["practice_area"],
-            requested_time, state["declined_slot_ids"],
-        )
-        if slot:
-            return _propose_slot(slot, requested_date, requested_window)
-
-        alternatives = traced_call(
-            repos.trace, call_id, "booking", "suggest_alternative_slots",
-            repos.slots.suggest_alternatives, requested_date, state["practice_area"], state["declined_slot_ids"],
-        )
-        if not alternatives:
-            return _escalate_no_slot(requested_date, requested_window)
-        return _offer_alternatives(
-            alternatives, requested_date, requested_window, unavailable_time=requested_time
-        )
+        return _handle_time_request()
 
     try:
         answer = call_claude_tool(

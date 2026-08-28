@@ -86,8 +86,14 @@ SELECT_OFFERED_SLOT_SCHEMA = {
         "selected_index": {"type": ["integer", "null"]},
         "declined_all": {"type": "boolean"},
         "needs_clarification": {"type": "boolean"},
+        # A caller who answers an offer with a time of their own is doing
+        # neither of the other three things. Without somewhere to put that,
+        # the model was forced to call a counter-proposal "clarification",
+        # and node_booking answered a request for 3PM by re-reading the same
+        # three morning slots back.
+        "proposed_new_time": {"type": "boolean"},
     },
-    "required": ["selected_index", "declined_all", "needs_clarification"],
+    "required": ["selected_index", "declined_all", "needs_clarification", "proposed_new_time"],
     "additionalProperties": False,
 }
 
@@ -339,6 +345,19 @@ def generate_alternative_offer(
     return (
         f"Sorry {name} — that time{requested_str} is already booked. I do have availability "
         f"{_format_alternative_slots(alternatives)} — do any of those work for you?"
+    )
+
+
+def generate_offer_reprompt(alternatives: list[dict]) -> str:
+    # The re-ask when the caller's answer to an offer wasn't understood.
+    # Deliberately NOT a replay of the previous reply: that one opened with
+    # "Sorry <name> — that time at 4PM is already booked", which is true once
+    # and merely confusing on the repeat, and reads as the `repetition` error
+    # class to boot. Same deterministic-template reasoning as
+    # generate_alternative_offer above.
+    return (
+        f"Sorry — I have availability {_format_alternative_slots(alternatives)}. "
+        "Do any of those work for you?"
     )
 
 

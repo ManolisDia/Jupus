@@ -138,17 +138,23 @@ and asked if any of them work. The offered slots, in order, are:
 {slot_list}
 
 Interpret their reply:
-- If they picked one of the offered slots (by time, by ordinal like "the first one" / "the second
-  one", or any other way of referring to one of the options above), return its zero-based position
-  in the list above as "selected_index".
-- If they explicitly said none of those work / declined all of them, set "declined_all" to true and
-  leave "selected_index" null.
-- If their reply isn't actually an answer at all — e.g. "what?", "can you repeat that?", a question
-  back, or anything else showing they didn't hear or understand the offer rather than answering it
-  — set "needs_clarification" to true and leave "selected_index" null and "declined_all" false; the
-  offer will simply be repeated, so don't guess at what they meant.
+- If they picked one of the offered slots, return its zero-based position in the list above as
+  "selected_index". They may refer to it by full time ("10AM works"), by ordinal ("the first one",
+  "the last one"), or by a bare number or fragment that matches exactly one offered time — "ten",
+  "let's go with ten", "the 9:30", "half nine". An agreeable opener like "sure", "yeah" or "okay"
+  followed by any such reference is still a selection, not a clarification. Only treat a bare
+  number as ambiguous if it genuinely matches more than one of the options above.
+- If they asked for a DIFFERENT time that is not one of the options above — "can you do Friday at
+  3pm instead?", "anything later in the day?", "what about Monday?" — set "proposed_new_time" to
+  true and leave "selected_index" null. This is a counter-offer, not a failure to understand: their
+  requested time will be looked up fresh, so do NOT use "needs_clarification" for it.
+- If they explicitly said none of those work / declined all of them without naming an alternative,
+  set "declined_all" to true and leave "selected_index" null.
+- If their reply isn't actually an answer at all — e.g. "what?", "can you repeat that?", or anything
+  else showing they didn't hear the offer rather than answering it — set "needs_clarification" to
+  true and leave the rest null/false; the offer will simply be repeated, so don't guess.
 
-Never return an index outside the offered list above."""
+Exactly one of these four outcomes applies. Never return an index outside the offered list above."""
 
 GROUND_STATUTE_CITATION_PROMPT = """You are helping a law firm's voice intake agent decide whether
 to cite a specific statute back to a caller who has just described their situation, from a small
