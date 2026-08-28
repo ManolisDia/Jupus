@@ -152,6 +152,10 @@ def test_gate_fallback_does_not_confirm_an_unrelated_earlier_pending_field(repos
     assert result["caller_profile"]["email"]["status"] == "pending_confirm"  # untouched, not silently confirmed
     assert result["caller_profile"]["email"]["value"] == "manos@gmail.com"
     assert "one digit at a time" in result["pending_reply"].lower()  # phone re-ask (SPELL_OUT_REPLIES)
+    # ...and the re-ask was about phone, so that is what the caller answers
+    # next — not email, which is only pending_confirm because a background
+    # check put it there and whose confirm-back has still never been spoken.
+    assert result["last_asked_field"] == "phone"
 
 
 def test_delayed_failure_interrupts_and_reasks_without_touching_current_utterance(repos):
@@ -468,3 +472,94 @@ async def test_live_reproduction_split_email_recovers_instead_of_hanging():
     # nothing left in flight to interrupt the next turn with a stale failure
     assert not [k for k in dispatcher.FIELD_VERIFICATIONS if k[0] == call_id]
 
+
+# --- last_asked_field must be the field the reply actually asked about ---
+# All three reproduce one live call (docs/fixes/2026-08-28-005.md), where a
+# status-scanning guess picked the wrong field twice: once making the caller
+# give their email twice, once making them confirm their phone number twice.
+
+
+def test_reask_leaves_the_reasked_field_outstanding_not_an_unspoken_pending_one(repos):
+    # Live trace #26-#40. name is pending_confirm from a background check
+    # at 0.6 — its confirm-back has never been spoken. The caller's "Manos
+    # 44." fails looks_like_field_shape for email, so node_capture re-asks
+    # for the email. The outstanding question is therefore about EMAIL; the
+    # old derivation returned "name" (first pending_confirm in
+    # FIELD_PRIORITY order), so the caller's next utterance — them spelling
+    # out their email address — was fed to confirm_field_answer as a yes/no
+    # about their NAME, which swallowed it and asked for the email again.
+    state = _fast_state(
+        "email",
+        name={"value": "Manos", "confidence": 0.6, "status": "pending_confirm", "attempts": 0, "validated": True},
+    )
+    state["transcript"][-1]["text"] = "Manos 44."
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "Manos44", "confidence": 0.2, "confirm_back_phrasing": "..."},
+    ):
+        result = _invoke(state, repos)
+    assert result["pending_reply"] == graph.SPELL_OUT_REPLIES["email"]
+    assert result["last_asked_field"] == "email"
+    assert result["caller_profile"]["name"]["status"] == "pending_confirm"  # untouched
+
+
+def test_confirm_back_leaves_its_own_field_outstanding_not_an_earlier_pending_one(repos):
+    # Live trace #65-#79. email is pending_confirm with its confirm-back
+    # unspoken (batched for the drain phase); the caller reads out their
+    # phone number in words, which fails looks_like_field_shape, and
+    # node_capture extracts it and speaks PHONE's confirm-back. The old
+    # derivation returned "email" — so the caller's "Yes" to the phone
+    # question was applied to email instead, and the phone confirm-back had
+    # to be asked all over again.
+    state = _fast_state(
+        "phone",
+        email={"value": "manos@gmail.com", "confidence": 0.9, "status": "pending_confirm", "attempts": 0, "validated": True},
+    )
+    state["transcript"][-1]["text"] = "O seven five seven seven six seven oh one oh one."
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={
+            "value": "07577670101", "confidence": 0.85,
+            "confirm_back_phrasing": "I heard your phone number as 0-7-5-7-7-6-7-0-1-0-1 — is that correct?",
+        },
+    ):
+        result = _invoke(state, repos)
+    assert "phone number" in result["pending_reply"].lower()
+    assert result["last_asked_field"] == "phone"
+
+
+def test_yes_to_a_confirm_back_resolves_that_field_and_does_not_repeat_it(repos):
+    # The turn after the one above, end to end: "Yes." must confirm PHONE
+    # (the question actually asked) and move on to email's confirm-back —
+    # not confirm email and then ask about the phone number a second time.
+    state = _fast_state(
+        "phone",
+        email={"value": "manos@gmail.com", "confidence": 0.9, "status": "pending_confirm", "attempts": 0, "validated": True},
+    )
+    state["transcript"][-1]["text"] = "O seven five seven seven six seven oh one oh one."
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={
+            "value": "07577670101", "confidence": 0.85,
+            "confirm_back_phrasing": "I heard your phone number as 0-7-5-7-7-6-7-0-1-0-1 — is that correct?",
+        },
+    ):
+        first = _invoke(state, repos)
+
+    second_state = dict(first)
+    second_state["transcript"] = first["transcript"] + [{"role": "caller", "text": "Yes.", "ts": "t"}]
+    with (
+        patch(
+            "backend.supervisor.tools.confirm_field_answer",
+            return_value={"confirmed": True, "corrected_value": None, "needs_clarification": False},
+        ) as mock_confirm,
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Just to confirm — manos@gmail.com?"),
+    ):
+        second = _invoke(second_state, repos)
+
+    mock_confirm.assert_called_once_with("Yes.", "phone", "07577670101")
+    assert second["caller_profile"]["phone"]["status"] == "confirmed"
+    # the remaining question is email's confirm-back, and the phone number
+    # is never read back a second time
+    assert "phone" not in second["pending_reply"].lower()
+    assert second["last_asked_field"] == "email"

@@ -358,6 +358,7 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                 "escalation_reason": "capture_failed",
                 "caller_profile": {**profile, field_name: {**profile[field_name], "attempts": attempts}},
                 "partial_field_utterances": _forget_partial(state, field_name),
+                "last_asked_field": field_name,
                 "consecutive_llm_failures": 0,
                 **_agent_turn(escalate_reply),
             }
@@ -367,6 +368,9 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
         )
         return {
             "caller_profile": {**profile, field_name: {**profile[field_name], "status": "missing", "attempts": attempts}},
+            # `reply` re-asks for field_name, so that is what the caller's
+            # next utterance will be answering — see _fallback_to_real_capture.
+            "last_asked_field": field_name,
             "partial_field_utterances": (
                 _remember_partial(state, field_name, failed_utterance)
                 if failed_utterance is not None
@@ -407,7 +411,11 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                     call_id, "node_exited", node="capture",
                     stage_from="capture", stage_to="capture", pending_reply=repeat_reply,
                 )
-                return {"consecutive_llm_failures": 0, **_agent_turn(repeat_reply)}
+                return {
+                    "last_asked_field": pending_field,
+                    "consecutive_llm_failures": 0,
+                    **_agent_turn(repeat_reply),
+                }
             if answer["confirmed"]:
                 candidate = profile[pending_field]["value"]
                 if _is_valid_format(pending_field, candidate):
@@ -493,6 +501,9 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
         )
         return {
             "caller_profile": new_profile, "partial_field_utterances": partials,
+            # `reply` is target_field's confirm-back question, so the
+            # caller's next utterance is their yes/no/correction about it.
+            "last_asked_field": target_field,
             "consecutive_llm_failures": 0, **_agent_turn(reply),
         }
 
@@ -530,6 +541,7 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
         )
         return {
             "caller_profile": new_profile, "partial_field_utterances": partials,
+            "last_asked_field": next_target,
             "consecutive_llm_failures": 0, **_agent_turn(reply),
         }
 
@@ -540,6 +552,7 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
     )
     return {
         "caller_profile": new_profile, "partial_field_utterances": partials,
+        "last_asked_field": next_target,
         "consecutive_llm_failures": 0, **_agent_turn(reply),
     }
 
@@ -562,31 +575,30 @@ def _next_fast_field(profile, asked_field):
     return None
 
 
-def _sync_last_asked_field(result: dict, current_asked_field):
-    # node_capture (today's original function, reused as the fallback path
-    # here) has no concept of last_asked_field — its return dict never sets
-    # it, so without this it would go stale after a fallback that actually
-    # advances the conversation (e.g. a field auto-confirms and node_capture
-    # moves on to ask about the next one internally), leaving the NEXT
-    # node_capture_fast turn thinking the caller's answer is about the
-    # wrong field. Re-derive it from whatever node_capture actually decided,
-    # the same way node_capture's own bottom logic would.
-    profile = result.get("caller_profile")
-    if profile is None:
-        return current_asked_field  # e.g. escalated, or unchanged — irrelevant either way
-    pending = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
-    if pending:
-        return pending
-    missing = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "missing"), None)
-    return missing if missing is not None else current_asked_field
-
-
 def _fallback_to_real_capture(state: CallState, config: RunnableConfig) -> dict:
     # Restricted to last_asked_field — see node_capture's allowed_pending_field
     # docstring for why an earlier, not-yet-spoken-about pending field must
     # never be treated as what this utterance is answering.
+    #
+    # node_capture reports last_asked_field itself, on every path that
+    # speaks a question about a specific field. It used to be re-derived
+    # here instead, by a helper that scanned caller_profile for the first
+    # pending_confirm field (else the first missing one) — a guess that was
+    # wrong whenever the field node_capture had just spoken about wasn't
+    # the first one in FIELD_PRIORITY order to hold that status, which is
+    # routine under Phase 7: background verification leaves earlier fields
+    # sitting in pending_confirm with their confirm-backs deliberately
+    # unspoken, batched for the drain phase. The caller's next utterance
+    # was then credited to a field they had never been asked about — twice
+    # in one live call (see docs/fixes/). The field a reply was about is
+    # known for certain at the point the reply is built, so it is stated
+    # there rather than reconstructed here.
+    #
+    # setdefault, not an unconditional write: the paths that DON'T set it
+    # (entering research, an upstream-failure fallback) aren't asking about
+    # a field at all, and must leave the outstanding question as it was.
     result = node_capture(state, config, allowed_pending_field=state["last_asked_field"])
-    result["last_asked_field"] = _sync_last_asked_field(result, state["last_asked_field"])
+    result.setdefault("last_asked_field", state["last_asked_field"])
     return result
 
 
