@@ -58,6 +58,19 @@ class CallState(TypedDict):
     # node_capture_fast should fall back to the real synchronous path this
     # turn rather than advancing further. Never set by any graph node.
     verification_failed_field: Optional[str]
+    # Phase 7 (optimistic capture) — raw utterance of the most recent FAILED
+    # attempt at a field, keyed by field name, so the next attempt can be
+    # read together with it rather than in isolation. A caller spelling out
+    # a long value routinely splits it across two turns ("manos44" … "at
+    # gmail dot com"), and the transport is deliberately forbidden from
+    # merging consecutive utterances (backend/transport/prompts.py rule 3a),
+    # so without this each attempt extracts an incurable fragment and the
+    # re-ask loops forever — confirmed live, see docs/fixes/.
+    # Only ever populated for "email"/"phone": those have a deterministic
+    # validator to catch a bad stitch, and are the only fields long enough
+    # to get split in the first place. Dropped for a field as soon as it is
+    # captured, so a later re-ask never stitches onto stale text.
+    partial_field_utterances: dict[str, str]
     # Transient — set ONLY by node_capture_fast's own "advance to the next
     # field" branch, popped and consumed by dispatcher.py right after
     # GRAPH.invoke returns (never left set across turns). This must be a
@@ -118,6 +131,7 @@ def new_call_state(call_id: str) -> CallState:
         last_asked_field=None,
         verification_failed_field=None,
         background_verify_field=None,
+        partial_field_utterances={},
         research_phase="gather",
         statute_citation=None,
         background_search_query=None,

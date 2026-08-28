@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from backend.supervisor import prompts
@@ -86,8 +86,14 @@ SELECT_OFFERED_SLOT_SCHEMA = {
         "selected_index": {"type": ["integer", "null"]},
         "declined_all": {"type": "boolean"},
         "needs_clarification": {"type": "boolean"},
+        # A caller who answers an offer with a time of their own is doing
+        # neither of the other three things. Without somewhere to put that,
+        # the model was forced to call a counter-proposal "clarification",
+        # and node_booking answered a request for 3PM by re-reading the same
+        # three morning slots back.
+        "proposed_new_time": {"type": "boolean"},
     },
-    "required": ["selected_index", "declined_all", "needs_clarification"],
+    "required": ["selected_index", "declined_all", "needs_clarification", "proposed_new_time"],
     "additionalProperties": False,
 }
 
@@ -158,15 +164,28 @@ def classify_practice_area(transcript: list[dict]) -> dict:
     )
 
 
-def extract_field(utterance: str, field_name: str) -> dict:
+def _previous_attempt_note(previous_attempt: str | None) -> str:
+    """Empty string on a first attempt, so the prompt is byte-for-byte the
+    one this tool has always sent. Only graph.py's retry paths ever pass a
+    previous_attempt, and only for email/phone — see
+    prompts.PREVIOUS_ATTEMPT_NOTE for why that stitching has to happen here
+    rather than in the transport."""
+    if not previous_attempt:
+        return ""
+    return prompts.PREVIOUS_ATTEMPT_NOTE.format(previous_attempt=previous_attempt)
+
+
+def extract_field(utterance: str, field_name: str, previous_attempt: str | None = None) -> dict:
     return call_claude_json(
-        system=prompts.EXTRACT_FIELD_PROMPT.format(field_name=field_name),
+        system=prompts.EXTRACT_FIELD_PROMPT.format(
+            field_name=field_name, previous_attempt_note=_previous_attempt_note(previous_attempt)
+        ),
         user_content=utterance,
         json_schema=EXTRACT_SCHEMA,
     )
 
 
-def extract_and_confirm_field(utterance: str, field_name: str) -> dict:
+def extract_and_confirm_field(utterance: str, field_name: str, previous_attempt: str | None = None) -> dict:
     """Phase 13 (latency reduction) — replaces the extract_field +
     generate_confirm_back pair used by node_capture's fresh-extraction
     path with one call: the model extracts the value and drafts the
@@ -175,7 +194,9 @@ def extract_and_confirm_field(utterance: str, field_name: str) -> dict:
     ever actually used — this only removes the round trip, not the
     threshold/format checks."""
     return call_claude_json(
-        system=prompts.EXTRACT_AND_CONFIRM_FIELD_PROMPT.format(field_name=field_name),
+        system=prompts.EXTRACT_AND_CONFIRM_FIELD_PROMPT.format(
+            field_name=field_name, previous_attempt_note=_previous_attempt_note(previous_attempt)
+        ),
         user_content=utterance,
         json_schema=EXTRACT_AND_CONFIRM_SCHEMA,
     )
@@ -264,7 +285,14 @@ def validate_phone(phone: str) -> bool:
 
 def extract_datetime(utterance: str, today: date) -> dict:
     return call_claude_json(
-        system=prompts.EXTRACT_DATETIME_PROMPT.format(today=today.isoformat()),
+        system=prompts.EXTRACT_DATETIME_PROMPT.format(
+            today=today.isoformat(),
+            weekday=today.strftime("%A"),
+            # Spelled out rather than left implicit: "Friday" said ON a Friday
+            # is the one genuinely ambiguous case, and it came up on the first
+            # real call that reached booking.
+            next_same_weekday=(today + timedelta(days=7)).isoformat(),
+        ),
         user_content=utterance,
         json_schema=EXTRACT_DATETIME_SCHEMA,
     )
@@ -339,6 +367,19 @@ def generate_alternative_offer(
     return (
         f"Sorry {name} — that time{requested_str} is already booked. I do have availability "
         f"{_format_alternative_slots(alternatives)} — do any of those work for you?"
+    )
+
+
+def generate_offer_reprompt(alternatives: list[dict]) -> str:
+    # The re-ask when the caller's answer to an offer wasn't understood.
+    # Deliberately NOT a replay of the previous reply: that one opened with
+    # "Sorry <name> — that time at 4PM is already booked", which is true once
+    # and merely confusing on the repeat, and reads as the `repetition` error
+    # class to boot. Same deterministic-template reasoning as
+    # generate_alternative_offer above.
+    return (
+        f"Sorry — I have availability {_format_alternative_slots(alternatives)}. "
+        "Do any of those work for you?"
     )
 
 

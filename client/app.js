@@ -45,6 +45,10 @@ let remoteAnalyser = null;
 let vizRafId = null;
 let connected = false;
 let thinkingBubbleEl = null;
+// segment id -> the bubble showing that segment. LiveKit re-publishes a
+// segment as its transcription is refined, so a turn has to be updated in
+// place rather than appended again — see upsertTranscriptTurn.
+const transcriptBubbles = new Map();
 
 function setStatus(message) {
   statusTextEl.textContent = message;
@@ -89,6 +93,7 @@ function resetLiveUi() {
     tile.querySelector(".field-value").textContent = "—";
   }
   thinkingBubbleEl = null;
+  transcriptBubbles.clear();
 }
 
 function showCallIdChip(id) {
@@ -102,14 +107,36 @@ function showCallIdChip(id) {
   };
 }
 
-function appendTranscriptTurn(role, text) {
+function upsertTranscriptTurn(role, text, segmentId) {
   if (!text) return;
   const empty = transcriptEl.querySelector(".empty-transcript");
   if (empty) empty.remove();
+
+  // One utterance arrives as several text streams sharing an lk.segment_id:
+  // interim results as ASR refines them, then a final one. Each carries the
+  // whole segment, not a delta, so the right move is to overwrite the bubble
+  // we already made for it. Appending instead is what turned a single spoken
+  // "Hello" into "Hello" / "Hello." / "Hello." / "Hello." on screen.
+  const existing = segmentId ? transcriptBubbles.get(segmentId) : null;
+  if (existing) {
+    existing.textContent = text;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    return;
+  }
+
   const div = document.createElement("div");
   div.className = `transcript-turn ${role}`;
   div.textContent = text;
-  transcriptEl.appendChild(div);
+  // The "…" is always the last bubble while it is up, so a turn that starts
+  // during the supervisor round trip goes above it rather than below.
+  if (thinkingBubbleEl && thinkingBubbleEl.parentNode === transcriptEl) {
+    transcriptEl.insertBefore(div, thinkingBubbleEl);
+  } else {
+    transcriptEl.appendChild(div);
+  }
+  // No segment id (an SDK that doesn't set one) degrades to the old
+  // append-every-stream behaviour rather than dropping the transcript.
+  if (segmentId) transcriptBubbles.set(segmentId, div);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 

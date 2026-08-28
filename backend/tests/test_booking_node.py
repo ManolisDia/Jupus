@@ -183,7 +183,13 @@ def test_selecting_offered_alternative_needs_clarification_repeats_offer(repos):
     ):
         result = _invoke(state, repos)
     assert result["stage"] == "booking"
-    assert result["pending_reply"] == "Do any of those work for you?"
+    # Re-asks with the times themselves rather than replaying the previous
+    # reply verbatim — that one opened with "that time at 4PM is already
+    # booked", which is stale on the repeat and reads as `repetition`.
+    assert "9AM" in result["pending_reply"] and "9:30AM" in result["pending_reply"]
+    assert "already booked" not in result["pending_reply"]
+    # still an offer, so the caller can answer it next turn
+    assert result["offered_slots"] == [SLOT_A, SLOT_B]
     assert repos.slots.book_calls == []
 
 
@@ -315,3 +321,119 @@ def test_llm_failure_returns_fallback_reply_without_crashing(repos):
     assert result["stage"] == "booking"
     assert result["consecutive_llm_failures"] == 1
     assert result["pending_reply"]
+
+
+def test_counter_offer_during_alternatives_is_looked_up_not_re_read_back(repos):
+    # Regression: the caller answered an offer of 9/9:30/10 with "can you do
+    # Friday at 3pm?". select_offered_slot had no outcome for a counter-offer,
+    # so it returned needs_clarification and booking read the identical three
+    # slots back — twice. A new time must be looked up like any other.
+    repos.slots.availability_result = SLOT_C
+    state = _booking_state(
+        offered_slots=[SLOT_A, SLOT_B], requested_date="2026-09-03", requested_window="morning"
+    )
+    state["transcript"].append({"role": "caller", "text": "Can you do Friday at 3pm?", "ts": "t2"})
+    with (
+        patch(
+            "backend.supervisor.tools.select_offered_slot",
+            return_value={
+                "selected_index": None, "declined_all": False,
+                "needs_clarification": False, "proposed_new_time": True,
+            },
+        ),
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": "2026-09-04", "window": "afternoon", "time": "15:00", "confidence": 0.9},
+        ),
+        patch("backend.supervisor.tools.generate_confirmation_summary", return_value="Friday 3PM then?"),
+    ):
+        result = _invoke(state, repos)
+    assert result["proposed_slot_id"] == SLOT_C["id"]
+    assert result["pending_reply"] == "Friday 3PM then?"
+    # the previous round's offer must not survive, or the next turn would go
+    # straight back into select_offered_slot instead of confirm_booking_answer
+    assert result["offered_slots"] is None
+    # asking for 3pm is not refusing 9/9:30 — the caller has to be able to
+    # circle back to them, which excluding them here would prevent
+    assert result["declined_slot_ids"] == []
+
+
+def test_counter_offer_to_a_taken_time_offers_fresh_alternatives(repos):
+    repos.slots.availability_result = None
+    repos.slots.alternatives_result = [SLOT_C]
+    state = _booking_state(
+        offered_slots=[SLOT_A, SLOT_B], requested_date="2026-09-03", requested_window="morning"
+    )
+    state["transcript"].append({"role": "caller", "text": "anything Friday afternoon?", "ts": "t2"})
+    with (
+        patch(
+            "backend.supervisor.tools.select_offered_slot",
+            return_value={
+                "selected_index": None, "declined_all": False,
+                "needs_clarification": False, "proposed_new_time": True,
+            },
+        ),
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": "2026-09-04", "window": "afternoon", "time": "15:00", "confidence": 0.9},
+        ),
+    ):
+        result = _invoke(state, repos)
+    # the new round's list replaces the old one rather than being cleared
+    assert result["offered_slots"] == [SLOT_C]
+    assert result["declined_slot_ids"] == []
+    assert "already booked" in result["pending_reply"]
+
+
+def test_counter_offer_with_unintelligible_time_reprompts_without_a_bogus_slot(repos):
+    # _handle_time_request's low-confidence guard has to still apply when it is
+    # reached from the offer branch, not just from a cold "what day works?".
+    state = _booking_state(
+        offered_slots=[SLOT_A, SLOT_B], requested_date="2026-09-03", requested_window="morning"
+    )
+    state["transcript"].append({"role": "caller", "text": "uhh sometime ideally", "ts": "t2"})
+    with (
+        patch(
+            "backend.supervisor.tools.select_offered_slot",
+            return_value={
+                "selected_index": None, "declined_all": False,
+                "needs_clarification": False, "proposed_new_time": True,
+            },
+        ),
+        patch(
+            "backend.supervisor.tools.extract_datetime",
+            return_value={"date": None, "window": None, "confidence": 0.0},
+        ),
+    ):
+        result = _invoke(state, repos)
+    assert result["proposed_slot_id"] is None
+    assert repos.slots.book_calls == []
+    assert "didn't catch" in result["pending_reply"]
+    assert result["offered_slots"] is None
+
+
+def test_counter_offer_llm_failure_keeps_the_offer_on_the_table(repos):
+    # The fallback asks the caller to repeat themselves, so the offer has to
+    # survive: a repeated "let's go with ten" needs select_offered_slot, and
+    # would be near-meaningless input to extract_datetime. A failed turn must
+    # not change which question the next turn is answering.
+    from backend.supervisor.llm_utils import LLMCallFailed
+
+    state = _booking_state(
+        offered_slots=[SLOT_A, SLOT_B], requested_date="2026-09-03", requested_window="morning"
+    )
+    state["transcript"].append({"role": "caller", "text": "how about 3pm", "ts": "t2"})
+    with (
+        patch(
+            "backend.supervisor.tools.select_offered_slot",
+            return_value={
+                "selected_index": None, "declined_all": False,
+                "needs_clarification": False, "proposed_new_time": True,
+            },
+        ),
+        patch("backend.supervisor.tools.extract_datetime", side_effect=LLMCallFailed("boom")),
+    ):
+        result = _invoke(state, repos)
+    assert result["offered_slots"] == [SLOT_A, SLOT_B]
+    assert result["consecutive_llm_failures"] == 1
+    assert repos.slots.book_calls == []

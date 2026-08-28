@@ -1,109 +1,68 @@
 # Architecture Diagrams
 
-Four diagrams for presenting Jupus: the layered system architecture, the full call sequence (including the async/non-blocking supervisor dispatch), the LangGraph state machine, and the eval/Benevolent-Dictator data flow. Each corresponds to a section of `docs/PLAN.md` / `docs/architecture.md` — these are visual summaries, not a separate source of truth; if a diagram and a doc ever disagree, the doc wins.
+Three diagrams for presenting Jupus: the layered system architecture, the LangGraph state machine, and the eval/Benevolent-Dictator data flow. Each corresponds to a section of `docs/PLAN.md` / `docs/architecture.md` — these are visual summaries, not a separate source of truth; if a diagram and a doc ever disagree, the doc wins.
+
+> A fourth diagram, a call sequence, was removed after Phase 14. It described the hand-rolled `/bridge` WebSocket transport — `POST /session`, browser-side `session.update`, fire-and-forget `asyncio.create_task`, and the `SPEAKING`/`DEFERRED` delivery queue — all of which the LiveKit migration deleted (`docs/phases/phase-14-livekit-transport.md`, Decision 5). Rather than leave a diagram that would send a reader looking for a WebSocket that no longer exists, it's gone; `docs/reference/life-of-a-call.md` describes the current round trip in prose.
 
 ---
 
 ## 1. System architecture
 
-Layered shape from `docs/architecture.md`: transport → orchestration → domain/tools → data access, with the Realtime/Claude/SQLite boundaries.
+Layered shape from `docs/architecture.md`: transport → orchestration → domain/tools → data access, with the LiveKit/Realtime/Claude/SQLite boundaries.
 
 ```mermaid
 flowchart TB
     subgraph Caller["Caller"]
-        Mic["Browser client<br/>client/index.html"]
+        Mic["Browser client<br/>client/index.html + livekit-transport.js"]
+    end
+
+    subgraph LK["LiveKit Cloud"]
+        Room["LiveKit room<br/>WebRTC media + data channel"]
+    end
+
+    subgraph Backend["Backend — ONE FastAPI process"]
+        direction TB
+        Worker["LiveKit agent worker (in-process)<br/>backend/transport/livekit_agent.py<br/>hosts the Realtime session, schedules fillers"]
+        Routes["HTTP / WS routes<br/>app.py — POST /livekit-token,<br/>WS /admin/trace/:call_id, /api/*"]
+        Orchestration["Orchestration<br/>dispatcher.py + graph.py (LangGraph)"]
+        Domain["Domain / Tools<br/>tools.py — Claude calls + deterministic logic"]
+        DataAccess["Data Access<br/>backend/db/repositories/ (ABCs)"]
+        Worker -->|ask_supervisor| Orchestration
+        Orchestration --> Domain --> DataAccess
     end
 
     subgraph Realtime["OpenAI Realtime API"]
         RT["Realtime session<br/>STT + semantic VAD + dialogue + TTS<br/>sees exactly ONE tool: ask_supervisor"]
     end
 
-    subgraph Backend["Backend (FastAPI)"]
-        direction TB
-        Transport["Transport<br/>app.py routes, /bridge WebSocket"]
-        Orchestration["Orchestration<br/>dispatcher.py + graph.py (LangGraph)"]
-        Domain["Domain / Tools<br/>tools.py — Claude calls + deterministic logic"]
-        DataAccess["Data Access<br/>backend/db/repositories/ (ABCs)"]
-        Transport --> Orchestration --> Domain --> DataAccess
-    end
-
     subgraph Claude["Anthropic Claude"]
-        LLM["Supervisor reasoning<br/>routing / extraction / booking / escalation / eval judge"]
+        LLM["Supervisor reasoning<br/>routing / extraction / research /<br/>booking / escalation / eval judge"]
     end
 
     subgraph Store["SQLite — swappable via the Repository pattern"]
-        Tables["calls · slots · trace_events<br/>call_error_flags · taxonomy_suggestions<br/>call_reviews · human_annotations"]
+        Tables["calls · slots · trace_events · eval_runs<br/>call_error_flags · taxonomy_suggestions<br/>call_reviews · human_annotations"]
     end
 
     subgraph AdminSide["Admin (Benevolent Dictator)"]
         AdminUI["admin/ + admin/annotate.js"]
     end
 
-    Mic <-->|audio + data channel| RT
-    RT <-->|ask_supervisor call / result| Transport
+    Mic <-->|WebRTC audio| Room
+    Mic -.->|POST /livekit-token| Routes
+    Room <-->|audio track + call_state data channel| Worker
+    Worker <-->|speech in / speech out| RT
     Domain <-->|forced tool-calling| LLM
     DataAccess --> Tables
-    AdminUI <-->|REST| Transport
+    AdminUI <-->|REST + live trace stream| Routes
 ```
+
+The agent worker runs **inside the backend process**, not as a separate service — that is what lets it read in-memory call state directly and keeps the live admin view working, at the cost of one process doing real-time media work alongside serving HTTP. See the README's "Known limits" and the one-worker rule in `docs/reference/operations.md`.
 
 ---
 
-## 2. Call sequence
+## 2. LangGraph state machine
 
-The full round trip from `docs/PLAN.md`, including the non-blocking dispatch that lets the caller keep talking while the supervisor works (Phase 5).
-
-```mermaid
-sequenceDiagram
-    actor Caller
-    participant Browser as Browser Client
-    participant RT as OpenAI Realtime
-    participant Bridge as Backend /bridge
-    participant Graph as LangGraph Supervisor
-    participant Claude
-    participant DB as Repositories (SQLite)
-
-    Browser->>Bridge: POST /session {call_id}
-    Bridge->>RT: create session (server-held API key)
-    RT-->>Bridge: ephemeral client_secret
-    Bridge-->>Browser: client_secret
-    Browser->>RT: WebRTC offer (mic track + data channel)
-    RT-->>Browser: WebRTC answer
-    Browser->>RT: session.update (semantic_vad, ask_supervisor tool)
-    Browser->>Bridge: open WS /bridge?call_id
-
-    Caller->>RT: speaks
-    RT->>RT: STT + semantic VAD (end of turn)
-    RT->>Browser: ask_supervisor(reason, utterance)
-    Browser->>Bridge: forward over WebSocket
-    Bridge->>Bridge: asyncio.create_task (never blocks)
-    Bridge-->>Browser: (returns immediately)
-
-    par caller keeps talking
-        Caller->>RT: next utterance — handled independently
-    and supervisor works in the background
-        Bridge->>Graph: GRAPH.invoke(state, config)
-        Graph->>Claude: scoped tool call (traced + retried)
-        Claude-->>Graph: structured result
-        Graph->>DB: repos.calls.upsert / repos.trace.record_event
-        Graph-->>Bridge: pending_reply
-    end
-
-    alt caller not speaking
-        Bridge->>Browser: deliver reply now
-    else caller mid-speech
-        Bridge->>Bridge: queue in DEFERRED
-        Note over Bridge: delivered on next speech_stopped,<br/>dropped if the stage went stale first
-    end
-
-    Browser->>RT: function_call_output + response.create
-    RT->>Caller: speaks the reply
-```
-
----
-
-## 3. LangGraph state machine
-
-Nodes, edges, and every escalation trigger from `docs/PLAN.md` and Phase 5.
+Nodes, edges, and every escalation trigger from `docs/PLAN.md` and Phase 5. Drawn at *stage* level, matching `CallState.stage` — the `capture` stage splits internally into `capture_fast`/`capture_confirm` nodes, and `research` into `research_gather`/`research_deliver`.
 
 ```mermaid
 flowchart TD
@@ -131,11 +90,11 @@ flowchart TD
 
     Escalation -->|handoff note written| EscalatedEnd(("ended: escalated"))
 ```
-`explicit_request` (a deterministic keyword match, checked before the current stage's node runs) and `system_error` (3 consecutive upstream API failures, any node) can fire from anywhere — the dashed `any stage, any time` node represents that, it isn't a real graph state.
+`explicit_request` (a deterministic keyword match in `dispatcher.py`, checked before the current stage's node runs) and `system_error` (3 consecutive upstream API failures, any node) can fire from anywhere — the dashed `any stage, any time` node represents that, it isn't a real graph state.
 
 ---
 
-## 4. Eval / Benevolent Dictator data flow
+## 3. Eval / Benevolent Dictator data flow
 
 How a call becomes a classified, calibrated, regression-testable data point — `docs/error_taxonomy.md`, `docs/benevolent_dictator.md`, Phases 6a–6c.
 

@@ -23,11 +23,37 @@ MODEL_ID = "claude-sonnet-5"
 # no error-class regression for that specific tool.
 HAIKU_MODEL_ID = "claude-haiku-4-5-20251001"
 RETRY_BACKOFF_SECONDS = 0.5
-# json.JSONDecodeError/StopIteration: a malformed or truncated response is
+
+
+class NoTextBlock(Exception):
+    """The response carried no text block to parse.
+
+    In practice this means generation stopped before the model got to the
+    answer — see NO_THINKING below for the way that actually happened here.
+    """
+
+
+# json.JSONDecodeError/NoTextBlock: a malformed or truncated response is
 # functionally the same failure as an API error from the caller's
 # perspective — retry it the same way, don't let it escape as an unhandled
-# exception that kills the whole graph invocation.
-RETRYABLE_ERRORS = (anthropic.APIError, json.JSONDecodeError, StopIteration)
+# exception that kills the whole graph invocation. StopIteration is kept for
+# safety only; _first_text_block replaced the bare next() that used to raise
+# it, precisely because its empty str() made the failure undiagnosable.
+RETRYABLE_ERRORS = (anthropic.APIError, json.JSONDecodeError, StopIteration, NoTextBlock)
+
+# Every call here is a narrow, fully-specified extraction or classification
+# against a small JSON schema, on a latency-critical voice turn. None of them
+# want a reasoning pass, and on claude-sonnet-5 OMITTING this parameter opts
+# INTO adaptive thinking rather than out of it — which is what produced the
+# bug this constant exists to fix: the thinking block consumed the whole
+# max_tokens=512 budget, the response came back stop_reason="max_tokens" with
+# a `thinking` block and NO `text` block, and the turn failed and retried
+# after ~10s of dead air. Measured on the utterance that hit it live
+# ("can you do Friday at 4 p.m.?"): 2 of 3 calls failed with thinking on,
+# 0 of 6 with it off, and output dropped from 69-512 tokens to a steady
+# ~35. Disabled is accepted on sonnet-5 and on haiku-4-5 (HAIKU_MODEL_ID),
+# the only two models these helpers ever run against.
+NO_THINKING = {"type": "disabled"}
 
 _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
@@ -88,6 +114,24 @@ def _record_usage(response) -> None:
     }
 
 
+def _first_text_block(response) -> str:
+    """The response's text, or a diagnosable error explaining why there isn't one.
+
+    Was `next(block.text for block in ...)`, which raised a bare StopIteration
+    whose str() is the empty string — so a real, repeatable production failure
+    surfaced in the trace as `success: false, error: ""` and was untraceable.
+    Whatever else this returns, it must never be that again.
+    """
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    raise NoTextBlock(
+        f"no text block in response (stop_reason={response.stop_reason}, "
+        f"output_tokens={response.usage.output_tokens}, "
+        f"blocks={[block.type for block in response.content]})"
+    )
+
+
 def call_claude_json(system: str, user_content: str, json_schema: dict, max_tokens: int = 512) -> dict:
     response = _client.messages.create(
         model=_resolve_model(),
@@ -95,10 +139,10 @@ def call_claude_json(system: str, user_content: str, json_schema: dict, max_toke
         system=_cached_system_block(system),
         messages=[{"role": "user", "content": user_content}],
         output_config={"format": {"type": "json_schema", "schema": json_schema}},
+        thinking=NO_THINKING,
     )
     _record_usage(response)
-    text = next(block.text for block in response.content if block.type == "text")
-    return json.loads(text)
+    return json.loads(_first_text_block(response))
 
 
 def call_claude_text(system: str, user_content: str, max_tokens: int = 512) -> str:
@@ -107,9 +151,10 @@ def call_claude_text(system: str, user_content: str, max_tokens: int = 512) -> s
         max_tokens=max_tokens,
         system=_cached_system_block(system),
         messages=[{"role": "user", "content": user_content}],
+        thinking=NO_THINKING,
     )
     _record_usage(response)
-    return next(block.text for block in response.content if block.type == "text")
+    return _first_text_block(response)
 
 
 def _run_and_record_usage(

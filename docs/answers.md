@@ -52,10 +52,32 @@ the supervisor detour adds a second hop, and that hop is where the real cost liv
 
 **Estimated cost**: `eval.pricing.estimate_cost_usd` (Claude Sonnet 5 + Realtime `gpt-realtime-2.1`
 token usage, rates verified live against `claude.com/pricing` and
-`developers.openai.com/api/docs/pricing` on 2026-08-24) — average **$0.024/call** observed across
-the same batch (`GET /api/eval/summary`'s `cost.average_usd`), labeled "estimated" everywhere it's
-shown per `docs/DECISIONS.md`'s pricing-verification caveat. Cost was raised directly as a concern
-in conversation — this is a real, measured answer to it, not a guess.
+`developers.openai.com/api/docs/pricing` on 2026-08-24), labeled "estimated" everywhere it's shown
+per `docs/DECISIONS.md`'s pricing-verification caveat. Recomputed 2026-08-28 across the 13 logged
+calls that carry a `realtime_usage` event:
+
+| | per call |
+|---|---|
+| median | **$0.49** |
+| mean | $0.50 |
+| range | $0.02 – $0.88 |
+| — of which Claude | $0.017 mean |
+| — of which Realtime | $0.48 mean (**96.5%** of total spend) |
+
+**This supersedes an earlier figure of $0.024/call**, which was wrong in a way worth recording: it
+was computed over a batch whose calls had no `realtime_usage` events captured, so it was measuring
+the Claude half alone — and indeed $0.024 sits right next to the $0.017 Claude-only mean above. The
+lesson is the one in `docs/reference/operations.md`'s troubleshooting table ("Cost reads $0 for a
+real call"): a cost number derived from usage events is only as complete as the events that
+actually got captured, and a *missing* event reads as cheap rather than as an error.
+
+The distribution matters more than the headline. Almost all of the spend is Realtime, and within
+that the largest single line is `realtime_text_input_tokens` — 71,551 on one logged call — because
+the conversation history is re-sent on every turn. That, not the supervisor, is where the money
+goes, and it is the obvious first target if cost per call ever became a constraint.
+
+Cost was raised directly as a concern in conversation. This is a real, measured answer to it, not a
+guess — including the part where the first measurement was an underestimate by roughly 20x.
 
 **Phase 13 (latency reduction) update, 2026-08-25**: given `supervisor_processing` was confirmed the
 dominant cost above, this phase attacked it directly — see `docs/phases/phase-13-latency-reduction.md`
@@ -241,5 +263,74 @@ a third: at what concurrent-call volume does either of those two start to move, 
 
 ## Q4 — Telephony / warm transfer / failure handling
 
-*TBD — Phase 10 (telephony), if built. Design sketch otherwise per
-`docs/phases/phase-15-polish-submission.md`.*
+**Not built.** Phase 10 was fully specified (`docs/phases/phase-10-telephony.md`) and deliberately
+cut — see `docs/DECISIONS.md`. So this is a design answer, and it is labelled as one rather than
+dressed up as a description of running code. Every file referenced below exists; the SIP layer on
+top of them does not.
+
+### Getting the call in
+
+A SIP trunk (Twilio or Telnyx) into the same architecture, which is the point of having swapped
+transports once already: `backend/transport/` is the only layer that would change. The caller
+arrives over a phone line instead of WebRTC, the agent worker still hosts the same Realtime
+session, and `ask_supervisor` still fans into the same graph. Nothing in `graph.py`, `tools.py` or
+the repository layer is telephony-aware, and nothing should become so.
+
+Two things do change and are worth naming rather than glossing:
+
+- **Codec and bandwidth.** PSTN is 8kHz narrowband G.711 against WebRTC's wideband Opus. That is
+  materially worse audio into the same `semantic_vad` endpointing, so `eagerness` and the
+  noise-reduction mode (`build_session`, `livekit_agent.py:435`) — both of which were tuned against
+  browser-quality audio — would need re-tuning against real phone audio, not assumed to carry over.
+- **DTMF.** A phone caller can press keys. That is a second input channel with no equivalent in the
+  browser client, and it wants an explicit decision (most likely: accept it for disambiguation only,
+  never as a substitute for the capture flow).
+
+### The warm transfer
+
+When `escalate_to_human` fires, the backend places a **second outbound leg** to the human, briefs
+them, and only then bridges the caller in. The briefing already exists — `generate_call_summary`
+(`tools.py:205`) produces exactly the summary that `write_handoff_note` (`tools.py:244`) writes into
+`docs/handoffs/{call_id}.md` today. The transfer path would speak it to the human rather than
+writing it to a file. Same content, different sink.
+
+The caller is not left in silence during this. They are told a person is being brought on, and the
+existing filler mechanism (`fillers.py`) is the natural thing to reuse for the dial-out wait, which
+is far longer than a supervisor round trip.
+
+### Failure handling, by layer
+
+The two layers fail differently, and — this is the part that matters — **each is blind to some
+failures the other sees**. Handling only one is the common mistake.
+
+**Signalling / SIP layer.** These arrive as protocol events, and each has a distinct meaning:
+
+| Signal | Means | Caller experience |
+|---|---|---|
+| `486 Busy Here` | Human is on another call | "They're on another call right now — let me take your number and have them call you back." Falls through to the existing handoff note. |
+| No-answer timer expiry (no final response before timeout) | Ringing, nobody picked up | Same callback path. Do **not** retry immediately — a second ring at a phone nobody is at buys nothing. |
+| `480 Temporarily Unavailable` / `503 Service Unavailable` | Endpoint or trunk unavailable | Same callback path, but this one is an *infrastructure* signal and should raise an operational alert, not just a caller-facing fallback. |
+| `BYE` mid-bridge | The line dropped after connecting | The agent re-engages rather than disappearing: "It looks like we got disconnected from our team — let me try that again." One retry, then callback. |
+
+**Application layer.** These are invisible to SIP, which is exactly why they need separate handling:
+
+- **Bridge-attempt timeout.** My own timer on the whole transfer, independent of any SIP response.
+  Without it, a trunk that simply never answers hangs the caller forever.
+- **Human answers but says nothing** — voicemail picked up, phone answered in a pocket, someone who
+  didn't realise they were live. SIP reports a perfectly healthy `200 OK` session. Detection has to
+  be at the media layer: no speech energy on the human leg within a few seconds of connect. This is
+  the single most important case to get right, because it is the one where every signalling-level
+  check says success while the caller is being handed to nobody.
+- **Supervisor unavailable during the transfer.** Already handled in principle — three consecutive
+  upstream failures escalate with `escalation_reason="system_error"` (`graph.py:99`), which is the
+  same path being invoked here.
+
+### The two principles
+
+1. **Never drop the caller into silence.** Every branch above ends in either a bridged human or a
+   spoken explanation plus a callback promise, and the callback promise is backed by a handoff note
+   that is already being written today. No branch ends in dead air.
+2. **Never let a failure at one layer be invisible at the other.** A retry cap is enforced at the
+   application layer regardless of what the signalling layer reports, because "the human answered"
+   and "the human is talking to the caller" are different claims, and only one of them is something
+   SIP can tell you.

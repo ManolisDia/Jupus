@@ -32,10 +32,46 @@ symbol — never invent a domain, a missing "@", or extra digits/characters that
 corresponding word in the utterance at all, even if it would make the value look more complete
 or valid. If something is genuinely missing from what they said, reproduce it exactly as spoken,
 incomplete, and lower your confidence accordingly — never silently fix it.
-
+{previous_attempt_note}
 Give a confidence score reflecting how certain you are about the transcription/extraction itself
 (not politeness or formatting). If the utterance doesn't contain this field at all, return
 confidence 0."""
+
+
+# Formatted into EXTRACT_FIELD_PROMPT / EXTRACT_AND_CONFIRM_FIELD_PROMPT's
+# {previous_attempt_note} slot ONLY on a retry of a field that already failed
+# once (graph.py's retry paths); the empty string otherwise, so the ordinary
+# first-attempt prompt is byte-for-byte what it has always been.
+#
+# This narrows the "never invent" guard directly above it rather than relaxing
+# it: every character still has to come from something the caller actually
+# said, but "what the caller said" now spans both attempts. A caller spelling
+# out an email routinely pauses mid-value, and the transport is deliberately
+# forbidden from merging the resulting segments into one utterance
+# (backend/transport/prompts.py rule 3a), so the halves can only ever be
+# reunited here. Only used for email/phone, whose deterministic validator
+# catches a bad stitch before it ever reaches the caller.
+PREVIOUS_ATTEMPT_NOTE = """
+The caller was already asked for this same field once and what they said could not be used.
+That earlier attempt was:
+
+  "{previous_attempt}"
+
+They have now been asked again, and the utterance below is their new answer. Decide which of
+these two cases you are in:
+
+- The new answer is a COMPLETE value on its own, or contradicts the earlier attempt: use the new
+  answer alone and ignore the earlier one entirely. This is the common case — treat it as the
+  default unless the other case clearly applies.
+- The new answer is only a FRAGMENT that slots together with the earlier attempt to form one
+  single value (typically the earlier attempt is the start and the new answer is the rest, e.g.
+  the part before the "@" first and the domain second): join them, in the order they were said,
+  into that one value.
+
+Never merge them into something neither utterance supports, never reorder or edit their contents
+to force a fit, and never treat two competing complete values as fragments of each other. If you
+are unsure which case applies, use the new answer alone and lower your confidence.
+"""
 
 CONFIRM_BACK_PROMPT = """Generate a short, natural confirm-back question for the caller about
 their "{field_name}", which we heard as "{candidate_value}".
@@ -66,7 +102,7 @@ symbol — never invent a domain, a missing "@", or extra digits/characters that
 corresponding word in the utterance at all, even if it would make the value look more complete
 or valid. If something is genuinely missing from what they said, reproduce it exactly as spoken,
 incomplete, and lower your confidence accordingly — never silently fix it.
-
+{previous_attempt_note}
 Give a confidence score reflecting how certain you are about the transcription/extraction itself
 (not politeness or formatting). If the utterance doesn't contain this field at all, return
 confidence 0.
@@ -102,12 +138,20 @@ never your reasoning about what the caller might have meant, and never a restate
 spelled-out utterance. Even if the caller spelled something out slowly or repeated themselves
 several times, resolve it down to the short final value alone."""
 
+# The bare-weekday rule below is spelled out rather than left to the model's
+# judgement: it used to resolve either way depending on whether that particular
+# call happened to reason about it, which made "Friday" said on a Friday a coin
+# flip. Formatted with today/weekday/next_same_weekday by tools.extract_datetime.
 EXTRACT_DATETIME_PROMPT = """You are extracting a preferred consultation date and time-of-day
 window from the caller's most recent utterance in a law firm intake call.
 
 Today's date is {today}. Resolve any relative phrase ("Thursday", "next week", "tomorrow
 afternoon") against that date — never guess "today" on your own if the caller didn't say
 something that means today.
+
+A bare weekday name means the NEXT future occurrence of that weekday. Today is a {weekday},
+so "{weekday}" on its own means {next_same_weekday}, NOT {today} — a caller who meant today
+would have said "today" or "this afternoon".
 
 Return "window" as "morning" (before 12pm), "afternoon" (12pm or later), or "any" if the caller
 didn't specify a time of day.
@@ -138,17 +182,23 @@ and asked if any of them work. The offered slots, in order, are:
 {slot_list}
 
 Interpret their reply:
-- If they picked one of the offered slots (by time, by ordinal like "the first one" / "the second
-  one", or any other way of referring to one of the options above), return its zero-based position
-  in the list above as "selected_index".
-- If they explicitly said none of those work / declined all of them, set "declined_all" to true and
-  leave "selected_index" null.
-- If their reply isn't actually an answer at all — e.g. "what?", "can you repeat that?", a question
-  back, or anything else showing they didn't hear or understand the offer rather than answering it
-  — set "needs_clarification" to true and leave "selected_index" null and "declined_all" false; the
-  offer will simply be repeated, so don't guess at what they meant.
+- If they picked one of the offered slots, return its zero-based position in the list above as
+  "selected_index". They may refer to it by full time ("10AM works"), by ordinal ("the first one",
+  "the last one"), or by a bare number or fragment that matches exactly one offered time — "ten",
+  "let's go with ten", "the 9:30", "half nine". An agreeable opener like "sure", "yeah" or "okay"
+  followed by any such reference is still a selection, not a clarification. Only treat a bare
+  number as ambiguous if it genuinely matches more than one of the options above.
+- If they asked for a DIFFERENT time that is not one of the options above — "can you do Friday at
+  3pm instead?", "anything later in the day?", "what about Monday?" — set "proposed_new_time" to
+  true and leave "selected_index" null. This is a counter-offer, not a failure to understand: their
+  requested time will be looked up fresh, so do NOT use "needs_clarification" for it.
+- If they explicitly said none of those work / declined all of them without naming an alternative,
+  set "declined_all" to true and leave "selected_index" null.
+- If their reply isn't actually an answer at all — e.g. "what?", "can you repeat that?", or anything
+  else showing they didn't hear the offer rather than answering it — set "needs_clarification" to
+  true and leave the rest null/false; the offer will simply be repeated, so don't guess.
 
-Never return an index outside the offered list above."""
+Exactly one of these four outcomes applies. Never return an index outside the offered list above."""
 
 GROUND_STATUTE_CITATION_PROMPT = """You are helping a law firm's voice intake agent decide whether
 to cite a specific statute back to a caller who has just described their situation, from a small

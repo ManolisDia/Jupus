@@ -36,6 +36,51 @@ SPELL_OUT_REPLIES = {
     "phone": "I want to make sure I've got that exactly right — could you read out your phone number one digit at a time?",
 }
 
+# Spoken when a field has burned all 3 attempts. Shared verbatim by every
+# path that can exhaust them (node_capture's _deny_and_reprompt,
+# _finish_fast_pass, _delayed_failure_reask) so "3 strikes on one field
+# hands the caller to a human" reads the same however the strikes were
+# accumulated.
+CAPTURE_ESCALATION_REPLY = (
+    "I'm having trouble getting that detail — let me get you to someone who can help directly."
+)
+
+# Only these two fields carry a failed attempt's raw utterance forward into
+# the next attempt (state["partial_field_utterances"]). They're the only
+# fields long enough for a caller to split across a pause while spelling
+# them out, and the only ones with a deterministic validator to catch a bad
+# stitch before the caller ever hears it. See state.py's field comment.
+STITCHABLE_FIELDS = ("email", "phone")
+
+
+def _remember_partial(state: CallState, field: str, utterance: str) -> dict:
+    """The `partial_field_utterances` delta to return after a FAILED attempt
+    at `field`, so the next attempt is read together with this one instead
+    of in isolation. A no-op delta for anything outside STITCHABLE_FIELDS,
+    or for an utterance with nothing in it to carry forward."""
+    partials = state.get("partial_field_utterances") or {}
+    if field not in STITCHABLE_FIELDS or not (utterance or "").strip():
+        return partials
+    return {**partials, field: utterance}
+
+
+def _forget_partial(state: CallState, field: str) -> dict:
+    """The delta to return once `field` is captured (or given up on) — a
+    later re-ask, e.g. after the caller denies its confirm-back, must start
+    clean rather than stitching onto text from a resolved attempt."""
+    partials = state.get("partial_field_utterances") or {}
+    return {k: v for k, v in partials.items() if k != field}
+
+
+def _previous_attempt(state: CallState, field: str) -> tuple:
+    """Extra positional args for tools.extract_field / extract_and_confirm_field
+    — a 1-tuple on a retry that has a remembered partial, otherwise empty, so
+    a first attempt calls those tools with exactly the arguments (and sends
+    exactly the prompt) it always has."""
+    previous = (state.get("partial_field_utterances") or {}).get(field)
+    return (previous,) if previous else ()
+
+
 # Phase 8 (case research) — the intro question is asked as part of the
 # SAME turn that transitions capture -> research (see _enter_research
 # below), not a separate chained turn — the transitioning node already has
@@ -289,14 +334,21 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
             return traced_call(repos.trace, call_id, "capture", "validate_phone", tools.validate_phone, value)
         return True
 
-    def _deny_and_reprompt(field_name: str, reply: str):
+    def _deny_and_reprompt(field_name: str, reply: str, failed_utterance: str = None):
         # Shared by an explicit "no", a "yes" to a value that can never pass
         # format validation, and a fresh extraction that's already invalid —
         # all are failed attempts and must count toward escalation, or an
         # unconfirmable value (e.g. an email with no @ at all) loops forever.
+        #
+        # failed_utterance is passed ONLY by the fresh-extraction callers,
+        # where this turn's utterance really was an attempt at the value and
+        # may be one half of one (see _remember_partial). The confirm-back
+        # callers deliberately leave it None — their utterance is a "yes",
+        # "no", or correction ABOUT a value, not a fragment OF one, and
+        # carrying it into the next extraction would just be noise.
         attempts = profile[field_name]["attempts"] + 1
         if attempts >= 3:
-            escalate_reply = "I'm having trouble getting that detail — let me get you to someone who can help directly."
+            escalate_reply = CAPTURE_ESCALATION_REPLY
             repos.trace.record_event(
                 call_id, "node_exited", node="capture",
                 stage_from="capture", stage_to="escalation", pending_reply=escalate_reply,
@@ -305,6 +357,8 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                 "stage": "escalation",
                 "escalation_reason": "capture_failed",
                 "caller_profile": {**profile, field_name: {**profile[field_name], "attempts": attempts}},
+                "partial_field_utterances": _forget_partial(state, field_name),
+                "last_asked_field": field_name,
                 "consecutive_llm_failures": 0,
                 **_agent_turn(escalate_reply),
             }
@@ -314,6 +368,14 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
         )
         return {
             "caller_profile": {**profile, field_name: {**profile[field_name], "status": "missing", "attempts": attempts}},
+            # `reply` re-asks for field_name, so that is what the caller's
+            # next utterance will be answering — see _fallback_to_real_capture.
+            "last_asked_field": field_name,
+            "partial_field_utterances": (
+                _remember_partial(state, field_name, failed_utterance)
+                if failed_utterance is not None
+                else _forget_partial(state, field_name)
+            ),
             "consecutive_llm_failures": 0,
             **_agent_turn(reply),
         }
@@ -349,7 +411,11 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                     call_id, "node_exited", node="capture",
                     stage_from="capture", stage_to="capture", pending_reply=repeat_reply,
                 )
-                return {"consecutive_llm_failures": 0, **_agent_turn(repeat_reply)}
+                return {
+                    "last_asked_field": pending_field,
+                    "consecutive_llm_failures": 0,
+                    **_agent_turn(repeat_reply),
+                }
             if answer["confirmed"]:
                 candidate = profile[pending_field]["value"]
                 if _is_valid_format(pending_field, candidate):
@@ -386,6 +452,9 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
             extracted = call_claude_tool(
                 repos.trace, call_id, "capture", "extract_and_confirm_field",
                 tools.extract_and_confirm_field, utterance, target_field,
+                # Empty tuple on a first attempt, so this stays the exact
+                # call it has always been — see _previous_attempt.
+                *_previous_attempt(state, target_field),
             )
             if target_field in ("email", "phone"):
                 # handled fully explicitly, not through apply_extraction's
@@ -398,9 +467,9 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
                 # can't be trusted to actually surface the uncertainty.
                 candidate = extracted["value"] or None
                 if candidate is None or not _is_valid_format(target_field, candidate):
-                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field])
+                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field], utterance)
                 if extracted["confidence"] < LOW_CONFIDENCE_CONFIRM_THRESHOLD:
-                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field])
+                    return _deny_and_reprompt(target_field, SPELL_OUT_REPLIES[target_field], utterance)
                 new_value, new_status = candidate, "pending_confirm"
             else:
                 new_value, new_status = apply_extraction(target_field, extracted["value"], extracted["confidence"])
@@ -408,6 +477,10 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
         return _llm_failure_fallback(repos, state, "capture")
 
     new_profile = {**profile, target_field: {**profile[target_field], "value": new_value, "status": new_status}}
+    # target_field now holds a real value, so any half-heard earlier attempt
+    # at it is spent — a later re-ask (e.g. the caller denying its
+    # confirm-back) must start clean, not stitch onto stale text.
+    partials = _forget_partial(state, target_field)
 
     if new_status == "pending_confirm":
         try:
@@ -426,11 +499,17 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
             call_id, "node_exited", node="capture",
             stage_from="capture", stage_to="capture", pending_reply=reply,
         )
-        return {"caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+        return {
+            "caller_profile": new_profile, "partial_field_utterances": partials,
+            # `reply` is target_field's confirm-back question, so the
+            # caller's next utterance is their yes/no/correction about it.
+            "last_asked_field": target_field,
+            "consecutive_llm_failures": 0, **_agent_turn(reply),
+        }
 
     remaining = [f for f in FIELD_PRIORITY if new_profile[f]["status"] != "confirmed"]
     if not remaining:
-        result = {"caller_profile": new_profile, **_enter_research(state)}
+        result = {"caller_profile": new_profile, "partial_field_utterances": partials, **_enter_research(state)}
         repos.trace.record_event(
             call_id, "node_exited", node="capture",
             stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
@@ -460,14 +539,22 @@ def node_capture(state: CallState, config: RunnableConfig, allowed_pending_field
             call_id, "node_exited", node="capture",
             stage_from="capture", stage_to="capture", pending_reply=reply,
         )
-        return {"caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+        return {
+            "caller_profile": new_profile, "partial_field_utterances": partials,
+            "last_asked_field": next_target,
+            "consecutive_llm_failures": 0, **_agent_turn(reply),
+        }
 
     reply = f"Thanks — and what's your {FIELD_LABELS[next_target]}?"
     repos.trace.record_event(
         call_id, "node_exited", node="capture",
         stage_from="capture", stage_to="capture", pending_reply=reply,
     )
-    return {"caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(reply)}
+    return {
+        "caller_profile": new_profile, "partial_field_utterances": partials,
+        "last_asked_field": next_target,
+        "consecutive_llm_failures": 0, **_agent_turn(reply),
+    }
 
 
 def _next_fast_field(profile, asked_field):
@@ -488,31 +575,30 @@ def _next_fast_field(profile, asked_field):
     return None
 
 
-def _sync_last_asked_field(result: dict, current_asked_field):
-    # node_capture (today's original function, reused as the fallback path
-    # here) has no concept of last_asked_field — its return dict never sets
-    # it, so without this it would go stale after a fallback that actually
-    # advances the conversation (e.g. a field auto-confirms and node_capture
-    # moves on to ask about the next one internally), leaving the NEXT
-    # node_capture_fast turn thinking the caller's answer is about the
-    # wrong field. Re-derive it from whatever node_capture actually decided,
-    # the same way node_capture's own bottom logic would.
-    profile = result.get("caller_profile")
-    if profile is None:
-        return current_asked_field  # e.g. escalated, or unchanged — irrelevant either way
-    pending = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "pending_confirm"), None)
-    if pending:
-        return pending
-    missing = next((f for f in FIELD_PRIORITY if profile[f]["status"] == "missing"), None)
-    return missing if missing is not None else current_asked_field
-
-
 def _fallback_to_real_capture(state: CallState, config: RunnableConfig) -> dict:
     # Restricted to last_asked_field — see node_capture's allowed_pending_field
     # docstring for why an earlier, not-yet-spoken-about pending field must
     # never be treated as what this utterance is answering.
+    #
+    # node_capture reports last_asked_field itself, on every path that
+    # speaks a question about a specific field. It used to be re-derived
+    # here instead, by a helper that scanned caller_profile for the first
+    # pending_confirm field (else the first missing one) — a guess that was
+    # wrong whenever the field node_capture had just spoken about wasn't
+    # the first one in FIELD_PRIORITY order to hold that status, which is
+    # routine under Phase 7: background verification leaves earlier fields
+    # sitting in pending_confirm with their confirm-backs deliberately
+    # unspoken, batched for the drain phase. The caller's next utterance
+    # was then credited to a field they had never been asked about — twice
+    # in one live call (see docs/fixes/). The field a reply was about is
+    # known for certain at the point the reply is built, so it is stated
+    # there rather than reconstructed here.
+    #
+    # setdefault, not an unconditional write: the paths that DON'T set it
+    # (entering research, an upstream-failure fallback) aren't asking about
+    # a field at all, and must leave the outstanding question as it was.
     result = node_capture(state, config, allowed_pending_field=state["last_asked_field"])
-    result["last_asked_field"] = _sync_last_asked_field(result, state["last_asked_field"])
+    result.setdefault("last_asked_field", state["last_asked_field"])
     return result
 
 
@@ -570,7 +656,7 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
         # _fallback_to_real_capture) would silently attribute unrelated
         # text to the wrong field. See docs/fixes/ for the real,
         # live-reproduced case this replaces.
-        return _delayed_failure_reask(repos, call_id, failed_field, "capture_fast")
+        return _delayed_failure_reask(repos, state, failed_field, "capture_fast")
 
     if asked_field and (
         heuristics.is_explicit_human_request(utterance)
@@ -581,6 +667,40 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
             call_id, "capture_fast_gate_fallback", node="capture_fast", field=asked_field, utterance=utterance
         )
         return _fallback_to_real_capture(state, config)
+
+    if asked_field and profile[asked_field]["attempts"] > 0 and profile[asked_field]["status"] == "missing":
+        # asked_field has already failed at least once and was re-asked, so
+        # this utterance is a RETRY of it — not a first answer. Optimism is
+        # only earned on a first answer: there, guessing the caller got it
+        # right is usually correct and the background check silently cleans
+        # up when it isn't. Here we already have evidence this particular
+        # value is hard to hear, so the guess is a bad bet, and paying for
+        # it is worse than usual — advancing means saying "Great — and
+        # what's your phone number?" and then, one turn later, interrupting
+        # with "could you spell out your email" all over again. The caller
+        # hears the conversation move forward and then jump backwards, and
+        # the turn they spent answering the next question is discarded by
+        # _delayed_failure_reask. Two turns burned per retry, no progress
+        # made, and with three retries in a row it reads as a hang — which
+        # is exactly how this was found live (see docs/fixes/).
+        #
+        # So spend the real latency here instead and settle the field this
+        # turn. _finish_fast_pass is precisely that operation — process
+        # THIS utterance against asked_field synchronously, with the
+        # attempts/escalation bookkeeping — and it now resumes the fast
+        # pass afterwards if fields remain, rather than assuming it was
+        # called at the end of it.
+        repos.trace.record_event(
+            call_id, "capture_fast_retry_synchronous", node="capture_fast",
+            field=asked_field, attempts=profile[asked_field]["attempts"],
+        )
+        result = _finish_fast_pass(state, config, asked_field)
+        if result.get("stage") != "research":
+            # Unlike the end-of-pass caller below, a retry stays in the fast
+            # phase unless _finish_fast_pass explicitly says otherwise (it
+            # sets "confirm" itself once there is nothing left to ask).
+            result.setdefault("capture_phase", "fast")
+        return result
 
     next_field = _next_fast_field(profile, asked_field)
     if next_field:
@@ -614,7 +734,7 @@ def node_capture_fast(state: CallState, config: RunnableConfig) -> dict:
     # field) for real before deciding the first drain item.
     result = _finish_fast_pass(state, config, asked_field)
     if result.get("stage") != "research":
-        result["capture_phase"] = "confirm"
+        result.setdefault("capture_phase", "confirm")
     return result
 
 
@@ -653,7 +773,10 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
 
     try:
         extracted = call_claude_tool(
-            repos.trace, call_id, "capture_fast", "extract_field", tools.extract_field, utterance, asked_field
+            repos.trace, call_id, "capture_fast", "extract_field", tools.extract_field, utterance, asked_field,
+            # Empty tuple unless this is a retry with a remembered partial,
+            # so a first attempt is the exact call it has always been.
+            *_previous_attempt(state, asked_field),
         )
         if asked_field in ("email", "phone"):
             candidate = extracted["value"] or None
@@ -674,7 +797,7 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
     if new_status == "missing":
         attempts = profile[asked_field]["attempts"] + 1
         if attempts >= 3:
-            reply = "I'm having trouble getting that detail — let me get you to someone who can help directly."
+            reply = CAPTURE_ESCALATION_REPLY
             repos.trace.record_event(
                 call_id, "node_exited", node="capture_fast",
                 stage_from="capture", stage_to="escalation", pending_reply=reply,
@@ -683,6 +806,7 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
                 "stage": "escalation",
                 "escalation_reason": "capture_failed",
                 "caller_profile": {**profile, asked_field: {**profile[asked_field], "attempts": attempts}},
+                "partial_field_utterances": _forget_partial(state, asked_field),
                 "consecutive_llm_failures": 0,
                 **_agent_turn(reply),
             }
@@ -696,15 +820,49 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
         )
         return {
             "caller_profile": {**profile, asked_field: {**profile[asked_field], "status": "missing", "attempts": attempts}},
+            # This utterance was a real attempt at the value and may be one
+            # half of it — carry it into the next attempt rather than
+            # throwing it away and asking the caller to start over.
+            "partial_field_utterances": _remember_partial(state, asked_field, utterance),
             "consecutive_llm_failures": 0,
             **_agent_turn(reply),
         }
 
     new_profile = {**profile, asked_field: {**profile[asked_field], "value": new_value, "status": new_status}}
+    partials = _forget_partial(state, asked_field)
+
+    resume_field = _next_fast_field(new_profile, asked_field)
+    if resume_field:
+        # Reached only via node_capture_fast's synchronous-retry branch: an
+        # earlier field was just settled and there are still fields the
+        # caller has never been asked about. Resume the fast pass on the
+        # next one instead of falling through to the confirm/drain tail
+        # below, which would strand them unasked. Structurally unreachable
+        # from the ordinary end-of-fast-pass caller, where asked_field is
+        # FIELD_PRIORITY's last entry and this is always None.
+        reply = f"Great — and what's your {FIELD_LABELS[resume_field]}?"
+        repos.trace.record_event(
+            call_id, "node_exited", node="capture_fast",
+            stage_from="capture", stage_to="capture", pending_reply=reply,
+        )
+        return {
+            "caller_profile": new_profile,
+            "last_asked_field": resume_field,
+            "capture_phase": "fast",
+            "partial_field_utterances": partials,
+            # Deliberately no background_verify_field: this turn's utterance
+            # was just processed synchronously and in full, so there is
+            # nothing left to check. Spawning one would re-extract the same
+            # utterance and could land on a later turn, overwriting a value
+            # that is already correct (the trap dispatcher.py's
+            # background_verify_field signal exists to avoid).
+            "consecutive_llm_failures": 0,
+            **_agent_turn(reply),
+        }
 
     pending_field = next((f for f in FIELD_PRIORITY if new_profile[f]["status"] == "pending_confirm"), None)
     if pending_field is None:
-        result = {"caller_profile": new_profile, **_enter_research(state)}
+        result = {"caller_profile": new_profile, "partial_field_utterances": partials, **_enter_research(state)}
         repos.trace.record_event(
             call_id, "node_exited", node="capture_fast",
             stage_from="capture", stage_to="research", pending_reply=result["pending_reply"],
@@ -723,7 +881,15 @@ def _finish_fast_pass(state: CallState, config: RunnableConfig, asked_field: str
         call_id, "node_exited", node="capture_fast",
         stage_from="capture", stage_to="capture", pending_reply=spoken,
     )
-    return {"caller_profile": new_profile, "consecutive_llm_failures": 0, **_agent_turn(spoken)}
+    return {
+        "caller_profile": new_profile,
+        # Nothing left to ask about — the drain phase owns the call from
+        # here, whichever caller got us to this point.
+        "capture_phase": "confirm",
+        "partial_field_utterances": partials,
+        "consecutive_llm_failures": 0,
+        **_agent_turn(spoken),
+    }
 
 
 def node_booking(state: CallState, config: RunnableConfig) -> dict:
@@ -801,6 +967,70 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
             result["declined_slot_ids"] = declined_delta
         return result
 
+    def _handle_time_request(clear_offered=False):
+        """Look up whatever day/time the caller just asked for and answer it.
+
+        Reached from two places: a caller who has no proposal on the table yet
+        (the ordinary "what day works?" reply), and a caller who answered an
+        offer with a time of their own instead of picking one. Those are the
+        same question, so they get the same code rather than a second, subtly
+        different copy of it.
+        """
+        try:
+            parsed = call_claude_tool(
+                repos.trace, call_id, "booking", "extract_datetime",
+                tools.extract_datetime, utterance, date_cls.today(),
+            )
+        except LLMCallFailed:
+            # Deliberately NOT cleared here, unlike every other exit: the
+            # fallback asks the caller to say it again, and a repeat of
+            # "let's go with ten" wants select_offered_slot, not
+            # extract_datetime. Failing a turn shouldn't change which
+            # question the next one is answering.
+            return _llm_failure_fallback(repos, state, "booking")
+
+        if not parsed.get("date") or parsed.get("confidence", 0) < 0.4:
+            # nothing recognizable as a date/time was said at all — never
+            # fabricate a proposal from an empty/garbage date (an empty
+            # string passes every "date(start_time) >= ?" filter, which
+            # silently produced a bogus proposal the caller never asked for)
+            reply = "Sorry, I didn't catch a date or time there — what day and time would work for you?"
+            repos.trace.record_event(
+                call_id, "node_exited", node="booking",
+                stage_from="booking", stage_to="booking", pending_reply=reply,
+            )
+            result = {"consecutive_llm_failures": 0, **_agent_turn(reply)}
+        else:
+            requested_date, requested_window, requested_time = (
+                parsed["date"], parsed["window"], parsed.get("time")
+            )
+            slot = traced_call(
+                repos.trace, call_id, "booking", "check_availability",
+                repos.slots.check_availability, requested_date, requested_window, state["practice_area"],
+                requested_time, state["declined_slot_ids"],
+            )
+            if slot:
+                result = _propose_slot(slot, requested_date, requested_window)
+            else:
+                alternatives = traced_call(
+                    repos.trace, call_id, "booking", "suggest_alternative_slots",
+                    repos.slots.suggest_alternatives, requested_date, state["practice_area"],
+                    state["declined_slot_ids"],
+                )
+                if not alternatives:
+                    result = _escalate_no_slot(requested_date, requested_window)
+                else:
+                    result = _offer_alternatives(
+                        alternatives, requested_date, requested_window, unavailable_time=requested_time
+                    )
+        if clear_offered:
+            # The previous round's offer is dead once we answer a new time.
+            # Defaulted rather than forced, so _offer_alternatives' own fresh
+            # list still wins — leaving the stale list in state would send the
+            # next turn back into the select_offered_slot branch.
+            result = {"offered_slots": None, **result}
+        return result
+
     if state.get("offered_slots"):
         offered = state["offered_slots"]
         try:
@@ -818,8 +1048,23 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
         except LLMCallFailed:
             return _llm_failure_fallback(repos, state, "booking")
 
+        if answer.get("proposed_new_time"):
+            # The caller answered the offer with a time of their own. Look it
+            # up like any other request instead of re-reading the same list
+            # back at them, which is what happened while this outcome had
+            # nowhere to go but "needs_clarification".
+            #
+            # The offered slots are deliberately NOT added to
+            # declined_slot_ids here: asking "can you do 3pm?" is not the same
+            # as refusing 9/9:30/10, and a caller who circles back with "fine,
+            # let's do ten" must still be able to get it.
+            return _handle_time_request(clear_offered=True)
+
         if answer.get("needs_clarification"):
-            repeat_reply = _last_agent_reply(state["transcript"], "Sorry, do any of those times work for you?")
+            repeat_reply = traced_call(
+                repos.trace, call_id, "booking", "generate_offer_reprompt",
+                tools.generate_offer_reprompt, offered,
+            )
             repos.trace.record_event(
                 call_id, "node_exited", node="booking",
                 stage_from="booking", stage_to="booking", pending_reply=repeat_reply,
@@ -885,44 +1130,7 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
         }
 
     if state["proposed_slot_id"] is None:
-        try:
-            parsed = call_claude_tool(
-                repos.trace, call_id, "booking", "extract_datetime",
-                tools.extract_datetime, utterance, date_cls.today(),
-            )
-        except LLMCallFailed:
-            return _llm_failure_fallback(repos, state, "booking")
-
-        if not parsed.get("date") or parsed.get("confidence", 0) < 0.4:
-            # nothing recognizable as a date/time was said at all — never
-            # fabricate a proposal from an empty/garbage date (an empty
-            # string passes every "date(start_time) >= ?" filter, which
-            # silently produced a bogus proposal the caller never asked for)
-            reply = "Sorry, I didn't catch a date or time there — what day and time would work for you?"
-            repos.trace.record_event(
-                call_id, "node_exited", node="booking",
-                stage_from="booking", stage_to="booking", pending_reply=reply,
-            )
-            return {"consecutive_llm_failures": 0, **_agent_turn(reply)}
-
-        requested_date, requested_window, requested_time = parsed["date"], parsed["window"], parsed.get("time")
-        slot = traced_call(
-            repos.trace, call_id, "booking", "check_availability",
-            repos.slots.check_availability, requested_date, requested_window, state["practice_area"],
-            requested_time, state["declined_slot_ids"],
-        )
-        if slot:
-            return _propose_slot(slot, requested_date, requested_window)
-
-        alternatives = traced_call(
-            repos.trace, call_id, "booking", "suggest_alternative_slots",
-            repos.slots.suggest_alternatives, requested_date, state["practice_area"], state["declined_slot_ids"],
-        )
-        if not alternatives:
-            return _escalate_no_slot(requested_date, requested_window)
-        return _offer_alternatives(
-            alternatives, requested_date, requested_window, unavailable_time=requested_time
-        )
+        return _handle_time_request()
 
     try:
         answer = call_claude_tool(
@@ -1027,7 +1235,7 @@ def node_escalation(state: CallState, config: RunnableConfig) -> dict:
     return {"stage": "ended", "consecutive_llm_failures": 0, **_agent_turn(reply)}
 
 
-def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: str) -> dict:
+def _delayed_failure_reask(repos, state: CallState, failed_field: str, node_name: str) -> dict:
     """Shared by node_capture_fast and node_capture_confirm: a background
     verification resolved to a genuine failure for `failed_field`, whose
     own turn has already passed — the utterance that would have answered
@@ -1046,7 +1254,40 @@ def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: st
     utterance re-enters node_capture_fast's own gate/advance logic
     (relevant when called from node_capture_confirm — the fast pass isn't
     "done" again until this field is actually resolved).
+
+    Counts as one of failed_field's 3 attempts, and escalates on the third.
+    The background check that just failed ran against a real answer the
+    caller really gave out loud, so it is a real attempt — the only thing
+    "background" about it is where the work happened. It used not to be
+    counted, on the reasoning (still in _verify_field_in_background's
+    docstring at the time) that the foreground would re-process the field
+    for real via an urgent-reask fallback and count it there; that fallback
+    was later removed in favour of this function, and the bookkeeping was
+    never moved across with it. The result was a field that could fail in
+    the background forever without ever reaching 3 strikes — an unbounded
+    "could you spell that out" loop with no escalation, which is exactly
+    what a caller hit live (see docs/fixes/).
     """
+    call_id = state["call_id"]
+    profile = state["caller_profile"]
+    attempts = profile[failed_field]["attempts"] + 1
+    repos.trace.record_event(
+        call_id, "capture_fast_delayed_failure_reask", node=node_name, field=failed_field, attempts=attempts
+    )
+
+    if attempts >= 3:
+        repos.trace.record_event(
+            call_id, "node_exited", node=node_name,
+            stage_from="capture", stage_to="escalation", pending_reply=CAPTURE_ESCALATION_REPLY,
+        )
+        return {
+            "stage": "escalation",
+            "escalation_reason": "capture_failed",
+            "caller_profile": {**profile, failed_field: {**profile[failed_field], "attempts": attempts}},
+            "consecutive_llm_failures": 0,
+            **_agent_turn(CAPTURE_ESCALATION_REPLY),
+        }
+
     if failed_field in ("email", "phone"):
         # A background verification for email/phone now fails on low
         # confidence too, not just invalid format (see
@@ -1057,7 +1298,6 @@ def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: st
         reply = SPELL_OUT_REPLIES[failed_field]
     else:
         reply = f"Sorry, I need to double check something — what's your {FIELD_LABELS[failed_field]} again?"
-    repos.trace.record_event(call_id, "capture_fast_delayed_failure_reask", node=node_name, field=failed_field)
     repos.trace.record_event(
         call_id, "node_exited", node=node_name,
         stage_from="capture", stage_to="capture", pending_reply=reply,
@@ -1065,6 +1305,7 @@ def _delayed_failure_reask(repos, call_id: str, failed_field: str, node_name: st
     return {
         "last_asked_field": failed_field,
         "capture_phase": "fast",
+        "caller_profile": {**profile, failed_field: {**profile[failed_field], "attempts": attempts}},
         "consecutive_llm_failures": 0,
         **_agent_turn(reply),
     }
@@ -1085,7 +1326,7 @@ def node_capture_confirm(state: CallState, config: RunnableConfig) -> dict:
     """
     failed_field = state.get("verification_failed_field")
     if failed_field:
-        return _delayed_failure_reask(_repos(config), state["call_id"], failed_field, "capture_confirm")
+        return _delayed_failure_reask(_repos(config), state, failed_field, "capture_confirm")
     return node_capture(state, config)
 
 
