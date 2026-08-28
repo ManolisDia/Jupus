@@ -178,7 +178,9 @@ def _previous_attempt_note(previous_attempt: str | None) -> str:
 def extract_field(utterance: str, field_name: str, previous_attempt: str | None = None) -> dict:
     return call_claude_json(
         system=prompts.EXTRACT_FIELD_PROMPT.format(
-            field_name=field_name, previous_attempt_note=_previous_attempt_note(previous_attempt)
+            field_name=field_name,
+            field_guard=prompts.FIELD_GUARDS.get(field_name, ""),
+            previous_attempt_note=_previous_attempt_note(previous_attempt),
         ),
         user_content=utterance,
         json_schema=EXTRACT_SCHEMA,
@@ -195,7 +197,9 @@ def extract_and_confirm_field(utterance: str, field_name: str, previous_attempt:
     threshold/format checks."""
     return call_claude_json(
         system=prompts.EXTRACT_AND_CONFIRM_FIELD_PROMPT.format(
-            field_name=field_name, previous_attempt_note=_previous_attempt_note(previous_attempt)
+            field_name=field_name,
+            field_guard=prompts.FIELD_GUARDS.get(field_name, ""),
+            previous_attempt_note=_previous_attempt_note(previous_attempt),
         ),
         user_content=utterance,
         json_schema=EXTRACT_AND_CONFIRM_SCHEMA,

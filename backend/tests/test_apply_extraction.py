@@ -46,3 +46,33 @@ def test_email_zero_confidence_discarded():
     value, status = apply_extraction("email", None, 0)
     assert value is None
     assert status == "missing"
+
+
+# --- a confident extraction of the wrong KIND of thing --------------------
+
+
+def test_an_email_is_never_stored_as_a_name():
+    # Live (docs/fixes/2026-08-28-008.md): extract_field was asked for the
+    # name field, given "manos at gmail dot com", and returned
+    # "manos@gmail.com" at 0.6 — which the confidence bands happily filed as
+    # the caller's name. Confidence answers "did I hear that right", never
+    # "is that the kind of thing I asked for".
+    assert apply_extraction("name", "manos@gmail.com", 0.6) == (None, "missing")
+    assert apply_extraction("name", "manos@gmail.com", 0.99) == (None, "missing")
+
+
+def test_a_phone_number_is_never_stored_as_a_name():
+    assert apply_extraction("name", "07577670101", 0.9) == (None, "missing")
+
+
+def test_a_sentence_is_never_stored_as_a_name():
+    narrative = "he told me on Tuesday that I had to be out of the flat by the end of the week"
+    assert apply_extraction("name", narrative, 0.9) == (None, "missing")
+
+
+def test_real_names_still_pass_the_bands_unchanged():
+    assert apply_extraction("name", "Manos", 0.9) == ("Manos", "confirmed")
+    assert apply_extraction("name", "Manos", 0.5) == ("Manos", "pending_confirm")
+    assert apply_extraction("name", "Manos", 0.2) == (None, "missing")
+    # email/phone still short-circuit above the name check
+    assert apply_extraction("email", "manos@gmail.com", 0.6) == ("manos@gmail.com", "pending_confirm")

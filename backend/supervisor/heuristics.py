@@ -2,6 +2,10 @@
 
 import re
 
+# Shared by several checks below, so defined once up here rather than
+# beside whichever one happens to come first in the file.
+_WORD_RE = re.compile(r"[a-z]+")
+
 # Checked on EVERY turn, before the graph runs (backend/dispatcher.py), and
 # a miss is expensive: the caller has explicitly opted out of the automated
 # intake and every further question is one they've already refused to
@@ -86,6 +90,37 @@ def looks_like_tangent(utterance: str) -> bool:
     return any(lowered.startswith(prefix) for prefix in TANGENT_PREFIXES)
 
 
+# A spoken name answer is short — "Manos", "it's Manos Diamantopoulos",
+# "Manos, that's M A N O S". This ceiling is generous enough for the
+# spelled-out form and still well under a sentence of narrative. Erring
+# high is the safe direction: exceeding it only sends the utterance down
+# the careful synchronous path, it never rejects anything outright.
+MAX_SPOKEN_NAME_WORDS = 12
+
+
+def _sounds_like_an_email(lowered: str) -> bool:
+    # Spoken form ("manos at gmail dot com") or already-symbolic form.
+    return "@" in lowered or (" at " in lowered and " dot " in lowered)
+
+
+def _digit_count(text: str) -> int:
+    return sum(1 for ch in text if ch.isdigit())
+
+
+# A phone number read aloud carries no digit characters at all — "oh seven
+# five seven seven six seven zero one zero one". Individually these words
+# are ordinary English, so the test is the COUNT: a name answer essentially
+# never contains five of them.
+_NUMBER_WORDS = frozenset(
+    "oh zero one two three four five six seven eight nine nought double triple".split()
+)
+_SPOKEN_DIGITS_FOR_A_NUMBER = 5
+
+
+def _sounds_like_a_read_out_number(lowered: str) -> bool:
+    return sum(1 for w in _WORD_RE.findall(lowered) if w in _NUMBER_WORDS) >= _SPOKEN_DIGITS_FOR_A_NUMBER
+
+
 def looks_like_field_shape(field_name: str, utterance: str) -> bool:
     # A cheap RAW-UTTERANCE plausibility check, deliberately looser than
     # tools.validate_email/validate_phone — those validate an already
@@ -101,7 +136,54 @@ def looks_like_field_shape(field_name: str, utterance: str) -> bool:
         return "@" in utterance or " at " in lowered or " dot " in lowered
     if field_name == "phone":
         return any(ch.isdigit() for ch in utterance)
-    return True  # name/preferred_time: no reliable shape signal, rely on looks_like_tangent alone
+    if field_name == "name":
+        # This used to return True unconditionally — "no reliable shape
+        # signal, rely on looks_like_tangent alone". There is no reliable
+        # POSITIVE signal for a name, which is what that reasoning was
+        # about, but there are strong NEGATIVE ones, and without them the
+        # fast path optimistically accepted literally any utterance as a
+        # name. Live, a caller's late answer to the routing question
+        # ("Yeah, it's about my home. He's basically trying to kick me out
+        # with little notice.") was taken as their name, and a turn later
+        # their spoken email address was too — see docs/fixes/.
+        #
+        # A false positive here is cheap by design (one fallback to the
+        # careful synchronous path, which extracts correctly anyway), so
+        # the bar for adding a negative signal is low.
+        if (
+            _sounds_like_an_email(lowered)
+            or _digit_count(utterance) >= 7
+            or _sounds_like_a_read_out_number(lowered)
+        ):
+            return False  # answering a different question, or a different field
+        return len(lowered.split()) <= MAX_SPOKEN_NAME_WORDS
+    return True  # preferred_time: no reliable shape signal, rely on looks_like_tangent alone
+
+
+def looks_like_a_name(value: str) -> bool:
+    """Does an EXTRACTED value plausibly hold a person\'s name? Unlike
+    looks_like_field_shape above (raw speech, "is this worth guessing at"),
+    this judges a value the model has already produced and is about to be
+    written into caller_profile.
+
+    Deliberately a negative check — it rejects things a name provably is
+    not, rather than trying to define what one is. Names are far too
+    varied across cultures for a positive pattern, and a false rejection
+    costs a caller an extra re-ask, so the rules stay narrow: no "@", not a
+    phone number, not a whole sentence.
+
+    Lives here rather than beside tools.validate_email/validate_phone
+    because apply_extraction — the single funnel every name extraction
+    passes through, in all three call sites — is a pure function with no
+    repos to trace a tools.py call with (CLAUDE.md rule 8). Putting it here
+    keeps one check instead of three duplicated ones."""
+    if not value or not value.strip():
+        return False
+    if "@" in value:
+        return False  # an email address, however confidently it was heard
+    if _digit_count(value) >= 7:
+        return False  # a phone number
+    return len(value.split()) <= MAX_SPOKEN_NAME_WORDS
 
 
 # Phase 8 (case research) — used by node_research_gather to decide whether
@@ -139,7 +221,6 @@ _BARE_AFFIRMATION_TOKENS = frozenset(
     "yes yeah yep yup correct right ok okay sure no nope nah thats that "
     "is it was true affirmative indeed exactly".split()
 )
-_WORD_RE = re.compile(r"[a-z]+")
 
 
 def looks_like_bare_affirmation(utterance: str) -> bool:

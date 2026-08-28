@@ -563,3 +563,50 @@ def test_yes_to_a_confirm_back_resolves_that_field_and_does_not_repeat_it(repos)
     # is never read back a second time
     assert "phone" not in second["pending_reply"].lower()
     assert second["last_asked_field"] == "email"
+
+
+# --- a non-name utterance must not be optimistically taken as the name ---
+
+
+def test_late_answer_to_another_question_is_not_optimistically_taken_as_a_name(repos):
+    # Live trace #24-#37 (docs/fixes/2026-08-28-008.md). The caller answered
+    # the ROUTING question a turn late, after the fast pass had already moved
+    # on to asking their name. Nothing said that wasn't a name, so the fast
+    # path advanced to "Great - and what's your email address?", spawned a
+    # background name check that (correctly) found no name, and a turn later
+    # interrupted with "what's your name again?" - discarding the email the
+    # caller had meanwhile given. Must fall back and deal with it now.
+    state = _fast_state("name")
+    state["transcript"][-1]["text"] = (
+        "Yeah, it's about my home. He's basically trying to kick me out with little notice."
+    )
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "", "confidence": 0.0, "confirm_back_phrasing": ""},
+    ) as mock_extract:
+        result = _invoke(state, repos)
+    mock_extract.assert_called_once()  # handled now, synchronously
+    assert "email" not in result["pending_reply"].lower()  # no optimistic advance
+    assert result.get("background_verify_field") is None
+    assert result["last_asked_field"] == "name"
+    assert result["caller_profile"]["name"]["attempts"] == 1
+
+
+def test_a_name_that_never_extracts_escalates_instead_of_asking_forever(repos):
+    # node_capture's fresh-extraction branch counted an attempt for email and
+    # phone but not for name, which fell through to a plain "Thanks - and
+    # what's your name?" with attempts untouched. Verified pre-fix: three
+    # turns, attempts still 0, no escalation possible. Rarely reached before
+    # (the fast path advanced past such utterances); now the ordinary path.
+    state = _fast_state("name", name={
+        "value": None, "confidence": 0.0, "status": "missing", "attempts": 2, "validated": True,
+    })
+    state["transcript"][-1]["text"] = "he keeps saying I have to be out of the flat by the weekend"
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "", "confidence": 0.0, "confirm_back_phrasing": ""},
+    ):
+        result = _invoke(state, repos)
+    assert result["stage"] == "escalation"
+    assert result["escalation_reason"] == "capture_failed"
+    assert result["caller_profile"]["name"]["attempts"] == 3
