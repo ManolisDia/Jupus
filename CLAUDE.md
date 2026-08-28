@@ -20,6 +20,12 @@ This repo is worked on across many separate sessions with no memory of each othe
 3. Briefly state your understanding of the phase's goal and DoD back before starting — cheap insurance against a misreading, given how dense these specs are.
 4. Before your first live-call test, confirm `.env` has real `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` values (not just present in `.env.example`) — if missing, stop and ask rather than guessing or working around it. Both are paid APIs; if you don't know whether spend caps/alerts are set on either account, ask before running a long test sequence.
 
+## `docs/reference/` — how the code actually works today
+
+`docs/reference/` is a developer handbook written *from the code on `master`*, not from a plan: the life of a call, every node and branch, every `CallState` field, the tool catalog, the schema, the API surface, the trace events, the eval pipeline, and per-task recipes. Start at `docs/reference/README.md`.
+
+Read it when you need to understand or change existing behaviour. The planning docs below are still the authority on *why* things are the way they are and on what a given phase was supposed to deliver — but where a planning doc describes the code and disagrees with `docs/reference/`, the reference is the one that was checked against the code. Several planning docs describe designs that were later refined or reversed (the tool catalog in `docs/PLAN.md` and the file map at the bottom of this file are both stale; `docs/reference/code-map.md` is current).
+
 ## Before doing anything else: read `docs/architecture.md`, then `docs/PLAN.md`, then the current phase doc in `docs/phases/`
 
 `docs/architecture.md` defines the four-layer shape (transport → orchestration → domain/tools → data access) and the repository pattern every piece of persistence code must follow — read it before Phase 2, since that's where the first `sqlite3` calls appear in the phase docs (written before this doc existed, so their `conn: sqlite3.Connection` signatures are illustrative of the operation, not the literal final signature — see `docs/architecture.md`'s last section for exactly how to read them).
