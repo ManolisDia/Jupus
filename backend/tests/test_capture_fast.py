@@ -291,3 +291,180 @@ def test_confirm_phase_also_interrupts_on_delayed_failure(repos):
     assert result["last_asked_field"] == "email"
     assert result["capture_phase"] == "fast"
     assert "email" in result["pending_reply"].lower()
+
+
+# --- Retrying a field that already failed once -------------------------
+# All four reproduce one live call (docs/fixes/2026-08-28-004.md): the
+# caller gave an unusable email, was correctly asked to spell it out, and
+# from there the agent alternated "Great — and what's your phone number?"
+# with "could you spell out your email" until they hung up.
+
+
+def _retry_state(previous_attempt=None, attempts=1):
+    # email has already failed once and been re-asked, so it is still
+    # last_asked_field — the caller's next utterance is a RETRY of it.
+    state = _fast_state(
+        "email",
+        email={"value": None, "confidence": 0.0, "status": "missing", "attempts": attempts, "validated": True},
+    )
+    if previous_attempt:
+        state["partial_field_utterances"] = {"email": previous_attempt}
+    return state
+
+
+def test_retry_is_settled_this_turn_instead_of_optimistically_advancing(repos):
+    # The whiplash at the heart of the live bug. "At gmail dot com." clears
+    # looks_like_field_shape, so the fast path used to advance to phone and
+    # leave email to a background check — which failed, and interrupted the
+    # NEXT turn to ask for the email all over again, discarding whatever
+    # the caller had said in between. Two turns per retry, no progress.
+    # A retry must be resolved in the turn it arrives in.
+    state = _retry_state()
+    state["transcript"][-1]["text"] = "At gmail dot com."
+    with patch(
+        "backend.supervisor.tools.extract_field", return_value={"value": "@gmail.com", "confidence": 0.6}
+    ) as mock_extract:
+        result = _invoke(state, repos)
+    mock_extract.assert_called_once()
+    assert "phone" not in result["pending_reply"].lower()
+    assert result["pending_reply"] == graph.SPELL_OUT_REPLIES["email"]
+    assert result["last_asked_field"] == "email"
+    assert result["capture_phase"] == "fast"
+    # and no background check was spawned for a turn already fully processed
+    assert result.get("background_verify_field") is None
+
+
+def test_retry_counts_toward_escalation_rather_than_looping(repos):
+    # Same turn as above on the caller's third try: three failed attempts at
+    # one field hands them to a human. Live, this never fired at all.
+    state = _retry_state(attempts=2)
+    state["transcript"][-1]["text"] = "At gmail dot com."
+    with patch("backend.supervisor.tools.extract_field", return_value={"value": "@gmail.com", "confidence": 0.6}):
+        result = _invoke(state, repos)
+    assert result["stage"] == "escalation"
+    assert result["escalation_reason"] == "capture_failed"
+    assert result["caller_profile"]["email"]["attempts"] == 3
+
+
+def test_retry_reads_the_previous_attempt_so_a_split_value_can_be_rejoined(repos):
+    # The caller said "Manos 44." and then, asked to spell it out, "at gmail
+    # dot com" — two halves of one address, split across a pause. The
+    # transport is forbidden from merging them (transport/prompts.py rule
+    # 3a), so the extraction is the only place they can be reunited; without
+    # the earlier half it can only ever produce "@gmail.com", which no
+    # amount of re-asking fixes.
+    state = _retry_state(previous_attempt="Manos 44.")
+    state["transcript"][-1]["text"] = "At G M A I L dot C O M."
+    with patch(
+        "backend.supervisor.tools.extract_field",
+        return_value={"value": "manos44@gmail.com", "confidence": 0.9},
+    ) as mock_extract:
+        result = _invoke(state, repos)
+    mock_extract.assert_called_once_with("At G M A I L dot C O M.", "email", "Manos 44.")
+    assert result["caller_profile"]["email"]["value"] == "manos44@gmail.com"
+    assert result["caller_profile"]["email"]["status"] == "pending_confirm"
+    # the fast pass resumes on the next unasked field rather than dropping
+    # into the confirm/drain phase with phone never asked about
+    assert result["last_asked_field"] == "phone"
+    assert result["capture_phase"] == "fast"
+    assert "phone" in result["pending_reply"].lower()
+    # spent partial, dropped — a later re-ask must not stitch onto it
+    assert "email" not in result["partial_field_utterances"]
+
+
+def test_first_attempt_prompt_and_call_are_unchanged(repos):
+    # The stitching context must never leak into an ordinary first answer:
+    # extract_field is called with exactly two arguments, as always.
+    state = _fast_state("phone")  # last FIELD_PRIORITY entry -> processed live
+    state["transcript"][-1]["text"] = "07577670101"
+    with (
+        patch(
+            "backend.supervisor.tools.extract_field", return_value={"value": "07577670101", "confidence": 0.9}
+        ) as mock_extract,
+        patch("backend.supervisor.tools.generate_confirm_back", return_value="Did you say 07577670101?"),
+    ):
+        _invoke(state, repos)
+    mock_extract.assert_called_once_with("07577670101", "phone")
+
+
+def test_repeated_background_failures_escalate_instead_of_reasking_forever(repos):
+    # The delayed-failure interrupt is a real attempt — it ran against an
+    # answer the caller really gave out loud. It used not to be counted, so
+    # a field could fail in the background indefinitely without ever
+    # reaching 3 strikes.
+    state = _fast_state(
+        "phone",
+        email={"value": None, "confidence": 0.0, "status": "missing", "attempts": 2, "validated": True},
+    )
+    state["verification_failed_field"] = "email"
+    state["transcript"][-1]["text"] = "555-123-4567"
+    with patch("backend.supervisor.tools.extract_field") as mock_extract:
+        result = _invoke(state, repos)
+    mock_extract.assert_not_called()
+    assert result["stage"] == "escalation"
+    assert result["escalation_reason"] == "capture_failed"
+    assert result["caller_profile"]["email"]["attempts"] == 3
+
+
+async def test_live_reproduction_split_email_recovers_instead_of_hanging():
+    # End-to-end through the real dispatcher (reconciliation, background
+    # verification and all), replaying the two live utterances that derailed
+    # the call. Before the fix these produced "could you spell out your
+    # email" and then "Great — and what's your phone number?", followed by
+    # the spell-out again on the next turn, and again after that — never
+    # advancing, never escalating, until the caller hung up.
+    #
+    # Deliberately seeds the capture stage rather than driving through
+    # greeting/routing, which would reach the real Anthropic API on turn 1
+    # (docs/known-issues/2026-08-25-002.md).
+    repos = Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    call_id = "call-split-email"
+    state = new_call_state(call_id)
+    state["stage"] = "capture"
+    state["capture_phase"] = "fast"
+    state["practice_area"] = "tenancy"
+    state["last_asked_field"] = "email"  # email has just been asked for
+    state["caller_profile"]["name"] = {
+        "value": "Manos", "confidence": 0.9, "status": "confirmed", "attempts": 0, "validated": True,
+    }
+    CALL_STATES[call_id] = state
+    seen_args = []
+
+    def _extract(utterance, field, previous_attempt=None):
+        # Stands in for the real model: a domain on its own is unusable, but
+        # a domain offered right after a failed attempt that was the local
+        # part is the rest of that same address.
+        seen_args.append((utterance, field, previous_attempt))
+        if previous_attempt == "Manos 44.":
+            return {"value": "manos44@gmail.com", "confidence": 0.92}
+        return {"value": "@gmail.com", "confidence": 0.6}
+
+    # "Manos 44." has no @/at/dot, so it fails looks_like_field_shape and
+    # goes down the synchronous fallback — attempt 1, correctly re-asked.
+    # This is the part of the live call that already worked.
+    with patch(
+        "backend.supervisor.tools.extract_and_confirm_field",
+        return_value={"value": "Manos 44", "confidence": 0.15, "confirm_back_phrasing": "..."},
+    ):
+        reply1, _ = await dispatcher.run_supervisor_turn(repos, call_id, "t1", "Manos 44.")
+    assert reply1 == graph.SPELL_OUT_REPLIES["email"]
+    assert CALL_STATES[call_id]["partial_field_utterances"] == {"email": "Manos 44."}
+
+    # The turn that used to derail the call: answered here and now, with the
+    # first half of the address in hand.
+    with patch("backend.supervisor.tools.extract_field", side_effect=_extract):
+        reply2, _ = await dispatcher.run_supervisor_turn(repos, call_id, "t2", "At gmail dot com.")
+
+    assert ("At gmail dot com.", "email", "Manos 44.") in seen_args
+    profile = CALL_STATES[call_id]["caller_profile"]
+    assert profile["email"]["value"] == "manos44@gmail.com"
+    assert profile["email"]["status"] == "pending_confirm"
+    assert CALL_STATES[call_id]["stage"] == "capture"
+    # spent partial dropped, so a later re-ask starts clean
+    assert CALL_STATES[call_id]["partial_field_utterances"] == {}
+    # and the call moved forward instead of asking for the email a third time
+    assert "phone" in reply2.lower()
+    assert CALL_STATES[call_id]["last_asked_field"] == "phone"
+    # nothing left in flight to interrupt the next turn with a stale failure
+    assert not [k for k in dispatcher.FIELD_VERIFICATIONS if k[0] == call_id]
+

@@ -164,15 +164,28 @@ def classify_practice_area(transcript: list[dict]) -> dict:
     )
 
 
-def extract_field(utterance: str, field_name: str) -> dict:
+def _previous_attempt_note(previous_attempt: str | None) -> str:
+    """Empty string on a first attempt, so the prompt is byte-for-byte the
+    one this tool has always sent. Only graph.py's retry paths ever pass a
+    previous_attempt, and only for email/phone — see
+    prompts.PREVIOUS_ATTEMPT_NOTE for why that stitching has to happen here
+    rather than in the transport."""
+    if not previous_attempt:
+        return ""
+    return prompts.PREVIOUS_ATTEMPT_NOTE.format(previous_attempt=previous_attempt)
+
+
+def extract_field(utterance: str, field_name: str, previous_attempt: str | None = None) -> dict:
     return call_claude_json(
-        system=prompts.EXTRACT_FIELD_PROMPT.format(field_name=field_name),
+        system=prompts.EXTRACT_FIELD_PROMPT.format(
+            field_name=field_name, previous_attempt_note=_previous_attempt_note(previous_attempt)
+        ),
         user_content=utterance,
         json_schema=EXTRACT_SCHEMA,
     )
 
 
-def extract_and_confirm_field(utterance: str, field_name: str) -> dict:
+def extract_and_confirm_field(utterance: str, field_name: str, previous_attempt: str | None = None) -> dict:
     """Phase 13 (latency reduction) — replaces the extract_field +
     generate_confirm_back pair used by node_capture's fresh-extraction
     path with one call: the model extracts the value and drafts the
@@ -181,7 +194,9 @@ def extract_and_confirm_field(utterance: str, field_name: str) -> dict:
     ever actually used — this only removes the round trip, not the
     threshold/format checks."""
     return call_claude_json(
-        system=prompts.EXTRACT_AND_CONFIRM_FIELD_PROMPT.format(field_name=field_name),
+        system=prompts.EXTRACT_AND_CONFIRM_FIELD_PROMPT.format(
+            field_name=field_name, previous_attempt_note=_previous_attempt_note(previous_attempt)
+        ),
         user_content=utterance,
         json_schema=EXTRACT_AND_CONFIRM_SCHEMA,
     )

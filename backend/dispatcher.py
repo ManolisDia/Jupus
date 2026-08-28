@@ -4,7 +4,13 @@ import logging
 from backend.db.repositories import Repositories
 from backend.supervisor import tools
 from backend.supervisor.faq import match_faq
-from backend.supervisor.graph import GRAPH, LOW_CONFIDENCE_CONFIRM_THRESHOLD, apply_extraction
+from backend.supervisor.graph import (
+    GRAPH,
+    LOW_CONFIDENCE_CONFIRM_THRESHOLD,
+    _forget_partial,
+    _remember_partial,
+    apply_extraction,
+)
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.llm_utils import HAIKU_MODEL_ID, LLMCallFailed, call_claude_tool
 from backend.supervisor.state import CALL_STATES, FIELD_PRIORITY, CallState, get_or_create_state
@@ -57,14 +63,15 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
     result, and only the lock-holding turn processing (via
     _reconcile_field_verifications) ever writes it into shared state.
 
-    On failure, deliberately does NOT replicate node_capture's attempts/
-    escalation bookkeeping — a background failure was never spoken to the
-    caller, so it isn't a real "attempt" in the sense retry_counts and the
-    3-strikes escalation care about. The real attempt only happens once the
-    foreground actually re-processes this field for real, via
-    node_capture_fast's urgent-reask fallback (_fallback_to_real_capture),
-    which reuses node_capture's existing, unchanged attempts/escalation
-    logic.
+    On failure, returns the utterance it failed on alongside the verdict.
+    Two things need it: graph._delayed_failure_reask counts this as one of
+    the field's 3 attempts (it ran against a real answer the caller really
+    gave out loud — the only thing "background" about it is where the work
+    happened), and the next attempt at the field reads it as context, since
+    a caller spelling out a long value routinely splits it across a pause
+    (graph._remember_partial). This function still does no bookkeeping
+    itself: it holds no lock and writes no shared state, so it hands both
+    facts back and lets the lock-holding turn record them.
     """
     try:
         extracted = await asyncio.to_thread(
@@ -72,7 +79,7 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
             tools.extract_field, utterance, field,
         )
     except LLMCallFailed:
-        return {"field": field, "success": False}
+        return {"field": field, "success": False, "utterance": utterance}
 
     if field in ("email", "phone"):
         candidate = extracted["value"] or None
@@ -88,7 +95,7 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
         # than a guaranteed ask to spell it out (backend.supervisor.graph.
         # LOW_CONFIDENCE_CONFIRM_THRESHOLD; see docs/fixes/).
         if not valid or extracted["confidence"] < LOW_CONFIDENCE_CONFIRM_THRESHOLD:
-            return {"field": field, "success": False}
+            return {"field": field, "success": False, "utterance": utterance}
         return {
             "field": field, "success": True,
             "value": candidate, "confidence": extracted["confidence"], "status": "pending_confirm",
@@ -96,7 +103,7 @@ async def _verify_field_in_background(repos: Repositories, call_id: str, field: 
 
     value, status = apply_extraction(field, extracted["value"], extracted["confidence"])
     if status == "missing":
-        return {"field": field, "success": False}
+        return {"field": field, "success": False, "utterance": utterance}
     return {"field": field, "success": True, "value": value, "confidence": extracted["confidence"], "status": status}
 
 
@@ -132,15 +139,20 @@ def _reconcile_field_verifications(state: CallState, call_id: str) -> None:
             result = task.result()
         except Exception:
             logger.exception("background field verification crashed call_id=%s field=%s", call_id, field)
-            result = {"field": field, "success": False}
+            result = {"field": field, "success": False, "utterance": ""}
         if result["success"]:
             profile = state["caller_profile"]
             state["caller_profile"] = {
                 **profile,
                 field: {**profile[field], "value": result["value"], "status": result["status"]},
             }
+            state["partial_field_utterances"] = _forget_partial(state, field)
         else:
             failed_fields.append(field)
+            # What the caller actually said for this field, kept so the
+            # re-ask that follows isn't read in isolation — see
+            # graph._remember_partial and state.py's field comment.
+            state["partial_field_utterances"] = _remember_partial(state, field, result.get("utterance", ""))
     if failed_fields:
         # Deterministic if more than one resolved to failure in the same
         # reconcile pass (rare) — always surface the earliest in
