@@ -994,12 +994,43 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
             # fabricate a proposal from an empty/garbage date (an empty
             # string passes every "date(start_time) >= ?" filter, which
             # silently produced a bogus proposal the caller never asked for)
+            #
+            # Bounded, like every other "I didn't understand you" branch in
+            # this graph (node_routing's classification limit,
+            # node_research_gather's). This one had no ceiling and repeated
+            # the same sentence indefinitely — a caller who wants something
+            # other than a booking gets that reply on a loop until they hang
+            # up, which is exactly what happened live (docs/fixes/). Three
+            # tries matches node_capture's field limit, the closest analogue:
+            # both are "we cannot extract the thing we need from what they
+            # keep saying."
+            attempts = state["retry_counts"].get("booking_datetime", 0) + 1
+            if attempts >= 3:
+                reply = (
+                    "I'm having trouble finding a time that works from what I'm hearing — "
+                    "let me get you to someone who can sort this out directly."
+                )
+                repos.trace.record_event(
+                    call_id, "node_exited", node="booking",
+                    stage_from="booking", stage_to="escalation", pending_reply=reply,
+                )
+                return {
+                    "stage": "escalation",
+                    "escalation_reason": "booking_failed",
+                    "retry_counts": {**state["retry_counts"], "booking_datetime": attempts},
+                    "consecutive_llm_failures": 0,
+                    **_agent_turn(reply),
+                }
             reply = "Sorry, I didn't catch a date or time there — what day and time would work for you?"
             repos.trace.record_event(
                 call_id, "node_exited", node="booking",
                 stage_from="booking", stage_to="booking", pending_reply=reply,
             )
-            result = {"consecutive_llm_failures": 0, **_agent_turn(reply)}
+            result = {
+                "retry_counts": {**state["retry_counts"], "booking_datetime": attempts},
+                "consecutive_llm_failures": 0,
+                **_agent_turn(reply),
+            }
         else:
             requested_date, requested_window, requested_time = (
                 parsed["date"], parsed["window"], parsed.get("time")
@@ -1009,8 +1040,9 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
                 repos.slots.check_availability, requested_date, requested_window, state["practice_area"],
                 requested_time, state["declined_slot_ids"],
             )
+            result_retry_reset = {"retry_counts": {**state["retry_counts"], "booking_datetime": 0}}
             if slot:
-                result = _propose_slot(slot, requested_date, requested_window)
+                result = {**result_retry_reset, **_propose_slot(slot, requested_date, requested_window)}
             else:
                 alternatives = traced_call(
                     repos.trace, call_id, "booking", "suggest_alternative_slots",
@@ -1018,11 +1050,11 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
                     state["declined_slot_ids"],
                 )
                 if not alternatives:
-                    result = _escalate_no_slot(requested_date, requested_window)
+                    result = {**result_retry_reset, **_escalate_no_slot(requested_date, requested_window)}
                 else:
-                    result = _offer_alternatives(
+                    result = {**result_retry_reset, **_offer_alternatives(
                         alternatives, requested_date, requested_window, unavailable_time=requested_time
-                    )
+                    )}
         if clear_offered:
             # The previous round's offer is dead once we answer a new time.
             # Defaulted rather than forced, so _offer_alternatives' own fresh

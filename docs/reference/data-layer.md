@@ -30,7 +30,7 @@ Seeded as 10 business days × 16 half-hour slots (09:00–16:30) × 3 areas = 48
 | `ended_at` | Set only when `stage == "ended"` |
 | `practice_area` | |
 | `outcome` | `booked` / `escalated` / `info_only` / `abandoned` / NULL while in progress |
-| `escalation_reason` | One of the six reasons |
+| `escalation_reason` | One of the seven reasons |
 | `caller_name`, `caller_email`, `caller_phone` | **Only written when that field's status is `confirmed`.** A `pending_confirm` value never reaches this table. |
 | `booking_slot_id` | Only when `booking_confirmed` |
 | `transcript_json` | The full `CallState["transcript"]`, JSON-encoded |

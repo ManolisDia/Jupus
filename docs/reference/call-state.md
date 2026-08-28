@@ -97,7 +97,7 @@ There is a second, stricter gate on top for email and phone in the nodes: `LOW_C
 |---|---|---|---|
 | `pending_reply` | `Optional[str]` | every node, via `_agent_turn` | What the agent says this turn. Returned by `run_supervisor_turn`. |
 | `retry_counts` | `dict[str, int]` | `node_routing` (`"classification"`), `node_research_gather` (`"research_gather"`) | Per-concern counters. Replaced wholesale with `{**old, key: n}`. |
-| `escalation_reason` | `Optional[str]` | any escalating branch; dispatcher | One of six values — see [`supervisor-graph.md`](supervisor-graph.md). Drives `outcome == "escalated"`. |
+| `escalation_reason` | `Optional[str]` | any escalating branch; dispatcher | One of seven values — see [`supervisor-graph.md`](supervisor-graph.md). Drives `outcome == "escalated"`. |
 | `consecutive_llm_failures` | `int` | `_llm_failure_fallback` (increment); every successful node (reset to 0) | **Three consecutive escalates** with `system_error`. Note that nearly every successful return dict includes `"consecutive_llm_failures": 0` — that is the reset, and a new branch must not forget it. |
 
 ---
