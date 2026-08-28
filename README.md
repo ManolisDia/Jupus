@@ -204,6 +204,10 @@ Then browse `/admin` — badges, transcripts and traces are all populated.
 
 ## Docs worth knowing about
 
+**Working on the code?** Start at [`docs/reference/`](docs/reference/README.md) — a developer handbook describing the system as it actually is: the life of a call, every node and branch, every state field, the tool catalog, the schema, the API surface, the trace events, the eval pipeline, and a set of "how do I change X" recipes. It is written from the code, and it is the one place that supersedes anything below it if they disagree.
+
+Everything else in `docs/` is the **build record** — how the project was planned and why each call was made:
+
 - [`docs/architecture.md`](docs/architecture.md) — the four-layer shape and the repository pattern
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — **why** every non-obvious call was made, including the ones tried and reversed
 - [`docs/answers.md`](docs/answers.md) — the four written answers (latency, turn-taking, iteration/scale, telephony)
