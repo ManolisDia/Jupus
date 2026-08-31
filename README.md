@@ -54,7 +54,7 @@ That split is enforced by nine architecture rules, not convention. The important
 - **Every tool call is traced**, and every Claude call goes through one wrapper — which is what makes the observability below true by construction rather than by discipline.
 - **No SQL outside the repository layer.** Swapping SQLite for Postgres means writing one set of classes and touching nothing else.
 
-Two of these are enforced by pre-commit hooks; the rest by an independent agent review before any phase merges. Full rationale for every non-obvious call is in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+Two of these are enforced by pre-commit hooks; the rest by an independent agent review before any phase merges.
 
 ---
 
@@ -210,10 +210,7 @@ Then browse `/admin` — badges, transcripts and traces are all populated.
 Everything else in `docs/` is the **build record** — how the project was planned and why each call was made:
 
 - [`docs/architecture.md`](docs/architecture.md) — the four-layer shape and the repository pattern
-- [`docs/DECISIONS.md`](docs/DECISIONS.md) — **why** every non-obvious call was made, including the ones tried and reversed
 - [`docs/answers.md`](docs/answers.md) — the four written answers (latency, turn-taking, iteration/scale, telephony)
-- [`docs/PLAN.md`](docs/PLAN.md) — the full build plan and phase index
-- [`docs/scenarios.md`](docs/scenarios.md) — the 7 canonical scenarios used by manual QA, the mocked suite, and live runs alike
 - [`docs/error_taxonomy.md`](docs/error_taxonomy.md) — the editable error-class registry the judge scores against
 - [`docs/fixes/`](docs/fixes/) — a numbered log of every non-trivial bug and its root cause. Several are live-only failures no unit test would have caught.
 
@@ -223,13 +220,13 @@ Everything else in `docs/` is the **build record** — how the project was plann
 
 Fourteen phases, each with a written spec and a strict Definition of Done, each on its own branch, each reviewed by an independent agent against that DoD before merging. The first eight cover the four required user stories; 9 and 11–14 are deliberate stretches — hosting, latency instrumentation, a concurrency proof, latency reduction, and the LiveKit transport.
 
-The `docs/fixes/` log and the "reversed after live testing" entries in `DECISIONS.md` are the honest part of that record. A spoken filler, for instance, was built in Phase 2, tested live, removed as *worse* than silence — and only reintroduced in Phase 14 once the mechanism addressed the specific complaint that killed it the first time.
+The `docs/fixes/` log is the honest part of that record. A spoken filler, for instance, was built in Phase 2, tested live, removed as *worse* than silence — and only reintroduced in Phase 14 once the mechanism addressed the specific complaint that killed it the first time.
 
 ## Known limits
 
 A scoped prototype, deliberately:
 
-- **No telephony.** Browser mic only. Phase 10 was fully specified (SIP + Twilio warm transfer, see [`docs/phases/phase-10-telephony.md`](docs/phases/phase-10-telephony.md)) but not built — the design is written up in `docs/answers.md` instead.
+- **No telephony.** Browser mic only. Fully specified but not built — the design, including the SIP-level and application-level failure handling, is written up in [`docs/answers.md`](docs/answers.md) instead.
 - **A third external dependency: LiveKit**, alongside OpenAI and Anthropic. The free tier costs nothing, but it must be provisioned before a call will connect at all. Self-hosting was considered and rejected — a single-region SFU would likely make media latency *worse*, not better.
 - **The agent worker runs inside the backend process**, so it can reach in-memory call state directly. That's what keeps the live admin view working, but it does mean one process is doing real-time media work alongside serving HTTP.
 - **In-memory call state** — fine for one local process, not for horizontal scaling.
@@ -237,4 +234,4 @@ A scoped prototype, deliberately:
 - **The hosted deployment is single-instance**, has no autoscaling, and its access token is a casual-discovery deterrent rather than a real auth boundary. The local setup is the primary, always-works path. Only one of local/hosted can serve calls at a time unless they use separate LiveKit projects (see above).
 - **No cap on call duration**, and the browser client has no automated test coverage.
 
-Every one of these is a documented tradeoff in `docs/DECISIONS.md`, not an oversight.
+Every one of these is a deliberate tradeoff, not an oversight.

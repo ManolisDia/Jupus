@@ -14,3 +14,10 @@ docs/.obsidian/
 client/config.js
 .firebase/
 .claude/worktrees/
+
+# Working notes kept locally, deliberately out of the published repo
+docs/handoffs/
+docs/phases/
+docs/DECISIONS.md
+docs/scenarios.md
+docs/code-review-*.md
