@@ -130,7 +130,7 @@ An LLM judge grading its own system is a closed loop. [`docs/benevolent_dictator
 
 ### Tests
 
-**402 tests**, no live API calls, including all 7 canonical scenarios driven through the real dispatcher → graph → persistence path with Claude mocked. Every commit is gated on them, plus a secrets scan and the architecture checks.
+**516 tests**, no live API calls, including all 7 canonical scenarios driven through the real dispatcher → graph → persistence path with Claude mocked. Every commit is gated on the 512 in `backend/tests` and `eval/tests`, plus a secrets scan and the architecture checks.
 
 ---
 
