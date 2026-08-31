@@ -2,9 +2,9 @@
 
 ## Context
 
-Voice AI Engineer take-home: a working voice agent prototype for a law firm inbound line. Must route callers across at least two (we're doing three: employment, tenancy, immigration) areas of law, capture booking details with confidence handling on a noisy line, book a consultation against a local calendar (handling conflicts), and escalate to a human when out of scope. Must run locally on a normal laptop at no cost to the evaluator, and must not be over-built. Submission = code + README + Loom video + written answers to 4 architecture questions (see `docs/answers.md`).
+Voice AI Engineer take-home: a working voice agent prototype for a law firm inbound line. Must route callers across at least two (we're doing three: employment, tenancy, immigration) areas of law, capture booking details with confidence handling on a noisy line, book a consultation against a local calendar (handling conflicts), and escalate to a human when out of scope. Must run locally on a normal laptop at no cost to the evaluator, and must not be over-built. Submission = code + README + a video walkthrough + written answers to 4 architecture questions (in the README, with longer versions in `docs/answers.md`).
 
-Read `CLAUDE.md` first for the hard architecture rules, then `docs/architecture.md` for the layered/repository-pattern shape everything else is built on. Read `docs/DECISIONS.md` for why the other rules exist. `docs/diagrams.md` has visual versions of the architecture, call sequence, state machine, and eval data flow — useful for presenting this to someone rather than building it. This file is the phase-gated execution plan — work one phase at a time, in order, and don't consider a phase done until its Definition of Done is actually verified.
+Read `CLAUDE.md` first for the hard architecture rules, then `docs/architecture.md` for the layered/repository-pattern shape everything else is built on. `docs/diagrams.md` has visual versions of the architecture, the state machine, and the eval data flow — useful for presenting this to someone rather than building it. This file is the phase-gated execution plan — work one phase at a time, in order, and don't consider a phase done until its Definition of Done is actually verified.
 
 **Locked decisions:** OpenAI Realtime API (WebRTC, browser client) for conversation; Claude via LangGraph for the supervisor; SQLite for calendar + call logs; no Docker, no telephony, no Railway hosting unless every phase below is done ahead of schedule.
 
@@ -58,7 +58,7 @@ Read `CLAUDE.md` first for the hard architecture rules, then `docs/architecture.
     calls table (transcript_json) in SQLite for the eval agent and
     admin panel. Separately, every tool call, retry, stage transition,
     and delivery decision along the way is recorded as a durable, ordered
-    trace_events row (docs/phases/cross-cutting.md section 0) — the
+    trace_events row — the
     transcript is the lightweight conversational history, the trace is
     the complete record everything else (debugging, the admin panel's
     detail view, the eval judge) is built on.
@@ -108,7 +108,7 @@ State persists per `call_id` in an in-memory dict on the backend — fine for a 
    - `confidence < 0.4` OR `retry_counts[field] >= 3` → `escalation`, `reason="capture_failed"`
    - all required fields present + confirmed → `booking`
 
-4. **research** (Phase 8) — once every field is confirmed, asks a real follow-up about what happened, searches that practice area's statute corpus in the background while a filler follow-up buys time, and cites the specific provision (or says nothing) before moving on. See `docs/phases/phase-8-legal-research.md` for the full design — this row is a pointer, not a summary of the mechanism.
+4. **research** (Phase 8) — once every field is confirmed, asks a real follow-up about what happened, searches that practice area's statute corpus in the background while a filler follow-up buys time, and cites the specific provision (or says nothing) before moving on.
 
 5. **booking** — binds `check_availability`, `suggest_alternative_slots`, `book_consultation` (all deterministic code against SQLite). Flow is code-driven:
    - extract preferred day/time (Claude) → `check_availability`
@@ -119,7 +119,7 @@ State persists per `call_id` in an in-memory dict on the backend — fine for a 
 6. **escalation** — binds `escalate_to_human` only. Writes the handoff note, sets `stage="ended"`, returns a graceful closing line.
 
 ### Edges
-Plain `if/else` on `CallState` — never an LLM decision about which node runs next (see `CLAUDE.md` rule 2 / `docs/DECISIONS.md`).
+Plain `if/else` on `CallState` — never an LLM decision about which node runs next (see `CLAUDE.md` rule 2).
 
 ---
 
@@ -135,10 +135,10 @@ Plain `if/else` on `CallState` — never an LLM decision about which node runs n
 | `check_availability` | booking (code) | SQLite query | `(date: str, window: str, area: str) -> slot \| None` |
 | `suggest_alternative_slots` | booking (code) | SQLite query | `(date: str, area: str) -> list[slot]` |
 | `book_consultation` | booking (code) | SQLite insert | `(slot_id, caller_profile) -> booking_id` |
-| `escalate_to_human` | escalation | Claude summary + code write | `{reason: "unable_to_classify"\|"capture_failed"\|"no_acceptable_slot"\|"out_of_scope_multi_area"\|"explicit_request"\|"system_error", call_summary: string}` — `system_error` added in `docs/phases/cross-cutting.md` |
+| `escalate_to_human` | escalation | Claude summary + code write | `{reason: "unable_to_classify"\|"capture_failed"\|"no_acceptable_slot"\|"out_of_scope_multi_area"\|"explicit_request"\|"system_error", call_summary: string}` |
 | `search_statute_candidates` | research (Phase 8) | deterministic BM25 over a local JSON corpus | `(area, query) -> list[{id, citation, jurisdiction, topic_tags, text, score}]` |
 | `ground_statute_citation` | research (Phase 8) | Claude, closed-set selection only | `(utterance, candidates) -> {selected_id: str \| null, spoken_framing: str \| null}` |
-| `lookup_practice_area_info` (stretch only, superseded) | routing/capture info path | local JSON KB, Claude grounds | `(area) -> text` — see `docs/phases/phase-8-legal-research.md`, which built the same idea for real, expanded and per-area |
+| `lookup_practice_area_info` (stretch only, superseded) | routing/capture info path | local JSON KB, Claude grounds | `(area) -> text` — superseded by the research stage, which built the same idea per-area |
 
 ---
 
@@ -170,7 +170,7 @@ CREATE TABLE calls (
 
 `seed_slots.py` populates ~2 weeks of half-hour slots, 9am–5pm weekdays, for all 3 areas, with a handful pre-marked `is_booked=1` so conflict handling has real data to hit.
 
-**Eval schema (`call_error_flags`, `eval_runs` from Phase 6b; `taxonomy_suggestions`, `call_reviews`, `human_annotations` from Phase 6c) is defined and owned by `docs/phases/phase-6b-error-taxonomy.md`, `docs/phases/phase-6c-benevolent-dictator.md`, and `docs/error_taxonomy.md`, not here** — the eval agent classifies calls against an editable error taxonomy rather than a single flagged/not-flagged bit, see those docs for the full design.
+**Eval schema (`call_error_flags`, `eval_runs` from Phase 6b; `taxonomy_suggestions`, `call_reviews`, `human_annotations` from Phase 6c) is defined and owned by `docs/error_taxonomy.md`, not here** — the eval agent classifies calls against an editable error taxonomy rather than a single flagged/not-flagged bit, see those docs for the full design.
 
 ---
 
@@ -186,9 +186,9 @@ CREATE TABLE calls (
 
 ---
 
-## Eval / insights agent — see `docs/error_taxonomy.md`, `docs/benevolent_dictator.md`, and `docs/phases/phase-6a-observability.md` / `phase-6b-error-taxonomy.md` / `phase-6c-benevolent-dictator.md`
+## Eval / insights agent — see `docs/error_taxonomy.md` and `docs/benevolent_dictator.md`
 
-Summary (full design lives in those docs, not duplicated here): the judge classifies each call against an editable error taxonomy (seed classes: `repetition`, `tool_or_system_failure_surfaced`, `premature_escalation`, `unconfirmed_action`) rather than a single flagged/not-flagged bit, plus a separate batch-level pass that critiques the taxonomy itself (new/misclassified/refine suggestions, `pending` until a human approves them). That human is a single designated **Benevolent Dictator** — one domain expert whose annotations (via a dedicated `/admin/annotate` page, available any time, not gated to eval runs) are both the strongest input to taxonomy-critique suggestions and the ground truth `eval/calibrate_judge.py` measures the LLM judge against. `eval/run_eval.py --label <name>` runs the deterministic + classification + critique passes and tags the batch; `eval/replay_scenarios.py --label <name>` drives the 6 canonical scenarios (`docs/scenarios.md`) through the real, unmocked pipeline to generate a fresh comparable batch after a prompt-engineering change; `eval/compare_runs.py --baseline <a> --candidate <b>` diffs per-class error rates between two labeled runs to catch regressions. This whole area was split across three sub-phases (6a observability, 6b taxonomy/judge, 6c BD/regression) since it had grown into by far the largest single phase — see `docs/PLAN.md`'s phase index below for the dependency order.
+Summary (full design lives in those docs, not duplicated here): the judge classifies each call against an editable error taxonomy (seed classes: `repetition`, `tool_or_system_failure_surfaced`, `premature_escalation`, `unconfirmed_action`) rather than a single flagged/not-flagged bit, plus a separate batch-level pass that critiques the taxonomy itself (new/misclassified/refine suggestions, `pending` until a human approves them). That human is a single designated **Benevolent Dictator** — one domain expert whose annotations (via a dedicated `/admin/annotate` page, available any time, not gated to eval runs) are both the strongest input to taxonomy-critique suggestions and the ground truth `eval/calibrate_judge.py` measures the LLM judge against. `eval/run_eval.py --label <name>` runs the deterministic + classification + critique passes and tags the batch; `eval/replay_scenarios.py --label <name>` drives the 6 canonical scenarios through the real, unmocked pipeline to generate a fresh comparable batch after a prompt-engineering change; `eval/compare_runs.py --baseline <a> --candidate <b>` diffs per-class error rates between two labeled runs to catch regressions. This whole area was split across three sub-phases (6a observability, 6b taxonomy/judge, 6c BD/regression) since it had grown into by far the largest single phase — see `docs/PLAN.md`'s phase index below for the dependency order.
 
 ---
 
@@ -268,15 +268,9 @@ Jupus/
     annotate.html / annotate.js       # Benevolent Dictator annotation page
   docs/
     PLAN.md                           # this file
-    DECISIONS.md
     error_taxonomy.md                 # error class design + evolution process
     benevolent_dictator.md            # the human annotation/calibration role & process
-    scenarios.md                      # the canonical test scenarios (S1-S6, plus S7 added in Phase 8)
     answers.md                        # 4 required written answers
-    handoffs/                         # one .md per escalated call (readable view of `escalations`)
-    phases/
-      cross-cutting.md
-      phase-1-raw-voice-loop.md ... phase-13-polish-submission.md
     fixes/
       INDEX.md
     known-issues/
@@ -285,35 +279,35 @@ Jupus/
 
 ---
 
-## Phases — see `docs/phases/`
+## Phases
 
-The architecture above is the shared reference every phase builds against. Each phase now has its own fully self-contained spec doc — exact function signatures, exact enumerated test cases, and a strict checkbox Definition of Done. **Read the phase doc, not just this summary, before starting a phase.** Where a phase doc refines something shown above (e.g. Phase 3 replaces the flat `CallerProfile` with a richer per-field model, Phase 5 adds a 5th value to `classify_practice_area`'s schema), the phase doc is authoritative — this file stays as the high-level map.
+The architecture above is the shared reference every phase builds against. Each phase had its own self-contained spec with exact function signatures, enumerated test cases and a checkbox Definition of Done. Those specs are working notes and aren't published; this table is the map.
 
 Work in order. Do not start a phase until the previous one's DoD is verified — a passing test suite alone does not count for phases with a live-call manual check listed.
 
-| Phase | Doc | Summary |
-|---|---|---|
-| 0 | ✅ done | Repo scaffold — `CLAUDE.md`, this file, `DECISIONS.md`, fixes/known-issues indices, config files |
-| 1 | [`phases/phase-1-raw-voice-loop.md`](phases/phase-1-raw-voice-loop.md) | Prove the WebRTC audio round-trip works, zero tools |
-| 2 | [`phases/phase-2-supervisor-skeleton.md`](phases/phase-2-supervisor-skeleton.md) | Wire `ask_supervisor` → `/bridge` → LangGraph with stub nodes; seed the calendar |
-| 3 | [`phases/phase-3-routing-capture.md`](phases/phase-3-routing-capture.md) | Real routing + single-field capture with confidence thresholds (stories 1 & 3) |
-| 4 | [`phases/phase-4-booking.md`](phases/phase-4-booking.md) | Real booking against SQLite, conflict handling, call persistence (story 2) |
-| 5 | [`phases/phase-5-escalation-async.md`](phases/phase-5-escalation-async.md) | Real escalation + handoff notes; the full async fire-and-forget dispatcher (story 4) |
-| 6a | [`phases/phase-6a-observability.md`](phases/phase-6a-observability.md) | Deterministic metrics, base admin panel (list/drill-in/trace viewer), closes out `cross-cutting.md` (error handling, disconnect cleanup, mocked scenario suite). Depends only on Phases 1–5. |
-| 6b | [`phases/phase-6b-error-taxonomy.md`](phases/phase-6b-error-taxonomy.md) | Error taxonomy registry, LLM-judge classification pass, `run_eval.py`. Depends on 6a only. |
-| 6c | [`phases/phase-6c-benevolent-dictator.md`](phases/phase-6c-benevolent-dictator.md) | BD annotation page, taxonomy critique + approval, judge calibration, live-Claude regression harness. Depends on 6a and 6b. |
-| 7 | [`phases/phase-7-optimistic-capture.md`](phases/phase-7-optimistic-capture.md) | Decouple field-capture latency from Claude round-trips: a fast deterministic sequencer asks the next field instantly, real verification runs in the background, corrections drain in a batched confirm phase |
-| 8 | [`phases/phase-8-legal-research.md`](phases/phase-8-legal-research.md) | New `research` stage between capture and booking: a real follow-up question, a BM25-searched per-area statute corpus, and a closed-set-grounded citation — retrieval latency hidden behind a filler follow-up, same pattern as Phase 7 |
-| 9 | [`phases/phase-9-hosted-deployment.md`](phases/phase-9-hosted-deployment.md) | Public deployment: Railway (backend, persistent Volume for SQLite) + Firebase Hosting (client), access-token gate, spend caps. Prerequisite for Phase 10's public webhooks. |
-| 10 | [`phases/phase-10-telephony.md`](phases/phase-10-telephony.md) | Real telephony via OpenAI Realtime's native SIP + Twilio, and warm transfer to a human on escalation — a Twilio Conference from call-start, a human added as a third participant, the AI leg dropped once briefed |
-| 11 | [`phases/phase-11-latency-observability.md`](phases/phase-11-latency-observability.md) | Real per-turn latency stage breakdown (STT/dialogue-decision, supervisor round-trip, deferred-wait, TTS-first-audio) plus estimated cost-per-call, both as p50/p95 in the admin panel |
-| 12 | [`phases/phase-12-concurrency-stress-test.md`](phases/phase-12-concurrency-stress-test.md) | Scripted proof that N concurrent, distinct calls don't block each other or leak state — direct evidence for the "production volume/concurrency management" claim |
-| 13 | [`phases/phase-13-latency-reduction.md`](phases/phase-13-latency-reduction.md) | Real reduction of the per-turn Claude round-trip: prompt caching, merging sequential Claude calls, root-causing the retry-driven latency tail, per-tool model choice — validated against `eval/replay_scenarios.py`/`compare_runs.py` before/after |
-| 14 | [`phases/phase-14-livekit-transport.md`](phases/phase-14-livekit-transport.md) | Transport swap to LiveKit Agents (keeping OpenAI Realtime as the speech model via its plugin) plus a real filler/interrupt-handling design for the calls with no natural next question to hide latency behind — perceived-latency only, explicitly not a Phase 13 round-trip reduction |
-| 15 | [`phases/phase-15-polish-submission.md`](phases/phase-15-polish-submission.md) | README, written answers, full regression pass, video |
+| Phase | Summary |
+|---|---|
+| 0 | Repo scaffold — `CLAUDE.md`, this file, fixes/known-issues indices, config files |
+| 1 | Prove the WebRTC audio round-trip works, zero tools |
+| 2 | Wire `ask_supervisor` → `/bridge` → LangGraph with stub nodes; seed the calendar |
+| 3 | Real routing + single-field capture with confidence thresholds (stories 1 & 3) |
+| 4 | Real booking against SQLite, conflict handling, call persistence (story 2) |
+| 5 | Real escalation + handoff notes; the full async fire-and-forget dispatcher (story 4) |
+| 6a | Deterministic metrics, base admin panel (list/drill-in/trace viewer), closes out `cross-cutting.md` (error handling, disconnect cleanup, mocked scenario suite). Depends only on Phases 1–5. |
+| 6b | Error taxonomy registry, LLM-judge classification pass, `run_eval.py`. Depends on 6a only. |
+| 6c | BD annotation page, taxonomy critique + approval, judge calibration, live-Claude regression harness. Depends on 6a and 6b. |
+| 7 | Decouple field-capture latency from Claude round-trips: a fast deterministic sequencer asks the next field instantly, real verification runs in the background, corrections drain in a batched confirm phase |
+| 8 | New `research` stage between capture and booking: a real follow-up question, a BM25-searched per-area statute corpus, and a closed-set-grounded citation — retrieval latency hidden behind a filler follow-up, same pattern as Phase 7 |
+| 9 | Public deployment: Railway (backend, persistent Volume for SQLite) + Firebase Hosting (client), access-token gate, spend caps. Prerequisite for Phase 10's public webhooks. |
+| 10 | Real telephony via OpenAI Realtime's native SIP + Twilio, and warm transfer to a human on escalation — a Twilio Conference from call-start, a human added as a third participant, the AI leg dropped once briefed |
+| 11 | Real per-turn latency stage breakdown (STT/dialogue-decision, supervisor round-trip, deferred-wait, TTS-first-audio) plus estimated cost-per-call, both as p50/p95 in the admin panel |
+| 12 | Scripted proof that N concurrent, distinct calls don't block each other or leak state — direct evidence for the "production volume/concurrency management" claim |
+| 13 | Real reduction of the per-turn Claude round-trip: prompt caching, merging sequential Claude calls, root-causing the retry-driven latency tail, per-tool model choice — validated against `eval/replay_scenarios.py`/`compare_runs.py` before/after |
+| 14 | Transport swap to LiveKit Agents (keeping OpenAI Realtime as the speech model via its plugin) plus a real filler/interrupt-handling design for the calls with no natural next question to hide latency behind — perceived-latency only, explicitly not a Phase 13 round-trip reduction |
+| 15 | README, written answers, full regression pass, video |
 
 Phase 6 was originally one phase but split into 6a/6b/6c — by far the largest single phase otherwise, and several of its pieces don't actually depend on each other (you can see call traces in the admin panel long before the taxonomy/judge machinery exists). The dependency order is strictly forward: 6b depends on 6a, 6c depends on 6a+6b, and neither 6a nor 6b ever depends on something built later.
 
 Phases 9–14 are stretches beyond the original brief's four required user stories, scoped and ordered deliberately: 9 (hosting) before 10 (telephony) because 10's Twilio webhooks need a public URL; 11 (latency/cost) and 12 (concurrency) have no hard dependency on 9/10 and could in principle move earlier, but are sequenced after telephony so the riskiest, highest-payoff piece gets tackled while the most build-time runway remains; 13 (latency reduction) depends on 11's instrumentation to measure anything at all; 14 (LiveKit transport) is deliberately sequenced after 13 so it's never mistaken for the thing that reduced the round-trip numbers — see each phase doc's own "Why this exists"/prerequisite notes for the full reasoning. Phase 15 (submission) stays numerically last regardless of how many stretches precede it, and its own DoD explicitly accounts for any of 9–14 not getting built (documented as an intentional scope cut, not a silent gap).
 
-`docs/phases/cross-cutting.md` also applies retroactively from Phase 3 onward (every Claude-backed tool function must use its `call_claude_tool` wrapper from the moment it's written) even though its own Definition of Done is verified at Phase 6a — read it before Phase 3, not after. `docs/scenarios.md` defines the 6 canonical test scenarios used by both manual DoD checks, Phase 6a's automated mocked-regression suite, and Phase 6c's live-pipeline regression harness.
+A set of cross-cutting rules applied retroactively from Phase 3 onward: every Claude-backed tool function goes through the `call_claude_tool` wrapper from the moment it's written, even though that rule's own Definition of Done was verified at Phase 6a. The seven canonical scenarios are shared by the manual DoD checks, Phase 6a's mocked regression suite, and Phase 6c's live-pipeline harness; they live in `backend/tests/test_scenarios.py`.
