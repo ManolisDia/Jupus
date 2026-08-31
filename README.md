@@ -77,61 +77,39 @@ Two of these are checked by pre-commit hooks. The rest were reviewed by an indep
 
 ### 1. Keeping latency low
 
-I measured before optimising. Every turn is split into four stages and each boundary is written as a trace event, so the admin panel shows p50 and p95 from real calls.
+I measured before optimising. Each turn is split into four stages, written as trace events, so the admin panel shows p50 and p95 from real calls.
 
-The speech layer turned out not to be the problem. Realtime's own listening and transcription is about 800ms, and time to first audio about 750ms. The supervisor round trip was 2.5 seconds at the median and 5.6 at p95. So everything after that was aimed at the supervisor.
+The speech layer wasn't the problem: Realtime's listening is about 800ms and time to first audio about 750ms, against a supervisor round trip of 2.5s median and 5.6s p95. Three things took roughly 12% off it: merging the field extraction and the confirm-back into one Claude call, fixing a field that over-ran `max_tokens` and forced a silent retry, and moving two closed-set tools to Haiku. Prompt caching did nothing, because the prompts sit under Anthropic's 1024-token minimum.
 
-Three things helped. Extracting a field and generating the confirm-back used to be two sequential Claude calls, and merging them into one took about 20% off that turn. A field was occasionally over-running `max_tokens`, truncating its JSON and forcing a silent retry, which is where the ten-second turns were coming from. And two tools that only pick from a closed set moved to Haiku. Net effect was about 12% off the round trip, measured by replaying the same scenarios before and after, with no regression in error rates.
-
-One thing didn't help. I shipped prompt caching, measured it, and it does nothing here, because the prompts are under Anthropic's 1024-token minimum. The code is still there because it costs nothing if they grow.
-
-Then you hit a floor. There is a real model call in the middle of the turn and no amount of transport work removes it. So the last piece changes the question from how long you wait to how long you wait in silence. Most turns already hide the wait behind a question the agent needed to ask anyway: it asks for your email while your name is still being verified in the background. Three turns have no cover, because you've just answered and the reply is the thing you're waiting for. Those get a short pre-recorded line in the same voice, and it only fires once the line has been quiet for a moment, so a fast turn is never narrated and it can't talk over you.
-
-On those turns, time to first audio went from 1796ms to 422ms. The round trip itself didn't move, and I'm not claiming it did. It's the silence that got shorter.
+After that you hit a floor, so the question becomes how long you wait *in silence*. Most turns hide the wait behind a question the agent needed anyway: it asks for your email while your name is still verifying in the background. The three turns with no cover get a short pre-recorded line. Time to first audio there went from 1796ms to 422ms. The round trip itself didn't move, and I'm not claiming it did.
 
 ### 2. Turn-taking, interruptions and noisy audio
 
-I don't own endpointing, on purpose. Realtime's `semantic_vad` decides you've finished based on whether your sentence sounds complete, rather than on a silence timer. That's the difference between "ummm" being a pause and "ummm" cutting you off. I looked at third-party turn detection and didn't use it, because those want the raw audio stream, which means switching Realtime's own turn handling off and rebuilding the chained pipeline I was avoiding.
+I don't own endpointing, on purpose. Realtime's `semantic_vad` decides you've finished on whether your sentence sounds complete rather than on a silence timer, so "ummm" is a pause rather than an interruption. `eagerness: low` and near-field noise reduction came out of real calls where background noise was being read as speech.
 
-Two settings came out of real calls rather than the docs: `eagerness: low`, and near-field noise reduction, both after background noise was being picked up as speech.
+Barge-in is on. The case that needed a decision is talking over the filler: "mhm" would reroute the turn for nothing, "actually it's Alex with an X" has to get through. That check is a closed token list rather than a model call, which would cost exactly the time the filler exists to hide.
 
-Barge-in is on, so talking over the agent stops it. The case that needed an actual decision is talking over the filler. If it says "okay, one sec" and you say "mhm", that's acknowledgement, and feeding it to the graph would reroute the turn for nothing. If you say "actually it's Alex with an X", that's a correction, and dropping it makes you repeat yourself. The check is a closed list of tokens rather than a model call, because a model call there would cost exactly the time the filler exists to hide.
-
-The noisy-line handling matters more than the endpointing. Realtime writes the tool call arguments itself, including its account of what you said, and it invents: a caller said "manos44" and the graph received `manos44@example.com`. So the real transcript takes precedence over the model's version, and only final transcripts are used. Email and phone are always read back regardless of confidence, and anything below 0.75 gets a deterministic "could you spell that out" rather than a guess.
-
-Not solved: if you correct yourself mid-turn, the now-stale reply still gets spoken before the correction lands. Fixing it means being able to cancel a turn once its input is superseded, which reaches into the graph rather than the transport.
+The noisy-line handling matters more than the endpointing. Realtime writes the tool arguments itself, including what it thinks you said, and it invents: "manos44" reached the graph as `manos44@example.com`. So the real transcript takes precedence, finals only. Email and phone are always read back, and below 0.75 confidence it asks you to spell it out. Not solved: correct yourself mid-turn and the stale reply still plays first.
 
 ### 3. Making it good, and knowing whether it stays good
 
-A transcript won't tell you whether a voice agent is working, so this is where a lot of the effort went.
+A transcript won't tell you whether a voice agent works, so this is where a lot of the effort went.
 
-Every call is classified by an LLM judge against an error taxonomy that lives in `eval/error_classes.py` and is meant to be edited. Four classes at the moment: repetition, surfaced failure, premature escalation, unconfirmed action. The judge has to cite what in the trace made it say so, which is what makes a flag reviewable instead of an opinion.
+Every call is classified by an LLM judge against an editable taxonomy in `eval/error_classes.py`, and the judge has to cite the trace evidence, which makes a flag reviewable rather than an opinion. Since a judge grading its own system is a closed loop, one person annotates at `/admin/annotate` and is the only one who can change the taxonomy, and `calibrate_judge.py` scores the judge against those annotations.
 
-An LLM grading its own system is a closed loop, so two things break it open. One person annotates calls at `/admin/annotate` and is the only one who can approve a change to the taxonomy; the judge can propose one but can't apply it. And `eval/calibrate_judge.py` scores the judge against those annotations, so its precision and recall are known per class rather than assumed.
-
-For iteration, `eval/replay_scenarios.py` runs the canonical scenarios through the real pipeline under a label, and `eval/compare_runs.py` diffs the error rates between two labels and exits non-zero on a regression. Every prompt change went through that, including the latency work above.
-
-For scale, I ran a concurrency test rather than assuming. It holds up cleanly to 10 concurrent calls with no cross-call state leakage, and that's checked by inspecting each call's final state rather than inferred from nothing crashing. Past 10 it degrades, for two reasons I already knew about: SQLite has a single writer, and the default asyncio thread pool caps out. The second is a one-line fix in production.
-
-Live, the two numbers worth watching are the latency p95 and the error-class rate. A latency regression points at prompts or models. An error-class regression points at conversation quality. They're different problems.
+For iteration, `replay_scenarios.py` runs the canonical scenarios through the real pipeline under a label and `compare_runs.py` diffs two labels, exiting non-zero on a regression. Every prompt change went through it. For scale, a concurrency test rather than an assumption: clean to 10 concurrent calls with no state leakage, checked per call. Past 10 it degrades, because SQLite has one writer and the default asyncio thread pool caps out; the second is a one-line fix. Live, I'd watch the latency p95 and the error-class rate.
 
 ### 4. Telephony and warm transfer
 
-I didn't build this, so this is a design answer rather than a description of running code.
+I didn't build this, so it's a design answer.
 
-A SIP trunk into the same architecture. Only `backend/transport/` would change, which I'm reasonably confident about because the transport has already been swapped once, from a hand-rolled WebSocket to LiveKit, without the graph or the tools changing. One thing I wouldn't wave away: phone audio is 8kHz G.711 rather than Opus, which is meaningfully worse input to the endpointing above, and those settings were tuned against browser audio. I'd expect to retune them.
+A SIP trunk into the same architecture, with only `backend/transport/` changing. The transport has already been swapped once, from a hand-rolled WebSocket to LiveKit, without the graph or the tools changing. One thing I wouldn't wave away: phone audio is 8kHz G.711 rather than Opus, worse input to the endpointing above, and those settings were tuned on browser audio.
 
-For the transfer itself, when the agent escalates the backend dials a second leg to the human and briefs them before bridging the caller in. The briefing already exists. `generate_call_summary` produces the summary that gets written into the handoff note today; the transfer would speak it instead of writing it.
+On escalation the backend dials a second leg, briefs the human, then bridges the caller in. `generate_call_summary` already produces that summary for the handoff note; the transfer would speak it instead.
 
-Failures land in two layers, and each is blind to some of what the other sees.
+Failures land in two layers, each blind to some of the other's. Signalling: a 486 busy, a no-answer timer expiring, a 480 or 503 meaning the trunk is down (an operational alert, not just something to tell the caller), a BYE mid-bridge. Application: my own timeout on the bridge, and the one that matters most, the human picking up and saying nothing. SIP reports a healthy 200 OK while the caller is handed to nobody, so it's only catchable by listening for speech on their leg.
 
-At the signalling layer, a 486 means they're on another call, a no-answer timer expiring means it rang and nobody was there, a 480 or 503 means the endpoint or the trunk is down, and a BYE mid-bridge means the line dropped after connecting. The 503 case is an operational alert, not just something to tell the caller about.
-
-At the application layer the failures are different. There's my own timeout on the bridge attempt. And the one that matters most: the human picks up and says nothing, because it's voicemail or a phone answered in a pocket. SIP reports a healthy 200 OK, so every signalling-level check says success while the caller is being handed to nobody. That's only catchable by listening for speech on the human's leg.
-
-What the caller hears matters more than which code fired. Busy or no answer, they're told a person isn't available and we take a callback, which falls back to the handoff note that already gets written. Dropped mid-bridge, the agent comes back rather than disappearing: "it looks like we got disconnected, let me try again", with a cap on retries before it falls back to the callback.
-
-Two rules behind all of it. Never leave the caller in silence. And never let a failure at one layer be invisible at the other, because "the human answered" and "the human is talking to the caller" are different claims, and only one of them is something SIP can tell you.
+Busy or no answer, the caller is told and we take a callback, falling back to the handoff note that already gets written. Dropped mid-bridge, the agent comes back rather than disappearing, with a cap on retries. Never leave the caller in silence, and never let a failure at one layer be invisible at the other.
 
 ## The admin panel
 
