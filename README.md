@@ -151,6 +151,8 @@ At `http://localhost:8000/admin`:
 
 [`docs/answers.md`](docs/answers.md) has longer versions of the four answers above, with the full measurement history.
 
+The docs are written to be read in Obsidian — open [`docs/`](docs/) as a vault. Any markdown viewer works, but Obsidian is the recommended one.
+
 ## Known limits
 
 - No telephony. Browser only. The design is in Q4.
