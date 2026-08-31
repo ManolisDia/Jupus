@@ -18,12 +18,17 @@ import pytest
 from backend.db.repositories import Repositories
 from backend.supervisor.graph import GRAPH
 from backend.supervisor.state import new_call_state
-from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
+from backend.tests.fakes import FakeCallRepository, FakeEscalationRepository, FakeTraceRepository
 
 
 @pytest.fixture
 def repos():
-    return Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    return Repositories(
+        calls=FakeCallRepository(),
+        slots=None,
+        trace=FakeTraceRepository(),
+        escalations=FakeEscalationRepository(),
+    )
 
 
 def _invoke(state, repos):

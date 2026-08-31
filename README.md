@@ -107,6 +107,7 @@ Transcripts don't tell you if a voice agent is good. This is the machinery that 
 - **Call list** with outcome and error-class badges
 - **Drill-in**: full transcript plus the complete decision trace — every tool call, retry, confidence score and stage transition, in order
 - **Latency & cost**: p50/p95 across four stages (speech→dispatch, supervisor round trip, deferred wait, time-to-first-audio) plus real per-call cost across *both* vendors, taken from actual token counts rather than estimated from duration
+- **Handoff queue** (`/admin/escalations.html`) — every escalated call, newest first: why they rang, whatever contact details were actually confirmed, and why the agent gave up. Written to the database at escalation time, not just to a markdown file
 - **Live supervisor view** (`/admin/graph.html`) — watch a call move through the graph in real time
 - **Concurrency stress test** (`/admin/stress-test.html`) — fire N concurrent calls and watch for cross-call state leakage
 - **Raw table viewer** for debugging
@@ -129,7 +130,7 @@ An LLM judge grading its own system is a closed loop. [`docs/benevolent_dictator
 
 ### Tests
 
-**402 tests**, no live API calls, including all 7 canonical scenarios driven through the real dispatcher → graph → persistence path with Claude mocked. Every commit is gated on them, plus a secrets scan and the architecture checks.
+**516 tests**, no live API calls, including all 7 canonical scenarios driven through the real dispatcher → graph → persistence path with Claude mocked. Every commit is gated on the 512 in `backend/tests` and `eval/tests`, plus a secrets scan and the architecture checks.
 
 ---
 
@@ -197,7 +198,7 @@ Then browse `/admin` — badges, transcripts and traces are all populated.
 | [`backend/db/`](backend/db/) | Schema, seed scripts, and the repository layer (the only place SQL lives) |
 | [`backend/app.py`](backend/app.py) | FastAPI: LiveKit room tokens, admin API, live trace stream |
 | [`client/`](client/) | The caller-facing page — orb visualiser, live transcript, captured-details panel |
-| [`admin/`](admin/) | Call list, trace drill-in, live graph view, annotation queue, stress test, DB viewer |
+| [`admin/`](admin/) | Call list, trace drill-in, handoff queue, live graph view, annotation queue, stress test, DB viewer |
 | [`eval/`](eval/) | Error taxonomy, LLM-judge insights agent, and the eval CLIs above |
 | [`scripts/`](scripts/) | Pre-commit architecture/secrets checks, filler audio generation |
 | [`docs/`](docs/) | Architecture, decisions, phase specs, scenarios, fixes log |

@@ -5,26 +5,30 @@ from backend.app import app, get_repos
 from backend.db.repositories import Repositories
 from backend.db.repositories.sqlite_annotations import SQLiteAnnotationRepository
 from backend.db.repositories.sqlite_calls import SQLiteCallRepository
+from backend.db.repositories.sqlite_escalations import SQLiteEscalationRepository
 from backend.db.repositories.sqlite_eval import SQLiteEvalRepository
 from backend.db.repositories.sqlite_trace import SQLiteTraceRepository
 from backend.db.repositories.testing import create_in_memory_connection
-from backend.db.seed_demo_calls import seed, seed_annotations
+from backend.db.seed_demo_calls import seed, seed_annotations, seed_escalations
 from backend.tests.fakes import FakeCallRepository, FakeTraceRepository
 
 
 @pytest.fixture
 def seeded_sqlite_repos():
     """Real SQLite-backed repos over a fresh in-memory DB, seeded with the 8
-    demo calls (+ 2 BD annotations) — needed for the trace-ordering test,
+    demo calls (+ 2 BD annotations, + their escalation handoffs) — needed
+    for the trace-ordering test,
     which writes rows out of insertion order via direct SQL (fine in test
     setup; only app code is barred from raw SQL per CLAUDE.md rule 9)."""
     conn = create_in_memory_connection()
     seed(conn)
     seed_annotations(conn)
+    seed_escalations(conn)
     repos = Repositories(
         calls=SQLiteCallRepository(conn),
         slots=None,
         trace=SQLiteTraceRepository(conn),
+        escalations=SQLiteEscalationRepository(conn),
         evals=SQLiteEvalRepository(conn),
         annotations=SQLiteAnnotationRepository(conn),
     )
@@ -294,6 +298,45 @@ def test_annotate_page_serves_html():
     client = TestClient(app)
     try:
         response = client.get("/admin/annotate")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+    finally:
+        app.dependency_overrides.pop(get_repos, None)
+
+
+def test_api_escalations_returns_the_handoff_queue(client_with, seeded_sqlite_repos):
+    repos, _ = seeded_sqlite_repos
+    client = client_with(repos)
+
+    response = client.get("/api/escalations")
+
+    assert response.status_code == 200
+    rows = {row["call_id"]: row for row in response.json()}
+    assert set(rows) == {"demo-escalated-1", "demo-premature-escalation-1"}
+    row = rows["demo-escalated-1"]
+    # All three parts a human needs, on the row itself.
+    assert row["reason_for_call"]
+    assert row["escalation_explanation"]
+    assert row["escalation_reason"] == "unable_to_classify"
+    assert row["caller_name"] == "Jordan Lee"
+    assert row["practice_area"] == "immigration"
+
+
+def test_api_escalations_is_empty_when_nothing_has_escalated(client_with, seeded_sqlite_repos):
+    repos, _ = seeded_sqlite_repos
+    # Same seeded db, but nothing recorded into the handoff queue.
+    repos.escalations = None
+    client = client_with(repos)
+
+    assert client.get("/api/escalations").json() == []
+
+
+def test_escalations_page_serves_html():
+    repos = Repositories(calls=FakeCallRepository(), slots=None, trace=FakeTraceRepository())
+    app.dependency_overrides[get_repos] = lambda: repos
+    client = TestClient(app)
+    try:
+        response = client.get("/admin/escalations.html")
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
     finally:

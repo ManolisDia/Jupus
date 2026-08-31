@@ -585,3 +585,50 @@ baked into the front of the WAV. And this is 18 turns on one machine against one
 from a gitignored local database: enough to show the shape of the change and to prove the round
 trip is untouched, reproducible by re-running the two commands above, but not a production latency
 budget.
+### Escalation is recorded in the database, not just as a markdown file
+Until now an escalated call produced exactly two things: `calls.outcome = 'escalated'` with an
+`escalation_reason` code, and a markdown note under `docs/handoffs/{call_id}.md`. That's enough to
+count escalations in the eval agent and nothing more — the actual content a human needs to act on
+lived only in a file on the developer's disk, unreachable from the app, unqueryable, and outside the
+repository layer everything else goes through. In practice "escalate to a human" meant "write a file
+and hope."
+
+The `escalations` table holds the three things someone picking a call off the queue actually needs,
+as three separate things rather than one blob: **why they rang** (`reason_for_call`), **what we know
+about them** (`practice_area` plus the caller fields that reached `confirmed` status), and **why the
+agent handed over** (`escalation_reason`, the machine code, plus `escalation_explanation` in prose).
+Splitting the prose in two is why `generate_call_summary` became `summarize_escalation` and returns
+JSON instead of a paragraph: they're two columns and two different questions, and a queue view that
+shows "why they called" needs that answer on its own, not buried mid-sentence.
+
+Deliberate calls within this:
+
+- **Only `confirmed` caller fields are stored**, via the shared `confirmed_value` helper now in
+  `state.py`. A `pending_confirm` value is a guess at what a noisy mic picked up. Handing a human a
+  phone number the caller never actually confirmed is worse than handing them nothing, because
+  they'd ring it. This rule already governed both the `calls` row and the markdown note in two
+  separately-written copies of the same check; there is now one.
+- **Both escalation paths record**, through a shared `record_escalation` — `node_escalation` and
+  `dispatcher.py`'s unhandled-exception catch-all. The catch-all never reaches the escalation node
+  (the graph invocation is what just blew up), so without its own call a `system_error` escalation
+  would leave nothing on the queue at all.
+- **The LLM-failure branch still writes a row.** It skips the *summary*, not the *escalation* — no
+  second Claude call right after one just failed, so `reason_for_call` stays NULL and
+  `escalation_explanation` carries the deterministic reason. A NULL there reads as "we never found
+  out", which is true; invented prose would not be. Silently dropping the row instead would lose
+  exactly the calls nobody can afford to lose.
+- **The markdown note stays**, but is now rendered from the same record rather than built
+  independently, so file and row can't drift. It's a convenience view, not the system of record.
+
+### Schema changes apply additively at startup instead of only via `reset_schema`
+Adding the `escalations` table exposed that there was no way to get a new table into an
+already-in-use `calendar.db` except `reset_schema`, which drops every table — taking real logged
+calls, traces, and annotations with it every time the schema grows. That's a bad trade for a project
+whose eval agent runs over accumulated call history.
+
+Every statement in `schema.sql` is now `IF NOT EXISTS`, and `get_repositories` runs `ensure_schema`
+on the connection it opens — the one seam every process already goes through. A missing table is
+created in place; existing data is untouched. This is **additive only** and deliberately not a
+migration framework: adding a *column* to an existing table still needs a real migration, and
+`ensure_schema` will not catch it. `reset_schema` is unchanged and remains the deliberate wipe
+`seed_slots.py` relies on.

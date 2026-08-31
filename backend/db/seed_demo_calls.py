@@ -2,7 +2,9 @@
 mic session — docs/phases/phase-6a-observability.md (base 3-row version),
 extended by docs/phases/phase-6b-error-taxonomy.md (5 more error-class-
 exhibiting rows, 8 total) and docs/phases/phase-6c-benevolent-dictator.md
-(2 pre-populated BD annotations, added via seed_annotations() below).
+(2 pre-populated BD annotations, added via seed_annotations() below), plus a
+handoff row per escalated call (seed_escalations() below) so the escalation
+queue isn't empty without a live call that goes wrong.
 
 Inserted via SQLiteCallRepository.upsert only (never raw SQL — CLAUDE.md rule
 9) using hand-authored CallState-shaped dicts standing in for what a real
@@ -16,6 +18,7 @@ from backend.config import settings
 from backend.db.repositories.connection import connect
 from backend.db.repositories.sqlite_annotations import SQLiteAnnotationRepository
 from backend.db.repositories.sqlite_calls import SQLiteCallRepository
+from backend.db.repositories.sqlite_escalations import SQLiteEscalationRepository
 from backend.supervisor.state import new_call_state
 
 
@@ -191,6 +194,40 @@ def seed(conn) -> None:
         repo.upsert(state)
 
 
+# Hand-authored stand-ins for what summarize_escalation would produce for
+# each escalated demo call — written out rather than generated, because this
+# script has to run offline and deterministically (same reason the demo
+# transcripts themselves are hand-authored).
+DEMO_ESCALATION_SUMMARIES = {
+    "demo-escalated-1": (
+        "Caller has a legal question spanning their job, their housing, and their immigration "
+        "status, and isn't sure which one it really is.",
+        "Intake couldn't classify the matter into a single practice area after asking; a human "
+        "needs to untangle which issue is actually driving it.",
+    ),
+    "demo-premature-escalation-1": (
+        "Landlord hasn't returned their deposit after they moved out.",
+        "Escalated on the caller's very first utterance with no retry and no genuine ambiguity "
+        "— a clearly-tenancy matter the agent should have handled itself.",
+    ),
+}
+
+
+def seed_escalations(conn) -> None:
+    """One handoff row per escalated demo call, so the escalation queue has
+    something in it without needing a live call that goes wrong."""
+    repo = SQLiteEscalationRepository(conn)
+    for state in demo_states():
+        if not state["escalation_reason"]:
+            continue
+        reason_for_call, escalation_explanation = DEMO_ESCALATION_SUMMARIES[state["call_id"]]
+        repo.record(
+            state,
+            reason_for_call=reason_for_call,
+            escalation_explanation=escalation_explanation,
+        )
+
+
 def seed_annotations(conn) -> None:
     """Phase 6c — 2 pre-populated Benevolent Dictator annotations, so
     eval/calibrate_judge.py has something to compute against immediately
@@ -221,5 +258,10 @@ def seed_annotations(conn) -> None:
 if __name__ == "__main__":
     connection = connect(settings.db_path)
     seed(connection)
+    seed_escalations(connection)
     seed_annotations(connection)
-    print(f"Seeded {len(demo_states())} demo calls (+ 2 BD annotations) into {settings.db_path}")
+    print(
+        f"Seeded {len(demo_states())} demo calls "
+        f"(+ {len(DEMO_ESCALATION_SUMMARIES)} escalation handoffs, 2 BD annotations) "
+        f"into {settings.db_path}"
+    )

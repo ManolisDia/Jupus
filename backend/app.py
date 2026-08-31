@@ -331,6 +331,17 @@ async def api_calls_list(repos: Repositories = Depends(get_repos)):
     ]
 
 
+@app.get("/api/escalations")
+async def api_escalations(repos: Repositories = Depends(get_repos)):
+    """The handoff queue — every call that ended up with a human, newest
+    first. Returned as stored; the page decides how to present a missing
+    field, and a missing field is exactly what the person working the queue
+    needs to see (no phone and no email means they can't call anyone back)."""
+    if repos.escalations is None:
+        return []
+    return repos.escalations.list()
+
+
 @app.get("/api/calls/unreviewed")
 async def api_calls_unreviewed(repos: Repositories = Depends(get_repos)):
     # Registered before "/api/calls/{call_id}" — a path-parameter route

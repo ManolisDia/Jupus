@@ -10,6 +10,7 @@ from backend.supervisor.graph import (
     _forget_partial,
     _remember_partial,
     apply_extraction,
+    record_escalation,
 )
 from backend.supervisor.heuristics import is_explicit_human_request
 from backend.supervisor.llm_utils import HAIKU_MODEL_ID, LLMCallFailed, call_claude_tool
@@ -372,10 +373,25 @@ async def run_supervisor_turn(
         state["escalation_reason"] = "system_error"
         CALL_STATES[call_id] = state
         repos.calls.upsert(state)
-        traced_call(
-            repos.trace, call_id, "dispatcher", "write_minimal_handoff_note",
-            tools.write_minimal_handoff_note, call_id, state, f"Unhandled error: {e}",
-        )
+        # Same handoff record the escalation node writes — this path never
+        # reaches that node (the graph invocation is what just blew up), so
+        # without this a crash-escalation would leave nothing for a human to
+        # pick up. Deterministic summary only: no second Claude call right
+        # after an unhandled failure.
+        try:
+            record_escalation(
+                repos, call_id, "dispatcher", state,
+                tools.minimal_escalation_summary(f"Unhandled error: {e}"),
+            )
+        except Exception:
+            # The caller is on the line waiting. This handler exists to make
+            # sure they hear something instead of dead air, so a failure
+            # while recording the handoff must not take the reply down with
+            # it — especially since a broken DB or disk is exactly the kind
+            # of thing that lands us in this handler to begin with. Logged
+            # and traced, then carry on to speak.
+            logger.exception("failed to record escalation for call_id=%s", call_id)
+            repos.trace.record_event(call_id, "escalation_record_failed", node="dispatcher")
         return (
             "Sorry, something went wrong on my end — let me get you to someone who can help.",
             "escalation",

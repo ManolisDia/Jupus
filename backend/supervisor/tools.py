@@ -9,6 +9,7 @@ from backend.supervisor import prompts
 from backend.supervisor.knowledge import corpus as knowledge_corpus
 from backend.supervisor.knowledge import search as knowledge_search
 from backend.supervisor.llm_utils import call_claude_json, call_claude_text
+from backend.supervisor.state import confirmed_value
 from backend.utils import now_iso
 
 CLASSIFY_SCHEMA = {
@@ -44,6 +45,16 @@ EXTRACT_AND_CONFIRM_SCHEMA = {
         "confirm_back_phrasing": {"type": "string"},
     },
     "required": ["value", "confidence", "confirm_back_phrasing"],
+    "additionalProperties": False,
+}
+
+ESCALATION_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reason_for_call": {"type": "string"},
+        "escalation_explanation": {"type": "string"},
+    },
+    "required": ["reason_for_call", "escalation_explanation"],
     "additionalProperties": False,
 }
 
@@ -221,26 +232,39 @@ def confirm_field_answer(utterance: str, field_name: str, candidate_value: str) 
     )
 
 
-def generate_call_summary(state) -> str:
-    return call_claude_text(
-        system=prompts.GENERATE_CALL_SUMMARY_PROMPT,
+def summarize_escalation(state) -> dict:
+    """The two prose halves of the handoff record — why they rang, and why
+    we're handing over. Kept as two fields rather than one paragraph because
+    they're stored as two columns and read as two answers to two different
+    questions by whoever picks the call up."""
+    return call_claude_json(
+        system=prompts.SUMMARIZE_ESCALATION_PROMPT,
         user_content=(
             f"Escalation reason: {state.get('escalation_reason')}\n\n"
             f"Transcript:\n{_format_transcript(state.get('transcript', []))}"
         ),
+        json_schema=ESCALATION_SUMMARY_SCHEMA,
     )
+
+
+def minimal_escalation_summary(detail: str) -> dict:
+    """The deterministic stand-in for summarize_escalation, used on the paths
+    that escalate BECAUSE a Claude call already failed — see node_escalation.
+    reason_for_call is left None rather than guessed: an empty column reads
+    as "we never found out", which is the truth, where invented prose would
+    not."""
+    return {"reason_for_call": None, "escalation_explanation": detail}
 
 
 HANDOFFS_DIR = Path(__file__).resolve().parents[2] / "docs" / "handoffs"
 
 
 def _caller_field_line(profile: dict, field_name: str, label: str) -> str:
-    field = profile[field_name]
-    value = field["value"] if field["status"] == "confirmed" else None
+    value = confirmed_value(profile, field_name)
     return f"- {label}: {value if value else 'not captured'}"
 
 
-def _handoff_note_text(call_id: str, state, summary: str) -> str:
+def _handoff_note_text(call_id: str, state, summary: dict) -> str:
     profile = state["caller_profile"]
     lines = [
         f"# Escalation — {call_id}",
@@ -253,14 +277,20 @@ def _handoff_note_text(call_id: str, state, summary: str) -> str:
         _caller_field_line(profile, "email", "Email"),
         _caller_field_line(profile, "phone", "Phone"),
         "",
-        "## Summary",
-        summary,
+        "## Why they called",
+        summary.get("reason_for_call") or "not captured",
+        "",
+        "## Why this was escalated",
+        summary.get("escalation_explanation") or "not recorded",
         "",
     ]
     return "\n".join(lines)
 
 
-def write_handoff_note(call_id: str, state, summary: str) -> Path:
+def write_handoff_note(call_id: str, state, summary: dict) -> Path:
+    """The human-readable rendering of the same record that goes into the
+    `escalations` table — a file someone can open without a SQL client, not
+    the system of record."""
     HANDOFFS_DIR.mkdir(parents=True, exist_ok=True)
     path = HANDOFFS_DIR / f"{call_id}.md"
     path.write_text(_handoff_note_text(call_id, state, summary), encoding="utf-8")
@@ -268,7 +298,7 @@ def write_handoff_note(call_id: str, state, summary: str) -> Path:
 
 
 def write_minimal_handoff_note(call_id: str, state, reason: str) -> Path:
-    return write_handoff_note(call_id, state, summary=reason)
+    return write_handoff_note(call_id, state, minimal_escalation_summary(reason))
 
 
 # Domain half is stricter than the local part: rejects a leading/trailing/

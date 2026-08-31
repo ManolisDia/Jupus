@@ -3,7 +3,7 @@ import sqlite3
 from typing import Optional
 
 from backend.db.repositories.base import CallRepository
-from backend.supervisor.state import CallState
+from backend.supervisor.state import CallState, confirmed_value
 from backend.utils import now_iso
 
 
@@ -25,11 +25,6 @@ class SQLiteCallRepository(CallRepository):
         outcome = outcome_override if outcome_override is not None else _derive_outcome(state)
         ended_at = now_iso() if state["stage"] == "ended" else None
         caller_profile = state["caller_profile"]
-
-        def _confirmed_value(field_name: str):
-            field = caller_profile[field_name]
-            return field["value"] if field["status"] == "confirmed" else None
-
         booking_slot_id = state.get("proposed_slot_id") if state.get("booking_confirmed") else None
 
         self._conn.execute(
@@ -57,9 +52,9 @@ class SQLiteCallRepository(CallRepository):
                 state["practice_area"],
                 outcome,
                 state["escalation_reason"],
-                _confirmed_value("name"),
-                _confirmed_value("email"),
-                _confirmed_value("phone"),
+                confirmed_value(caller_profile, "name"),
+                confirmed_value(caller_profile, "email"),
+                confirmed_value(caller_profile, "phone"),
                 booking_slot_id,
                 json.dumps(state["transcript"]),
             ),

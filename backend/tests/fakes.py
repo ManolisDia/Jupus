@@ -3,11 +3,12 @@ from typing import Optional
 from backend.db.repositories.base import (
     AnnotationRepository,
     CallRepository,
+    EscalationRepository,
     EvalRepository,
     SlotRepository,
     TraceRepository,
 )
-from backend.supervisor.state import CallState
+from backend.supervisor.state import CallState, confirmed_value
 from backend.utils import now_iso
 
 
@@ -32,6 +33,37 @@ class FakeCallRepository(CallRepository):
         if with_outcome_only:
             rows = [r for r in rows if r["outcome"] is not None]
         return rows
+
+
+class FakeEscalationRepository(EscalationRepository):
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    def record(
+        self,
+        state: CallState,
+        *,
+        reason_for_call: Optional[str],
+        escalation_explanation: Optional[str],
+    ) -> None:
+        profile = state["caller_profile"]
+        self.rows[state["call_id"]] = {
+            "call_id": state["call_id"],
+            "escalated_at": now_iso(),
+            "escalation_reason": state.get("escalation_reason"),
+            "reason_for_call": reason_for_call,
+            "escalation_explanation": escalation_explanation,
+            "practice_area": state.get("practice_area"),
+            "caller_name": confirmed_value(profile, "name"),
+            "caller_email": confirmed_value(profile, "email"),
+            "caller_phone": confirmed_value(profile, "phone"),
+        }
+
+    def get(self, call_id: str) -> Optional[dict]:
+        return self.rows.get(call_id)
+
+    def list(self) -> list[dict]:
+        return list(self.rows.values())
 
 
 class FakeSlotRepository(SlotRepository):

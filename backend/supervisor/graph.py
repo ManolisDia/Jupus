@@ -1267,6 +1267,24 @@ def node_booking(state: CallState, config: RunnableConfig) -> dict:
     }
 
 
+def record_escalation(repos, call_id: str, node: str, state: CallState, summary: dict) -> None:
+    """Persist the handoff two ways: a row in `escalations` (the queryable
+    record — why they called, what we confirmed about them, why we handed
+    over) and the markdown note under docs/handoffs/ (the same thing a human
+    can open directly). Shared with dispatcher.py's unhandled-exception
+    catch-all so both escalation paths leave the same trail, rather than the
+    fallback path quietly writing only a file."""
+    traced_call(
+        repos.trace, call_id, node, "record_escalation", repos.escalations.record, state,
+        reason_for_call=summary.get("reason_for_call"),
+        escalation_explanation=summary.get("escalation_explanation"),
+    )
+    traced_call(
+        repos.trace, call_id, node, "write_handoff_note",
+        tools.write_handoff_note, call_id, state, summary,
+    )
+
+
 def node_escalation(state: CallState, config: RunnableConfig) -> dict:
     repos = _repos(config)
     call_id = state["call_id"]
@@ -1274,18 +1292,19 @@ def node_escalation(state: CallState, config: RunnableConfig) -> dict:
 
     try:
         summary = call_claude_tool(
-            repos.trace, call_id, "escalation", "generate_call_summary",
-            tools.generate_call_summary, state,
+            repos.trace, call_id, "escalation", "summarize_escalation",
+            tools.summarize_escalation, state,
         )
-        traced_call(repos.trace, call_id, "escalation", "write_handoff_note", tools.write_handoff_note, call_id, state, summary)
     except LLMCallFailed:
         # Don't trust another Claude call to succeed right after one just
-        # failed unexpectedly — fall back to a deterministic note.
-        traced_call(
-            repos.trace, call_id, "escalation", "write_minimal_handoff_note",
-            tools.write_minimal_handoff_note, call_id, state,
-            f"escalation_reason={state.get('escalation_reason')} (call summary unavailable)",
+        # failed unexpectedly — fall back to a deterministic record. The row
+        # still gets written: a human needs to know this call was dropped in
+        # their lap even when we can't say much about why.
+        summary = tools.minimal_escalation_summary(
+            f"escalation_reason={state.get('escalation_reason')} (call summary unavailable)"
         )
+
+    record_escalation(repos, call_id, "escalation", state, summary)
 
     reply = "I've passed this to our team, someone will follow up shortly."
     repos.trace.record_event(

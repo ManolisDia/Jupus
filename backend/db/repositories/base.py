@@ -19,6 +19,27 @@ class CallRepository(ABC):
     def list(self, *, with_outcome_only: bool = False, reviewed: Optional[bool] = None) -> list[dict]: ...
 
 
+class EscalationRepository(ABC):
+    """The handoff queue. `calls` already records THAT a call escalated;
+    this records what a human needs to pick it up — why they rang, the
+    contact details we confirmed, and why the agent handed over."""
+
+    @abstractmethod
+    def record(
+        self,
+        state: CallState,
+        *,
+        reason_for_call: Optional[str],
+        escalation_explanation: Optional[str],
+    ) -> None: ...
+
+    @abstractmethod
+    def get(self, call_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def list(self) -> list[dict]: ...
+
+
 class SlotRepository(ABC):
     @abstractmethod
     def check_availability(

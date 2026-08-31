@@ -1,11 +1,11 @@
-CREATE TABLE slots (
+CREATE TABLE IF NOT EXISTS slots (
     id INTEGER PRIMARY KEY,
     area TEXT NOT NULL,
     start_time TEXT NOT NULL,
     is_booked INTEGER DEFAULT 0
 );
 
-CREATE TABLE calls (
+CREATE TABLE IF NOT EXISTS calls (
     call_id TEXT PRIMARY KEY,
     started_at TEXT,
     ended_at TEXT,
@@ -22,7 +22,7 @@ CREATE TABLE calls (
 -- Superseded by call_error_flags/eval_runs below (Phase 6b) — see
 -- docs/phases/phase-2-supervisor-skeleton.md's note on why a placeholder
 -- table existed here before the real eval schema was designed.
-CREATE TABLE call_error_flags (
+CREATE TABLE IF NOT EXISTS call_error_flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     call_id TEXT REFERENCES calls(call_id),
     error_class_id TEXT NOT NULL,     -- references eval/error_classes.py ids,
@@ -33,7 +33,7 @@ CREATE TABLE call_error_flags (
     evaluated_at TEXT
 );
 
-CREATE TABLE eval_runs (
+CREATE TABLE IF NOT EXISTS eval_runs (
     call_id TEXT REFERENCES calls(call_id),
     eval_run_label TEXT NOT NULL,
     scenario_id TEXT,
@@ -42,7 +42,7 @@ CREATE TABLE eval_runs (
 );
 
 -- Phase 6c — taxonomy critique + Benevolent Dictator annotation tables.
-CREATE TABLE taxonomy_suggestions (
+CREATE TABLE IF NOT EXISTS taxonomy_suggestions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     eval_run_label TEXT NOT NULL,
     call_id TEXT REFERENCES calls(call_id),
@@ -54,7 +54,7 @@ CREATE TABLE taxonomy_suggestions (
     evaluated_at TEXT
 );
 
-CREATE TABLE call_reviews (
+CREATE TABLE IF NOT EXISTS call_reviews (
     call_id TEXT PRIMARY KEY REFERENCES calls(call_id),
     annotator TEXT NOT NULL,
     is_gold INTEGER DEFAULT 0,
@@ -62,7 +62,7 @@ CREATE TABLE call_reviews (
     reviewed_at TEXT
 );
 
-CREATE TABLE human_annotations (
+CREATE TABLE IF NOT EXISTS human_annotations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     call_id TEXT REFERENCES calls(call_id),
     error_class_id TEXT,
@@ -70,7 +70,7 @@ CREATE TABLE human_annotations (
     created_at TEXT
 );
 
-CREATE TABLE trace_events (
+CREATE TABLE IF NOT EXISTS trace_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     call_id TEXT REFERENCES calls(call_id),
     seq INTEGER NOT NULL,
@@ -83,4 +83,29 @@ CREATE TABLE trace_events (
 -- in SQLiteTraceRepository.record_event was bypassed somehow — this turns
 -- that into a loud, immediate failure instead of silently corrupting trace
 -- ordering (docs/code-review-2026-08-24.md finding #2).
-CREATE UNIQUE INDEX idx_trace_events_call_seq ON trace_events(call_id, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_events_call_seq ON trace_events(call_id, seq);
+
+-- The human-handoff record: what a person picking this call up off the
+-- queue needs before they ring the caller back. One row per escalated call
+-- — why they rang, whatever contact details we managed to confirm, and why
+-- the agent gave up. docs/handoffs/{call_id}.md is the same data rendered
+-- for a human to read; this table is the queryable copy.
+-- reason_for_call/escalation_explanation are nullable because the
+-- deterministic fallback path (an escalation triggered BY an LLM failure)
+-- deliberately doesn't make another Claude call to fill them in — see
+-- node_escalation in backend/supervisor/graph.py.
+-- The call_id reference is documentation, not enforcement (foreign_keys is
+-- off, as it is for trace_events, which relies on the same thing): a call
+-- escalating on its very first utterance — "put me through to a person" —
+-- writes this row before dispatcher.py has upserted any `calls` row for it.
+CREATE TABLE IF NOT EXISTS escalations (
+    call_id TEXT PRIMARY KEY REFERENCES calls(call_id),
+    escalated_at TEXT NOT NULL,
+    escalation_reason TEXT,
+    reason_for_call TEXT,
+    escalation_explanation TEXT,
+    practice_area TEXT,
+    caller_name TEXT,
+    caller_email TEXT,
+    caller_phone TEXT
+);

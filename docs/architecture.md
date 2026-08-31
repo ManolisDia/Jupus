@@ -56,6 +56,17 @@ class TraceRepository(ABC):
     @abstractmethod
     def get_trace(self, call_id: str) -> list[dict]: ...
 
+class EscalationRepository(ABC):
+    # The handoff queue. `calls` records THAT a call escalated; this records what
+    # a human needs to pick it up — see docs/DECISIONS.md.
+    @abstractmethod
+    def record(self, state: CallState, *, reason_for_call: Optional[str],
+                escalation_explanation: Optional[str]) -> None: ...
+    @abstractmethod
+    def get(self, call_id: str) -> Optional[dict]: ...
+    @abstractmethod
+    def list(self) -> list[dict]: ...
+
 class EvalRepository(ABC):
     @abstractmethod
     def add_error_flags(self, call_id: str, flags: list[dict], eval_run_label: str) -> None: ...
@@ -79,7 +90,7 @@ class AnnotationRepository(ABC):
     @abstractmethod
     def list_unreviewed(self) -> list[dict]: ...
 ```
-One implementation file per interface: `backend/db/repositories/sqlite_calls.py` → `SQLiteCallRepository(CallRepository)`, and so on for `sqlite_slots.py`, `sqlite_trace.py`, `sqlite_eval.py`, `sqlite_annotations.py`. Each takes a `sqlite3.Connection` in `__init__` and is the *only* place in the codebase that writes SQL against its table(s).
+One implementation file per interface: `backend/db/repositories/sqlite_calls.py` → `SQLiteCallRepository(CallRepository)`, and so on for `sqlite_slots.py`, `sqlite_trace.py`, `sqlite_escalations.py`, `sqlite_eval.py`, `sqlite_annotations.py`. Each takes a `sqlite3.Connection` in `__init__` and is the *only* place in the codebase that writes SQL against its table(s).
 
 ## Wiring — the factory / DI seam
 
@@ -90,6 +101,7 @@ class Repositories:
     calls: CallRepository
     slots: SlotRepository
     trace: TraceRepository
+    escalations: EscalationRepository
     evals: EvalRepository
     annotations: AnnotationRepository
 
@@ -98,8 +110,8 @@ def get_repositories(settings: Settings) -> Repositories:
         conn = sqlite3.connect(settings.db_path, check_same_thread=False)
         return Repositories(
             calls=SQLiteCallRepository(conn), slots=SQLiteSlotRepository(conn),
-            trace=SQLiteTraceRepository(conn), evals=SQLiteEvalRepository(conn),
-            annotations=SQLiteAnnotationRepository(conn),
+            trace=SQLiteTraceRepository(conn), escalations=SQLiteEscalationRepository(conn),
+            evals=SQLiteEvalRepository(conn), annotations=SQLiteAnnotationRepository(conn),
         )
     raise NotImplementedError(
         f"db_backend={settings.db_backend!r} — implement Postgres*Repository "
@@ -132,10 +144,11 @@ backend/db/
   seed_demo_calls.py
   repositories/
     __init__.py           # Repositories dataclass + get_repositories()
-    base.py                # the 5 ABCs above
+    base.py                # the ABCs above
     sqlite_calls.py
     sqlite_slots.py
     sqlite_trace.py
+    sqlite_escalations.py
     sqlite_eval.py
     sqlite_annotations.py
   calendar.db              # gitignored

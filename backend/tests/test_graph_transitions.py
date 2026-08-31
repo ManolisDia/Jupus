@@ -6,12 +6,22 @@ from backend.db.repositories import Repositories
 from backend.supervisor import tools
 from backend.supervisor.graph import GRAPH, route_by_stage
 from backend.supervisor.state import new_call_state
-from backend.tests.fakes import FakeCallRepository, FakeSlotRepository, FakeTraceRepository
+from backend.tests.fakes import (
+    FakeCallRepository,
+    FakeEscalationRepository,
+    FakeSlotRepository,
+    FakeTraceRepository,
+)
 
 
 @pytest.fixture
 def repos():
-    return Repositories(calls=FakeCallRepository(), slots=FakeSlotRepository(), trace=FakeTraceRepository())
+    return Repositories(
+        calls=FakeCallRepository(),
+        slots=FakeSlotRepository(),
+        trace=FakeTraceRepository(),
+        escalations=FakeEscalationRepository(),
+    )
 
 
 def _invoke(state, repos):
@@ -42,7 +52,10 @@ def test_escalation_sets_stage_ended(repos, tmp_path):
     state["stage"] = "escalation"
     with (
         patch.object(tools, "HANDOFFS_DIR", tmp_path),
-        patch("backend.supervisor.tools.generate_call_summary", return_value="summary"),
+        patch(
+            "backend.supervisor.tools.summarize_escalation",
+            return_value={"reason_for_call": "why", "escalation_explanation": "summary"},
+        ),
     ):
         result = _invoke(state, repos)
     assert result["stage"] == "ended"
